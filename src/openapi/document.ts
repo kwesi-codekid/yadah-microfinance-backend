@@ -2,6 +2,7 @@ import { createDocument } from 'zod-openapi';
 import { authPaths } from '../modules/auth/auth.openapi.js';
 import { userPaths } from '../modules/users/users.openapi.js';
 import { customerPaths } from '../modules/customers/customers.openapi.js';
+import { susuPaths } from '../modules/susu/susu.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -22,8 +23,12 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       { name: 'Auth', description: 'Login (username+password or phone OTP), sessions' },
       { name: 'Users', description: 'Staff management and role assignment (office roles)' },
       { name: 'Customers', description: 'Customer registration, profile, collector assignment' },
+      {
+        name: 'Susu',
+        description: 'Daily-deposit cycles: 31 deposits, catch-up, collect-all, closure',
+      },
     ],
-    paths: { ...authPaths, ...userPaths, ...customerPaths },
+    paths: { ...authPaths, ...userPaths, ...customerPaths, ...susuPaths },
     components: {
       securitySchemes: {
         bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
