@@ -5,9 +5,9 @@ import { env } from '../../config/env.js';
 import { sendEmail, otpEmailHtml } from '../../lib/email.js';
 import { AppError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
-import { accraMonthKey } from '../../lib/time.js';
+import { enqueueSms } from '../../lib/sms.js';
 import { AuthOtpModel } from '../../models/auth-otp.model.js';
-import { SmsLogModel, UserModel, type User } from '../../models/index.js';
+import { UserModel, type User } from '../../models/index.js';
 import type { Role } from '../../models/shared.js';
 import type { HydratedDocument } from 'mongoose';
 
@@ -153,13 +153,11 @@ export async function requestOtp(phone: string): Promise<void> {
     { upsert: true },
   );
 
-  // SMS: enqueue for the retry worker (fire-and-forget by design).
-  await SmsLogModel.create({
+  // SMS: fire-and-forget — persisted, sent in the background, retried on failure.
+  await enqueueSms({
     to: phone,
     template: 'login-otp',
     message: `Your Yadah login code is ${code}. It expires in 5 minutes. Never share it.`,
-    status: 'queued',
-    monthKey: accraMonthKey(now),
     relatedEntityType: 'user',
     relatedEntityId: user._id,
   });
