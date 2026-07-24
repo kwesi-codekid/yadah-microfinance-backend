@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "prepare": "husky",
+    "prepare": "husky || true",
     "test": "vitest run"
   },
   "keywords": [],
