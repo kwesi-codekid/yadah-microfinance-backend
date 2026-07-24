@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { httpLogger } from './lib/logger.js';
 import { errorHandler, notFoundHandler } from './lib/errors.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { openapiRouter } from './openapi/routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -19,6 +20,7 @@ export function createApp(): express.Express {
     res.status(dbState === 'connected' ? 200 : 503).json({ status: 'ok', db: dbState });
   });
 
+  app.use('/api/v1', openapiRouter);
   app.use('/api/v1/auth', authRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 

@@ -29,3 +29,23 @@ export const refreshBody = z.object({
   refreshToken: z.string().min(1),
 });
 export type RefreshBody = z.infer<typeof refreshBody>;
+
+// Response shapes (documentation only — services build these in code).
+
+export const publicUserResponse = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    username: z.string(),
+    phone: z.string(),
+    email: z.string().optional(),
+    role: z.enum(['admin', 'manager', 'collector']),
+  })
+  .meta({ id: 'PublicUser' });
+
+export const authTokensResponse = z
+  .object({
+    accessToken: z.string().describe('JWT, ~15 min lifetime. Send as `Authorization: Bearer`.'),
+    refreshToken: z.string().describe('Opaque, single-use — rotated on every refresh.'),
+  })
+  .meta({ id: 'AuthTokens' });
