@@ -12,6 +12,7 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().default(''),
   EMAIL_FROM: z.string().default('Yadah <onboarding@resend.dev>'),
   CLOUDINARY_URL: z.string().default(''),
+  FRONTEND_ORIGIN: z.string().default('*'),
 });
 
 const parsed = envSchema.safeParse(process.env);

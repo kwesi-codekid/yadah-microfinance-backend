@@ -2,7 +2,8 @@ import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
-import { sendEmail, otpEmailHtml } from '../../lib/email.js';
+import { audit } from '../../lib/audit.js';
+import { sendEmail, noticeEmailHtml, otpEmailHtml } from '../../lib/email.js';
 import { AppError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { enqueueSms } from '../../lib/sms.js';
@@ -23,6 +24,8 @@ const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 export interface AccessTokenPayload {
   sub: string; // user id
   role: Role;
+  /** Refresh-session family this token belongs to. */
+  fam?: string;
 }
 
 export interface AuthTokens {
@@ -37,6 +40,7 @@ export interface PublicUser {
   phone: string;
   email?: string;
   role: Role;
+  mustChangePassword: boolean;
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -47,6 +51,7 @@ export function toPublicUser(user: User): PublicUser {
     phone: user.phone,
     ...(user.email !== undefined ? { email: user.email } : {}),
     role: user.role,
+    mustChangePassword: user.mustChangePassword,
   };
 }
 
@@ -68,8 +73,12 @@ function parseRefreshToken(token: string): { userId: string; familyId: string; s
   return { userId, familyId, secret };
 }
 
-function signAccessToken(user: User): string {
-  const payload: AccessTokenPayload = { sub: user._id.toHexString(), role: user.role };
+function signAccessToken(user: User, familyId: string): string {
+  const payload: AccessTokenPayload = {
+    sub: user._id.toHexString(),
+    role: user.role,
+    fam: familyId,
+  };
   return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: ACCESS_TOKEN_TTL });
 }
 
@@ -100,7 +109,7 @@ async function issueSession(user: HydratedDocument<User>): Promise<AuthTokens> {
   await user.save();
 
   return {
-    accessToken: signAccessToken(user),
+    accessToken: signAccessToken(user, familyId),
     refreshToken: buildRefreshToken(user._id.toHexString(), familyId, secret),
   };
 }
@@ -123,12 +132,15 @@ export async function login(
 
 // ---------------------------------------------------------------- OTP login
 
+type OtpPurpose = 'login' | 'password-reset';
+
 /**
- * Sends a 6-digit code by SMS (queued — the gateway worker is task 4.1) and,
- * when the user has an email, by email too. Response is identical whether or
- * not the phone exists, so account existence is not leaked.
+ * Sends a 6-digit code by SMS (queued — retried on failure) and, when the
+ * user has an email, by email too. Response is identical whether or not the
+ * phone exists, so account existence is not leaked. One OTP store serves
+ * login and password reset — the code proves phone possession either way.
  */
-export async function requestOtp(phone: string): Promise<void> {
+export async function requestOtp(phone: string, purpose: OtpPurpose = 'login'): Promise<void> {
   const user = await UserModel.findOne({ phone, status: 'active' });
   if (!user) return;
 
@@ -153,18 +165,21 @@ export async function requestOtp(phone: string): Promise<void> {
     { upsert: true },
   );
 
-  // SMS: fire-and-forget — persisted, sent in the background, retried on failure.
+  const noun = purpose === 'login' ? 'login' : 'password reset';
   await enqueueSms({
     to: phone,
-    template: 'login-otp',
-    message: `Your Yadah login code is ${code}. It expires in 5 minutes. Never share it.`,
+    template: purpose === 'login' ? 'login-otp' : 'password-reset-otp',
+    message: `Your Yadah ${noun} code is ${code}. It expires in 5 minutes. Never share it.`,
     relatedEntityType: 'user',
     relatedEntityId: user._id,
   });
 
-  // Email copy when available — also fire-and-forget.
   if (user.email !== undefined) {
-    await sendEmail(user.email, `${code} is your Yadah login code`, otpEmailHtml(code, user.name));
+    await sendEmail(
+      user.email,
+      `${code} is your Yadah ${noun} code`,
+      otpEmailHtml(code, user.name),
+    );
   }
 
   if (env.NODE_ENV === 'development') {
@@ -172,10 +187,8 @@ export async function requestOtp(phone: string): Promise<void> {
   }
 }
 
-export async function verifyOtp(
-  phone: string,
-  code: string,
-): Promise<{ user: PublicUser; tokens: AuthTokens }> {
+/** Validates and consumes the single-use OTP; returns the owning user. */
+async function consumeOtp(phone: string, code: string): Promise<HydratedDocument<User>> {
   const invalid = new AppError('INVALID_OTP', 'Code is incorrect or expired', 401);
 
   const user = await UserModel.findOne({ phone, status: 'active' });
@@ -196,7 +209,82 @@ export async function verifyOtp(
   }
 
   await AuthOtpModel.deleteOne({ _id: otp._id }); // single use
+  return user;
+}
+
+export async function verifyOtp(
+  phone: string,
+  code: string,
+): Promise<{ user: PublicUser; tokens: AuthTokens }> {
+  const user = await consumeOtp(phone, code);
   return { user: toPublicUser(user), tokens: await issueSession(user) };
+}
+
+// ---------------------------------------------------------------- password change / reset
+
+/** Authenticated change; keeps the caller's session, revokes every other. */
+export async function changePassword(
+  auth: AccessTokenPayload,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const user = await UserModel.findById(auth.sub);
+  if (user?.status !== 'active') {
+    throw new AppError('UNAUTHORIZED', 'Account unavailable', 401);
+  }
+  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!ok) {
+    throw new AppError('INVALID_CREDENTIALS', 'Current password is incorrect', 401);
+  }
+
+  user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
+  user.mustChangePassword = false;
+  user.refreshSessions = user.refreshSessions.filter((s) => s.familyId === auth.fam);
+  await user.save();
+
+  await audit({
+    actorId: user._id,
+    action: 'user.password-change',
+    entityType: 'user',
+    entityId: user._id,
+  });
+  await notifyPasswordChanged(user);
+}
+
+/** Forgot-password completion: OTP proves phone possession; all sessions die. */
+export async function resetPasswordWithOtp(
+  phone: string,
+  code: string,
+  newPassword: string,
+): Promise<void> {
+  const user = await consumeOtp(phone, code);
+
+  user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
+  user.mustChangePassword = false;
+  user.refreshSessions = [];
+  await user.save();
+
+  await audit({
+    actorId: user._id,
+    action: 'user.password-reset-self',
+    entityType: 'user',
+    entityId: user._id,
+  });
+  await notifyPasswordChanged(user);
+}
+
+export async function notifyPasswordChanged(user: User): Promise<void> {
+  if (user.email === undefined) return;
+  await sendEmail(
+    user.email,
+    'Your Yadah password was changed',
+    noticeEmailHtml(
+      'Password changed',
+      'Your Yadah account password was just changed. If this was you, no action is needed. ' +
+        'If you did not do this, contact the office immediately.',
+      user.name,
+    ),
+  );
 }
 
 // ---------------------------------------------------------------- refresh / logout / me
@@ -229,7 +317,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   await user.save();
 
   return {
-    accessToken: signAccessToken(user),
+    accessToken: signAccessToken(user, familyId),
     refreshToken: buildRefreshToken(userId, familyId, newSecret),
   };
 }

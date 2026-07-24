@@ -14,8 +14,14 @@ interface GatewayResult {
   error?: string;
 }
 
+/** Outside production, real sends are restricted to the authorized test number. */
+const DEV_ALLOWED_RECIPIENT = '0594213496';
+
 async function callGateway(to: string, text: string): Promise<GatewayResult> {
   if (env.SMS_API_KEY === '') return { ok: false, error: 'SMS_API_KEY not configured' };
+  if (env.NODE_ENV !== 'production' && to !== DEV_ALLOWED_RECIPIENT) {
+    return { ok: false, error: `dev mode: sends restricted to ${DEV_ALLOWED_RECIPIENT}` };
+  }
   try {
     const res = await fetch(GATEWAY_URL, {
       method: 'POST',

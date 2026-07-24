@@ -3,11 +3,14 @@ import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
   authTokensResponse,
+  changePasswordBody,
+  forgotPasswordBody,
   loginBody,
   otpRequestBody,
   otpVerifyBody,
   publicUserResponse,
   refreshBody,
+  resetPasswordBody,
 } from './auth.schemas.js';
 
 const loginResult = z.object({ user: publicUserResponse, tokens: authTokensResponse });
@@ -71,6 +74,45 @@ export const authPaths: ZodOpenApiPathsObject = {
       requestBody: jsonBody(refreshBody),
       responses: {
         '204': { description: 'Session revoked' },
+      },
+    },
+  },
+  '/auth/password/change': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Change own password (authenticated)',
+      description:
+        'Requires the current password. All OTHER sessions are revoked; the session ' +
+        'making the change survives. Clears any mustChangePassword flag.',
+      security: [{ bearerAuth: [] }],
+      requestBody: jsonBody(changePasswordBody),
+      responses: {
+        '204': { description: 'Password changed' },
+        '401': errorResponse('INVALID_CREDENTIALS — current password wrong'),
+      },
+    },
+  },
+  '/auth/password/forgot': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Request a password-reset OTP by phone',
+      description: 'Same cooldown/attempt limits as the login OTP; never leaks account existence.',
+      requestBody: jsonBody(forgotPasswordBody),
+      responses: {
+        '200': jsonResponse('Code sent (or silently skipped)', z.object({ message: z.string() })),
+        '429': errorResponse('OTP_COOLDOWN'),
+      },
+    },
+  },
+  '/auth/password/reset': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Reset password with a phone OTP',
+      description: 'Verifies the single-use code, sets the new password, revokes ALL sessions.',
+      requestBody: jsonBody(resetPasswordBody),
+      responses: {
+        '204': { description: 'Password reset' },
+        '401': errorResponse('INVALID_OTP'),
       },
     },
   },

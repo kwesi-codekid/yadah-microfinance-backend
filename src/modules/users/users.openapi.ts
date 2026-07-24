@@ -2,7 +2,12 @@ import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { publicUserResponse } from '../auth/auth.schemas.js';
-import { createUserBody, listUsersQuery, updateUserBody } from './users.schemas.js';
+import {
+  createUserBody,
+  listUsersQuery,
+  resetUserPasswordBody,
+  updateUserBody,
+} from './users.schemas.js';
 
 const userResult = z.object({ user: publicUserResponse });
 const userList = z.object({
@@ -67,6 +72,24 @@ export const userPaths: ZodOpenApiPathsObject = {
         '403': errorResponse('FORBIDDEN or CANNOT_MODIFY_SELF'),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN'),
+      },
+    },
+  },
+  '/users/{id}/reset-password': {
+    post: {
+      tags: ['Users'],
+      summary: 'Reset a staff member’s password (admin only)',
+      description:
+        'Sets a temporary password and revokes all of the user’s sessions. When ' +
+        'mustChangePassword is true, the user is flagged to change it at next login ' +
+        '(surfaced on the login response; not hard-enforced server-side).',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(resetUserPasswordBody),
+      responses: {
+        '204': { description: 'Password reset' },
+        '403': errorResponse('FORBIDDEN — requires admin'),
+        '404': errorResponse('NOT_FOUND'),
       },
     },
   },

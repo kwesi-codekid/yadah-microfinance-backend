@@ -5,10 +5,12 @@ import { getValidated, validate } from '../../middleware/validate.js';
 import {
   createUserBody,
   listUsersQuery,
+  resetUserPasswordBody,
   updateUserBody,
   userIdParams,
   type CreateUserBody,
   type ListUsersQuery,
+  type ResetUserPasswordBody,
   type UpdateUserBody,
   type UserIdParams,
 } from './users.schemas.js';
@@ -65,6 +67,27 @@ usersRouter.patch(
     usersService
       .updateUser(getAuth(req), params.id, body, req.id as string)
       .then((user) => res.json({ user }))
+      .catch(next);
+  },
+);
+
+usersRouter.post(
+  '/:id/reset-password',
+  requireRole('admin'),
+  validate({ params: userIdParams, body: resetUserPasswordBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: UserIdParams; body: ResetUserPasswordBody }>(
+      req,
+    );
+    usersService
+      .resetUserPassword(
+        getAuth(req),
+        params.id,
+        body.newPassword,
+        body.mustChangePassword,
+        req.id as string,
+      )
+      .then(() => res.status(204).end())
       .catch(next);
   },
 );

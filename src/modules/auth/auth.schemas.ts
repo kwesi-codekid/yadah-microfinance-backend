@@ -30,6 +30,24 @@ export const refreshBody = z.object({
 });
 export type RefreshBody = z.infer<typeof refreshBody>;
 
+export const passwordField = z.string().min(8).max(128);
+
+export const changePasswordBody = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: passwordField,
+});
+export type ChangePasswordBody = z.infer<typeof changePasswordBody>;
+
+export const forgotPasswordBody = z.object({ phone: ghanaPhone });
+export type ForgotPasswordBody = z.infer<typeof forgotPasswordBody>;
+
+export const resetPasswordBody = z.object({
+  phone: ghanaPhone,
+  code: z.string().regex(/^\d{6}$/, 'Code is 6 digits'),
+  newPassword: passwordField,
+});
+export type ResetPasswordBody = z.infer<typeof resetPasswordBody>;
+
 // Response shapes (documentation only — services build these in code).
 
 export const publicUserResponse = z
@@ -40,6 +58,11 @@ export const publicUserResponse = z
     phone: z.string(),
     email: z.string().optional(),
     role: z.enum(['admin', 'manager', 'collector']),
+    mustChangePassword: z
+      .boolean()
+      .describe(
+        'True after an admin reset that requires a change — frontend forces the change screen',
+      ),
   })
   .meta({ id: 'PublicUser' });
 

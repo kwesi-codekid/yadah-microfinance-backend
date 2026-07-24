@@ -23,6 +23,8 @@ export interface User {
   passwordHash: string;
   role: Role;
   status: 'active' | 'disabled';
+  /** Set by an admin reset (optionally) — frontend forces the change screen. */
+  mustChangePassword: boolean;
   refreshSessions: RefreshSession[];
   createdAt: Date;
   updatedAt: Date;
@@ -47,6 +49,7 @@ const userSchema = new Schema<User>(
     passwordHash: { type: String, required: true },
     role: { type: String, enum: ROLES, required: true },
     status: { type: String, enum: ['active', 'disabled'], default: 'active' },
+    mustChangePassword: { type: Boolean, default: false },
     refreshSessions: { type: [refreshSessionSchema], default: [] },
   },
   { timestamps: true },

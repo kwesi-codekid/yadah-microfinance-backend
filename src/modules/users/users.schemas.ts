@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ghanaPhone, objectId, pagination } from '../../schemas/common.js';
-import { username } from '../auth/auth.schemas.js';
+import { passwordField, username } from '../auth/auth.schemas.js';
 
 const ROLE = z.enum(['admin', 'manager', 'collector']);
 const STATUS = z.enum(['active', 'disabled']);
@@ -36,3 +36,10 @@ export type ListUsersQuery = z.infer<typeof listUsersQuery>;
 
 export const userIdParams = z.object({ id: objectId });
 export type UserIdParams = z.infer<typeof userIdParams>;
+
+export const resetUserPasswordBody = z.object({
+  newPassword: passwordField,
+  /** When true, the user is flagged to change this password at next login. */
+  mustChangePassword: z.boolean().default(false),
+});
+export type ResetUserPasswordBody = z.infer<typeof resetUserPasswordBody>;

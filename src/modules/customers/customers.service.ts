@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { uploadCustomerImage } from '../../lib/photos.js';
+import { emitAdminEvent } from '../../lib/realtime.js';
 import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import {
   CustomerModel,
@@ -141,7 +142,13 @@ export async function createCustomer(
     },
     ...(requestId !== undefined ? { requestId } : {}),
   });
-  return toPublicCustomer(customer);
+  const created = toPublicCustomer(customer);
+  emitAdminEvent('customer.created', {
+    id: created.id,
+    fullName: created.fullName,
+    assignedCollectorId: created.assignedCollectorId ?? null,
+  });
+  return created;
 }
 
 export interface CustomerList {
@@ -242,6 +249,13 @@ export async function updateCustomer(
       after,
       ...(requestId !== undefined ? { requestId } : {}),
     });
+    if (reassigning) {
+      emitAdminEvent('customer.reassigned', {
+        id: customer._id.toHexString(),
+        fullName: customer.fullName,
+        assignedCollectorId: customer.assignedCollectorId?.toHexString() ?? null,
+      });
+    }
   }
   return toPublicCustomer(customer);
 }
