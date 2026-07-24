@@ -9,6 +9,8 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(1),
   SMS_API_KEY: z.string().default(''),
   SMS_SENDER_ID: z.string().default(''),
+  RESEND_API_KEY: z.string().default(''),
+  EMAIL_FROM: z.string().default('Yadah <onboarding@resend.dev>'),
 });
 
 const parsed = envSchema.safeParse(process.env);

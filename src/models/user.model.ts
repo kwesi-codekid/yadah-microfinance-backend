@@ -17,6 +17,7 @@ export interface RefreshSession {
 export interface User {
   _id: Types.ObjectId;
   name: string;
+  username: string;
   phone: string;
   email?: string;
   passwordHash: string;
@@ -40,6 +41,7 @@ const refreshSessionSchema = new Schema<RefreshSession>(
 const userSchema = new Schema<User>(
   {
     name: { type: String, required: true, trim: true },
+    username: { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone: { type: String, required: true, unique: true },
     email: { type: String, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
