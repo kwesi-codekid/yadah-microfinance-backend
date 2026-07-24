@@ -36,12 +36,11 @@ export const httpLogger = pinoHttp({
     res.setHeader('x-request-id', id);
     return id;
   },
+  // Quality monitoring only: successful requests log at debug (dropped at the
+  // default 'info' level), so the log stream is 4xx/5xx and app events only.
   customLogLevel: (_req, res, err) => {
     if (err || res.statusCode >= 500) return 'error';
     if (res.statusCode >= 400) return 'warn';
-    return 'info';
-  },
-  autoLogging: {
-    ignore: (req) => req.url === '/api/v1/health',
+    return 'debug';
   },
 });
