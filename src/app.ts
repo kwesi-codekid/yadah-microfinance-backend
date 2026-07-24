@@ -5,6 +5,7 @@ import { errorHandler, notFoundHandler } from './lib/errors.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { openapiRouter } from './openapi/routes.js';
 import { usersRouter } from './modules/users/users.routes.js';
+import { customersRouter } from './modules/customers/customers.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -24,6 +25,7 @@ export function createApp(): express.Express {
   app.use('/api/v1', openapiRouter);
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/users', usersRouter);
+  app.use('/api/v1/customers', customersRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);
