@@ -1,14 +1,27 @@
 import express from 'express';
+import mongoose from 'mongoose';
+import { httpLogger } from './lib/logger.js';
+import { errorHandler, notFoundHandler } from './lib/errors.js';
 
 export function createApp(): express.Express {
   const app = express();
 
   app.disable('x-powered-by');
+  app.use(httpLogger);
   app.use(express.json());
 
   app.get('/api/v1/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    const dbState =
+      mongoose.connection.readyState === mongoose.ConnectionStates.connected
+        ? 'connected'
+        : 'disconnected';
+    res.status(dbState === 'connected' ? 200 : 503).json({ status: 'ok', db: dbState });
   });
+
+  // Feature routers mount here as modules land: /api/v1/{auth|users|customers|susu|savings|loans|reports}
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }
