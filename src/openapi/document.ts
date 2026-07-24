@@ -3,6 +3,7 @@ import { authPaths } from '../modules/auth/auth.openapi.js';
 import { userPaths } from '../modules/users/users.openapi.js';
 import { customerPaths } from '../modules/customers/customers.openapi.js';
 import { susuPaths } from '../modules/susu/susu.openapi.js';
+import { savingsPaths } from '../modules/savings/savings.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -27,8 +28,13 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
         name: 'Susu',
         description: 'Daily-deposit cycles: 31 deposits, catch-up, collect-all, closure',
       },
+      {
+        name: 'Savings',
+        description:
+          'Min GHS 10 deposits, 1 withdrawal/day with flat GHS 10 fee, GHS 50 min balance',
+      },
     ],
-    paths: { ...authPaths, ...userPaths, ...customerPaths, ...susuPaths },
+    paths: { ...authPaths, ...userPaths, ...customerPaths, ...susuPaths, ...savingsPaths },
     components: {
       securitySchemes: {
         bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
