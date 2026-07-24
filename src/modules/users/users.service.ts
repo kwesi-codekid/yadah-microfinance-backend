@@ -97,18 +97,13 @@ export async function updateUser(
 
   const isSelf = actor.sub === id.toHexString();
   const roleChanged = patch.role !== undefined && patch.role !== user.role;
-  const disabling = patch.status === 'disabled' && user.status !== 'disabled';
-  if (isSelf && (roleChanged || disabling)) {
-    throw new AppError(
-      'CANNOT_MODIFY_SELF',
-      'You cannot change your own role or disable yourself',
-      403,
-    );
+  if (isSelf && roleChanged) {
+    throw new AppError('CANNOT_MODIFY_SELF', 'You cannot change your own role', 403);
   }
 
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
-  for (const key of ['name', 'phone', 'email', 'role', 'status'] as const) {
+  for (const key of ['name', 'phone', 'email', 'role'] as const) {
     const next = patch[key];
     if (next !== undefined && next !== user[key]) {
       before[key] = user[key];
@@ -117,9 +112,8 @@ export async function updateUser(
     }
   }
 
-  // Stale JWTs must not outlive a role change or disable longer than the
-  // access-token window: kill all refresh sessions on either.
-  if (roleChanged || disabling) {
+  // Stale JWTs must not keep an old role longer than the access-token window.
+  if (roleChanged) {
     user.refreshSessions = [];
   }
 
@@ -128,7 +122,7 @@ export async function updateUser(
   if (Object.keys(after).length > 0) {
     await audit({
       actorId: actor.sub,
-      action: disabling ? 'user.disable' : 'user.update',
+      action: 'user.update',
       entityType: 'user',
       entityId: user._id,
       before,
@@ -136,5 +130,41 @@ export async function updateUser(
       ...(requestId !== undefined ? { requestId } : {}),
     });
   }
+  return toPublicUser(user);
+}
+
+export async function setUserStatus(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  status: 'active' | 'disabled',
+  requestId?: string,
+): Promise<PublicUser> {
+  const user = await UserModel.findById(id);
+  if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
+
+  if (status === 'disabled' && actor.sub === id.toHexString()) {
+    throw new AppError('CANNOT_MODIFY_SELF', 'You cannot disable yourself', 403);
+  }
+  if (user.status === status) {
+    return toPublicUser(user); // idempotent
+  }
+
+  const before = { status: user.status };
+  user.status = status;
+  if (status === 'disabled') {
+    // Their access token dies within 15 minutes; refresh dies now.
+    user.refreshSessions = [];
+  }
+  await user.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: status === 'disabled' ? 'user.disable' : 'user.enable',
+    entityType: 'user',
+    entityId: user._id,
+    before,
+    after: { status },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
   return toPublicUser(user);
 }

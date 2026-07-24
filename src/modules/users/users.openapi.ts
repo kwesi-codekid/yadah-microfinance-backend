@@ -54,11 +54,11 @@ export const userPaths: ZodOpenApiPathsObject = {
     },
     patch: {
       tags: ['Users'],
-      summary: 'Update profile, role, or status (admin only)',
+      summary: 'Update profile or role (admin only)',
       description:
-        'Role change or disable also revokes all of the user’s refresh sessions; ' +
-        'their access token dies within 15 minutes. Admins cannot change their own ' +
-        'role or disable themselves.',
+        'Role change also revokes all of the user’s refresh sessions; their access ' +
+        'token dies within 15 minutes. Admins cannot change their own role. ' +
+        'Activation/deactivation has its own endpoints.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateUserBody),
@@ -67,6 +67,34 @@ export const userPaths: ZodOpenApiPathsObject = {
         '403': errorResponse('FORBIDDEN or CANNOT_MODIFY_SELF'),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN'),
+      },
+    },
+  },
+  '/users/{id}/disable': {
+    post: {
+      tags: ['Users'],
+      summary: 'Deactivate a staff member (admin only)',
+      description:
+        'Revokes all refresh sessions immediately; the access token dies within ' +
+        '15 minutes. Idempotent. Admins cannot disable themselves.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Disabled user', userResult),
+        '403': errorResponse('FORBIDDEN or CANNOT_MODIFY_SELF'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/users/{id}/enable': {
+    post: {
+      tags: ['Users'],
+      summary: 'Reactivate a staff member (admin only)',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Reactivated user', userResult),
+        '404': errorResponse('NOT_FOUND'),
       },
     },
   },

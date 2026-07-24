@@ -21,7 +21,6 @@ export const updateUserBody = z
     phone: ghanaPhone.optional(),
     email: z.email().optional(),
     role: ROLE.optional(),
-    status: STATUS.optional(),
   })
   .refine((v) => Object.values(v).some((f) => f !== undefined), {
     message: 'At least one field must be provided',

@@ -68,3 +68,29 @@ usersRouter.patch(
       .catch(next);
   },
 );
+
+usersRouter.post(
+  '/:id/disable',
+  requireRole('admin'),
+  validate({ params: userIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: UserIdParams }>(req);
+    usersService
+      .setUserStatus(getAuth(req), params.id, 'disabled', req.id as string)
+      .then((user) => res.json({ user }))
+      .catch(next);
+  },
+);
+
+usersRouter.post(
+  '/:id/enable',
+  requireRole('admin'),
+  validate({ params: userIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: UserIdParams }>(req);
+    usersService
+      .setUserStatus(getAuth(req), params.id, 'active', req.id as string)
+      .then((user) => res.json({ user }))
+      .catch(next);
+  },
+);
