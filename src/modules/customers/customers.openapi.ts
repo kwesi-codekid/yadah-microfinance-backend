@@ -84,6 +84,32 @@ export const customerPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/customers/{id}/photo': {
+    post: {
+      tags: ['Customers'],
+      summary: 'Upload or replace the customer photo',
+      description:
+        'Office roles or the assigned collector. Multipart form with a `photo` file field ' +
+        '(JPEG/PNG/WebP, max 5 MB). Replaces any existing photo; stored on Cloudinary, ' +
+        'capped at 800×800.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: {
+        content: {
+          'multipart/form-data': {
+            schema: z.object({ photo: z.string().meta({ format: 'binary' }) }),
+          },
+        },
+      },
+      responses: {
+        '200': jsonResponse('Customer with new photoUrl', customerResult),
+        '403': errorResponse('FORBIDDEN — not the assigned collector'),
+        '404': errorResponse('NOT_FOUND'),
+        '413': errorResponse('FILE_TOO_LARGE'),
+        '415': errorResponse('UNSUPPORTED_FILE_TYPE'),
+      },
+    },
+  },
   '/customers/{id}/deactivate': {
     post: {
       tags: ['Customers'],

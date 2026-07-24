@@ -11,6 +11,7 @@ const envSchema = z.object({
   SMS_SENDER_ID: z.string().default(''),
   RESEND_API_KEY: z.string().default(''),
   EMAIL_FROM: z.string().default('Yadah <onboarding@resend.dev>'),
+  CLOUDINARY_URL: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

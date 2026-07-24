@@ -2,6 +2,7 @@ import { MongoServerError } from 'mongodb';
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
+import { uploadCustomerPhoto } from '../../lib/photos.js';
 import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import { CustomerModel, UserModel, type Customer } from '../../models/index.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
@@ -208,6 +209,33 @@ export async function updateCustomer(
       ...(requestId !== undefined ? { requestId } : {}),
     });
   }
+  return toPublicCustomer(customer);
+}
+
+export async function setCustomerPhoto(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  imageBuffer: Buffer,
+  requestId?: string,
+): Promise<PublicCustomer> {
+  const customer = await CustomerModel.findById(id);
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  assertCanActOnCustomer(actor, customer);
+
+  const photoUrl = await uploadCustomerPhoto(customer._id.toHexString(), imageBuffer);
+  const before = { photoUrl: customer.photoUrl ?? null };
+  customer.photoUrl = photoUrl;
+  await customer.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'customer.photo',
+    entityType: 'customer',
+    entityId: customer._id,
+    before,
+    after: { photoUrl },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
   return toPublicCustomer(customer);
 }
 
