@@ -47,14 +47,19 @@ const acceptPhoto: RequestHandler = (req, res, next) => {
   });
 };
 
-// All roles create — collectors register in the field, assigned to themselves.
-customersRouter.post('/', validate({ body: createCustomerBody }), (req, res, next) => {
-  const { body } = getValidated<{ body: CreateCustomerBody }>(req);
-  customersService
-    .createCustomer(getAuth(req), body, req.id as string)
-    .then((customer) => res.status(201).json({ customer }))
-    .catch(next);
-});
+// Office only — client rule: account creation happens at the office, never in the field.
+customersRouter.post(
+  '/',
+  requireOffice,
+  validate({ body: createCustomerBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: CreateCustomerBody }>(req);
+    customersService
+      .createCustomer(getAuth(req), body, req.id as string)
+      .then((customer) => res.status(201).json({ customer }))
+      .catch(next);
+  },
+);
 
 // All roles list — collectors see only their own assigned customers.
 customersRouter.get('/', validate({ query: listCustomersQuery }), (req, res, next) => {

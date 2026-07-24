@@ -25,6 +25,20 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
   }
 }
 
+/** Brand palette, taken from the Yadah logo (navy chain, gold cedi coins). */
+export const BRAND = {
+  navy: '#1F4E79',
+  navyDark: '#173C5E',
+  gold: '#E9B949',
+  goldSoft: '#FBF4E0',
+  goldBorder: '#EAD08C',
+  ink: '#101828',
+  gray: '#475467',
+  grayLight: '#98A2B3',
+  logoUrl:
+    'https://res.cloudinary.com/rgodzxvt/image/upload/v1784909266/yadah/brand/logo-symbol.png',
+} as const;
+
 export function otpEmailHtml(code: string, recipientName: string): string {
   return `<!doctype html>
 <html>
@@ -34,37 +48,38 @@ export function otpEmailHtml(code: string, recipientName: string): string {
         <td align="center">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:440px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(16,24,40,.08);">
             <tr>
-              <td style="background:#0f766e;padding:28px 32px;">
-                <span style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:.3px;">Yadah</span>
-                <span style="color:#99f6e4;font-size:13px;font-weight:500;display:block;margin-top:2px;">Dynamic Enterprise</span>
+              <td align="center" style="padding:32px 32px 0;">
+                <img src="${BRAND.logoUrl}" width="64" height="64" alt="Yadah logo" style="display:block;width:64px;height:auto;" />
+                <p style="margin:12px 0 0;color:${BRAND.navy};font-size:20px;font-weight:700;letter-spacing:.3px;">Yadah Dynamic Enterprise</p>
+                <div style="width:56px;height:4px;background:${BRAND.gold};border-radius:2px;margin:14px auto 0;"></div>
               </td>
             </tr>
             <tr>
-              <td style="padding:36px 32px 8px;">
-                <p style="margin:0;color:#101828;font-size:16px;font-weight:600;">Hi ${recipientName},</p>
-                <p style="margin:12px 0 0;color:#475467;font-size:14px;line-height:1.6;">
+              <td style="padding:28px 32px 8px;">
+                <p style="margin:0;color:${BRAND.ink};font-size:16px;font-weight:600;">Hi ${recipientName},</p>
+                <p style="margin:12px 0 0;color:${BRAND.gray};font-size:14px;line-height:1.6;">
                   Use this code to sign in. It expires in <strong>5&nbsp;minutes</strong>.
                 </p>
               </td>
             </tr>
             <tr>
               <td style="padding:24px 32px;">
-                <div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;padding:20px;text-align:center;">
-                  <span style="font-size:34px;font-weight:700;letter-spacing:10px;color:#0f766e;font-family:'Courier New',monospace;">${code}</span>
+                <div style="background:${BRAND.goldSoft};border:1px solid ${BRAND.goldBorder};border-radius:12px;padding:20px;text-align:center;">
+                  <span style="font-size:34px;font-weight:700;letter-spacing:10px;color:${BRAND.navy};font-family:'Courier New',monospace;">${code}</span>
                 </div>
               </td>
             </tr>
             <tr>
-              <td style="padding:0 32px 36px;">
-                <p style="margin:0;color:#98a2b3;font-size:12px;line-height:1.6;">
+              <td style="padding:0 32px 32px;">
+                <p style="margin:0;color:${BRAND.grayLight};font-size:12px;line-height:1.6;">
                   If you didn't request this code, you can safely ignore this email.
                   Never share this code with anyone — Yadah staff will never ask for it.
                 </p>
               </td>
             </tr>
             <tr>
-              <td style="background:#f9fafb;padding:20px 32px;border-top:1px solid #eaecf0;">
-                <p style="margin:0;color:#98a2b3;font-size:12px;">Yadah Dynamic Enterprise · Esiama, Ghana</p>
+              <td style="background:${BRAND.navy};padding:18px 32px;">
+                <p style="margin:0;color:#ffffff;font-size:12px;">Yadah Dynamic Enterprise · Esiama, Ghana</p>
               </td>
             </tr>
           </table>

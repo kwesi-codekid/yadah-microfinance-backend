@@ -34,10 +34,10 @@ export const customerPaths: ZodOpenApiPathsObject = {
   '/customers': {
     post: {
       tags: ['Customers'],
-      summary: 'Register a customer',
+      summary: 'Register a customer (office only)',
       description:
-        'All roles. A collector registering in the field is automatically the assigned ' +
-        'collector and cannot assign anyone else. Office roles may set assignedCollectorId.',
+        'Account creation happens at the office — collectors cannot create customers. ' +
+        'Office roles may set assignedCollectorId to any active collector.',
       security,
       requestBody: jsonBody(createCustomerBody),
       responses: {
