@@ -1,0 +1,62 @@
+# Local development only — 3-node MongoDB replica set (transactions require a replica set).
+# The app itself runs on the host via `npm run dev`; deployment uses Nixpacks, not this file.
+#
+# Members advertise as host.docker.internal so the same URI works from the host
+# and between containers (Docker Desktop resolves it in both directions).
+#   Start:  docker compose up -d
+#   Reset:  docker compose down -v
+
+services:
+  mongo1:
+    image: mongo:8
+    command: mongod --replSet rs0 --port 27017 --bind_ip_all
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo1-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand("ping")']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mongo2:
+    image: mongo:8
+    command: mongod --replSet rs0 --port 27018 --bind_ip_all
+    ports:
+      - '27018:27018'
+    volumes:
+      - mongo2-data:/data/db
+
+  mongo3:
+    image: mongo:8
+    command: mongod --replSet rs0 --port 27019 --bind_ip_all
+    ports:
+      - '27019:27019'
+    volumes:
+      - mongo3-data:/data/db
+
+  mongo-init:
+    image: mongo:8
+    restart: 'no'
+    depends_on:
+      mongo1:
+        condition: service_healthy
+    command: >
+      mongosh --host mongo1:27017 --quiet --eval "
+        try { rs.status(); print('replica set already initiated'); } catch (e) {
+          rs.initiate({
+            _id: 'rs0',
+            members: [
+              { _id: 0, host: 'host.docker.internal:27017', priority: 2 },
+              { _id: 1, host: 'host.docker.internal:27018', priority: 1 },
+              { _id: 2, host: 'host.docker.internal:27019', priority: 1 }
+            ]
+          });
+          print('replica set initiated');
+        }"
+
+volumes:
+  mongo1-data:
+  mongo2-data:
+  mongo3-data:
