@@ -1,5 +1,10 @@
 export { UserModel, type User } from './user.model.js';
-export { CustomerModel, type Customer } from './customer.model.js';
+export {
+  CustomerModel,
+  type Customer,
+  type CustomerIdentification,
+  type NextOfKin,
+} from './customer.model.js';
 export { SusuAccountModel, type SusuAccount } from './susu-account.model.js';
 export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
 export { SavingsAccountModel, type SavingsAccount } from './savings-account.model.js';

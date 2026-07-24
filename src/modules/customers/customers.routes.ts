@@ -111,6 +111,25 @@ customersRouter.post(
   },
 );
 
+// Office only — ID documents are captured at account opening.
+customersRouter.post(
+  '/:id/id-document',
+  requireOffice,
+  acceptPhoto,
+  validate({ params: customerIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: CustomerIdParams }>(req);
+    if (!req.file) {
+      next(new AppError('VALIDATION_ERROR', 'A "photo" file field is required', 400));
+      return;
+    }
+    customersService
+      .setCustomerIdDocument(getAuth(req), params.id, req.file.buffer, req.id as string)
+      .then((customer) => res.json({ customer }))
+      .catch(next);
+  },
+);
+
 customersRouter.post(
   '/:id/deactivate',
   requireOffice,

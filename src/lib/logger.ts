@@ -14,10 +14,14 @@ const REDACT_PATHS = [
   '*.accessToken',
   '*.refreshToken',
   '*.ghanaCardNumber',
+  '*.idNumber',
+  '*.mothersMaidenName',
   'password',
   'accessToken',
   'refreshToken',
   'ghanaCardNumber',
+  'idNumber',
+  'mothersMaidenName',
 ];
 
 export const logger = pino({

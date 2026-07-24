@@ -10,27 +10,33 @@ if (configured) {
 }
 
 /**
- * Uploads a customer photo, replacing any previous one (same public_id).
- * Images are capped server-side to 800×800 and metadata is stripped by
- * Cloudinary's incoming transformation.
+ * Uploads a customer image (profile photo or ID document scan), replacing
+ * any previous one (same public_id). Photos are capped to 800×800; ID
+ * documents keep more detail at 1600×1600 for legibility.
  */
-export async function uploadCustomerPhoto(customerId: string, buffer: Buffer): Promise<string> {
+export async function uploadCustomerImage(
+  customerId: string,
+  buffer: Buffer,
+  kind: 'photo' | 'id-document' = 'photo',
+): Promise<string> {
   if (!configured) {
     throw new AppError('PHOTOS_NOT_CONFIGURED', 'Photo storage is not configured', 503);
   }
+  const max = kind === 'photo' ? 800 : 1600;
+  const publicId = kind === 'photo' ? customerId : `${customerId}-id`;
   const result = await new Promise<{ secure_url: string }>((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: 'yadah/customers',
-        public_id: customerId,
+        public_id: publicId,
         overwrite: true,
         invalidate: true,
         resource_type: 'image',
-        transformation: [{ width: 800, height: 800, crop: 'limit' }, { fetch_format: 'auto' }],
+        transformation: [{ width: max, height: max, crop: 'limit' }, { fetch_format: 'auto' }],
       },
       (err, res) => {
         if (err || !res) {
-          reject(new AppError('PHOTO_UPLOAD_FAILED', 'Could not store the photo', 502));
+          reject(new AppError('PHOTO_UPLOAD_FAILED', 'Could not store the image', 502));
           return;
         }
         resolve(res);
@@ -41,7 +47,8 @@ export async function uploadCustomerPhoto(customerId: string, buffer: Buffer): P
   return result.secure_url;
 }
 
-export async function deleteCustomerPhoto(customerId: string): Promise<void> {
+export async function deleteCustomerImages(customerId: string): Promise<void> {
   if (!configured) return;
   await cloudinary.uploader.destroy(`yadah/customers/${customerId}`, { invalidate: true });
+  await cloudinary.uploader.destroy(`yadah/customers/${customerId}-id`, { invalidate: true });
 }

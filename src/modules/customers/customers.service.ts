@@ -2,9 +2,15 @@ import { MongoServerError } from 'mongodb';
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
-import { uploadCustomerPhoto } from '../../lib/photos.js';
+import { uploadCustomerImage } from '../../lib/photos.js';
 import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
-import { CustomerModel, UserModel, type Customer } from '../../models/index.js';
+import {
+  CustomerModel,
+  UserModel,
+  type Customer,
+  type CustomerIdentification,
+  type NextOfKin,
+} from '../../models/index.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type {
   CreateCustomerBody,
@@ -12,15 +18,48 @@ import type {
   UpdateCustomerBody,
 } from './customers.schemas.js';
 
+/** Scalar profile fields copied verbatim between body, document, and audit. */
+const SCALAR_FIELDS = [
+  'fullName',
+  'dateOfBirth',
+  'gender',
+  'nationality',
+  'maritalStatus',
+  'mothersMaidenName',
+  'residentialAddress',
+  'ghanaPostGps',
+  'postalAddress',
+  'phone',
+  'altPhone',
+  'email',
+  'occupation',
+  'employerOrBusiness',
+  'purposeOfAccount',
+] as const;
+/** Embedded objects replaced wholesale when present in a patch. */
+const SUBDOC_FIELDS = ['identification', 'nextOfKin'] as const;
+
 export interface PublicCustomer {
   id: string;
   fullName: string;
-  phone: string;
-  altPhone?: string;
-  ghanaCardNumber?: string;
-  photoUrl?: string;
+  dateOfBirth?: Date;
+  gender?: string;
+  nationality?: string;
+  maritalStatus?: string;
+  mothersMaidenName?: string;
   residentialAddress?: string;
   ghanaPostGps?: string;
+  postalAddress?: string;
+  phone: string;
+  altPhone?: string;
+  email?: string;
+  identification?: CustomerIdentification;
+  occupation?: string;
+  employerOrBusiness?: string;
+  purposeOfAccount?: string;
+  nextOfKin?: NextOfKin;
+  photoUrl?: string;
+  idDocumentUrl?: string;
   registeredById: string;
   assignedCollectorId?: string;
   status: 'active' | 'inactive';
@@ -28,30 +67,36 @@ export interface PublicCustomer {
 }
 
 export function toPublicCustomer(c: Customer): PublicCustomer {
-  return {
+  const out: PublicCustomer = {
     id: c._id.toHexString(),
     fullName: c.fullName,
     phone: c.phone,
-    ...(c.altPhone !== undefined ? { altPhone: c.altPhone } : {}),
-    ...(c.ghanaCardNumber !== undefined ? { ghanaCardNumber: c.ghanaCardNumber } : {}),
-    ...(c.photoUrl !== undefined ? { photoUrl: c.photoUrl } : {}),
-    ...(c.residentialAddress !== undefined ? { residentialAddress: c.residentialAddress } : {}),
-    ...(c.ghanaPostGps !== undefined ? { ghanaPostGps: c.ghanaPostGps } : {}),
     registeredById: c.registeredById.toHexString(),
-    ...(c.assignedCollectorId ? { assignedCollectorId: c.assignedCollectorId.toHexString() } : {}),
     status: c.status,
     createdAt: c.createdAt,
   };
+  for (const key of SCALAR_FIELDS) {
+    const value = c[key];
+    if (value !== undefined && !(key in out)) {
+      (out as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  if (c.identification) out.identification = c.identification;
+  if (c.nextOfKin) out.nextOfKin = c.nextOfKin;
+  if (c.photoUrl !== undefined) out.photoUrl = c.photoUrl;
+  if (c.idDocumentUrl !== undefined) out.idDocumentUrl = c.idDocumentUrl;
+  if (c.assignedCollectorId) out.assignedCollectorId = c.assignedCollectorId.toHexString();
+  return out;
 }
 
 function throwIfDuplicate(err: unknown): never {
   if (err instanceof MongoServerError && err.code === 11000) {
-    const key = Object.keys((err.keyPattern as Record<string, unknown> | undefined) ?? {})[0];
-    if (key === 'phone') {
+    const keys = Object.keys((err.keyPattern as Record<string, unknown> | undefined) ?? {});
+    if (keys.includes('phone')) {
       throw new AppError('PHONE_TAKEN', 'A customer with this phone number already exists', 409);
     }
-    if (key === 'ghanaCardNumber') {
-      throw new AppError('GHANA_CARD_TAKEN', 'A customer with this Ghana Card already exists', 409);
+    if (keys.some((k) => k.startsWith('identification.'))) {
+      throw new AppError('ID_TAKEN', 'A customer with this ID document already exists', 409);
     }
   }
   throw err as Error;
@@ -69,32 +114,20 @@ export async function createCustomer(
   body: CreateCustomerBody,
   requestId?: string,
 ): Promise<PublicCustomer> {
-  let assignedCollectorId = body.assignedCollectorId;
-
-  if (actor.role === 'collector') {
-    // Field registration: the collector registers for their own book only.
-    const self = new Types.ObjectId(actor.sub);
-    if (assignedCollectorId && !assignedCollectorId.equals(self)) {
-      throw new AppError('FORBIDDEN', 'Collectors can only assign customers to themselves', 403);
-    }
-    assignedCollectorId = self;
-  } else if (assignedCollectorId) {
-    await assertActiveCollector(assignedCollectorId);
+  if (body.assignedCollectorId) {
+    await assertActiveCollector(body.assignedCollectorId);
   }
 
-  const customer = await CustomerModel.create({
-    fullName: body.fullName,
-    phone: body.phone,
-    ...(body.altPhone !== undefined ? { altPhone: body.altPhone } : {}),
-    ...(body.ghanaCardNumber !== undefined ? { ghanaCardNumber: body.ghanaCardNumber } : {}),
-    ...(body.residentialAddress !== undefined
-      ? { residentialAddress: body.residentialAddress }
-      : {}),
-    ...(body.ghanaPostGps !== undefined ? { ghanaPostGps: body.ghanaPostGps } : {}),
-    ...(assignedCollectorId ? { assignedCollectorId } : {}),
+  const doc: Record<string, unknown> = {
     registeredById: new Types.ObjectId(actor.sub),
     status: 'active',
-  }).catch(throwIfDuplicate);
+  };
+  for (const key of [...SCALAR_FIELDS, ...SUBDOC_FIELDS]) {
+    if (body[key] !== undefined) doc[key] = body[key];
+  }
+  if (body.assignedCollectorId) doc.assignedCollectorId = body.assignedCollectorId;
+
+  const customer = await CustomerModel.create(doc).catch(throwIfDuplicate);
 
   await audit({
     actorId: actor.sub,
@@ -175,19 +208,20 @@ export async function updateCustomer(
 
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
-  for (const key of [
-    'fullName',
-    'phone',
-    'altPhone',
-    'ghanaCardNumber',
-    'residentialAddress',
-    'ghanaPostGps',
-  ] as const) {
+  for (const key of SCALAR_FIELDS) {
     const next = patch[key];
-    if (next !== undefined && next !== customer[key]) {
-      before[key] = customer[key];
+    if (next !== undefined && String(next) !== String(customer[key] ?? '')) {
+      before[key] = customer[key] ?? null;
       after[key] = next;
       (customer as Record<typeof key, unknown>)[key] = next;
+    }
+  }
+  for (const key of SUBDOC_FIELDS) {
+    const next = patch[key];
+    if (next !== undefined && JSON.stringify(next) !== JSON.stringify(customer[key] ?? null)) {
+      before[key] = customer[key] ?? null;
+      after[key] = next;
+      customer.set(key, next);
     }
   }
   if (reassigning) {
@@ -212,31 +246,51 @@ export async function updateCustomer(
   return toPublicCustomer(customer);
 }
 
-export async function setCustomerPhoto(
+async function setCustomerImage(
   actor: AccessTokenPayload,
   id: Types.ObjectId,
   imageBuffer: Buffer,
+  kind: 'photo' | 'id-document',
   requestId?: string,
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findById(id);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   assertCanActOnCustomer(actor, customer);
 
-  const photoUrl = await uploadCustomerPhoto(customer._id.toHexString(), imageBuffer);
-  const before = { photoUrl: customer.photoUrl ?? null };
-  customer.photoUrl = photoUrl;
+  const field = kind === 'photo' ? 'photoUrl' : 'idDocumentUrl';
+  const url = await uploadCustomerImage(customer._id.toHexString(), imageBuffer, kind);
+  const before = { [field]: customer[field] ?? null };
+  customer[field] = url;
   await customer.save();
 
   await audit({
     actorId: actor.sub,
-    action: 'customer.photo',
+    action: kind === 'photo' ? 'customer.photo' : 'customer.id-document',
     entityType: 'customer',
     entityId: customer._id,
     before,
-    after: { photoUrl },
+    after: { [field]: url },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   return toPublicCustomer(customer);
+}
+
+export async function setCustomerPhoto(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  imageBuffer: Buffer,
+  requestId?: string,
+): Promise<PublicCustomer> {
+  return setCustomerImage(actor, id, imageBuffer, 'photo', requestId);
+}
+
+export async function setCustomerIdDocument(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  imageBuffer: Buffer,
+  requestId?: string,
+): Promise<PublicCustomer> {
+  return setCustomerImage(actor, id, imageBuffer, 'id-document', requestId);
 }
 
 export async function setCustomerStatus(

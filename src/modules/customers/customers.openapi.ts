@@ -6,13 +6,40 @@ import { createCustomerBody, listCustomersQuery, updateCustomerBody } from './cu
 const publicCustomer = z
   .object({
     id: z.string(),
-    fullName: z.string(),
-    phone: z.string(),
-    altPhone: z.string().optional(),
-    ghanaCardNumber: z.string().optional().describe('Optional for susu/savings; loans require it'),
-    photoUrl: z.string().optional(),
+    fullName: z.string().describe('As on the ID document'),
+    dateOfBirth: z.iso.datetime().optional(),
+    gender: z.enum(['male', 'female']).optional(),
+    nationality: z.string().optional(),
+    maritalStatus: z.enum(['single', 'married', 'other']).optional(),
+    mothersMaidenName: z.string().optional(),
     residentialAddress: z.string().optional(),
     ghanaPostGps: z.string().optional(),
+    postalAddress: z.string().optional(),
+    phone: z.string(),
+    altPhone: z.string().optional(),
+    email: z.string().optional(),
+    identification: z
+      .object({
+        idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id']),
+        idNumber: z.string(),
+        idExpiryDate: z.iso.datetime().optional(),
+        idPlaceOfIssue: z.string().optional(),
+      })
+      .optional()
+      .describe('Optional for susu/savings; loans require a Ghana Card'),
+    occupation: z.string().optional(),
+    employerOrBusiness: z.string().optional(),
+    purposeOfAccount: z.string().optional(),
+    nextOfKin: z
+      .object({
+        fullName: z.string(),
+        relationship: z.string().optional(),
+        phone: z.string().optional(),
+        address: z.string().optional(),
+      })
+      .optional(),
+    photoUrl: z.string().optional(),
+    idDocumentUrl: z.string().optional(),
     registeredById: z.string(),
     assignedCollectorId: z.string().optional(),
     status: z.enum(['active', 'inactive']),
@@ -42,7 +69,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
       requestBody: jsonBody(createCustomerBody),
       responses: {
         '201': jsonResponse('Created', customerResult),
-        '409': errorResponse('PHONE_TAKEN or GHANA_CARD_TAKEN'),
+        '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
         '422': errorResponse('INVALID_COLLECTOR — target is not an active collector'),
       },
     },
@@ -79,7 +106,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse('Updated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('PHONE_TAKEN or GHANA_CARD_TAKEN'),
+        '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
         '422': errorResponse('INVALID_COLLECTOR'),
       },
     },
@@ -104,6 +131,30 @@ export const customerPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse('Customer with new photoUrl', customerResult),
         '403': errorResponse('FORBIDDEN — not the assigned collector'),
+        '404': errorResponse('NOT_FOUND'),
+        '413': errorResponse('FILE_TOO_LARGE'),
+        '415': errorResponse('UNSUPPORTED_FILE_TYPE'),
+      },
+    },
+  },
+  '/customers/{id}/id-document': {
+    post: {
+      tags: ['Customers'],
+      summary: 'Upload or replace the ID document scan (office only)',
+      description:
+        'Multipart form with a `photo` file field (JPEG/PNG/WebP, max 5 MB). ' +
+        'Stored at higher resolution (1600px) for legibility.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: {
+        content: {
+          'multipart/form-data': {
+            schema: z.object({ photo: z.string().meta({ format: 'binary' }) }),
+          },
+        },
+      },
+      responses: {
+        '200': jsonResponse('Customer with new idDocumentUrl', customerResult),
         '404': errorResponse('NOT_FOUND'),
         '413': errorResponse('FILE_TOO_LARGE'),
         '415': errorResponse('UNSUPPORTED_FILE_TYPE'),
