@@ -17,8 +17,10 @@
   "private": true,
   "license": "UNLICENSED",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.8.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
@@ -27,7 +29,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
@@ -41,7 +45,8 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true
+    "esbuild@0.28.1": true,
+    "bcrypt@6.0.0": true
   },
   "engines": {
     "node": ">=24"
