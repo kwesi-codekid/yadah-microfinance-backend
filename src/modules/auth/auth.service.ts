@@ -39,7 +39,7 @@ export interface PublicUser {
   role: Role;
 }
 
-function toPublicUser(user: User): PublicUser {
+export function toPublicUser(user: User): PublicUser {
   return {
     id: user._id.toHexString(),
     name: user.name,
