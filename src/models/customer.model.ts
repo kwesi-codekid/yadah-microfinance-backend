@@ -57,7 +57,6 @@ export interface Customer {
   idDocumentBackUrl?: string;
   // Administration
   registeredById: Types.ObjectId;
-  assignedCollectorId?: Types.ObjectId;
   status: 'active' | 'inactive';
   createdAt: Date;
   updatedAt: Date;
@@ -112,14 +111,13 @@ const customerSchema = new Schema<Customer>(
     idDocumentBackUrl: { type: String },
 
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    assignedCollectorId: { type: Schema.Types.ObjectId, ref: 'User' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
   },
   { timestamps: true },
 );
 
 customerSchema.index({ fullName: 'text' });
-customerSchema.index({ assignedCollectorId: 1, status: 1 });
+customerSchema.index({ status: 1 });
 // No two customers may share the same ID document (when one is recorded).
 customerSchema.index(
   { 'identification.idType': 1, 'identification.idNumber': 1 },

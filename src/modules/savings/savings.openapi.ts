@@ -65,7 +65,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Savings'],
       summary: 'List accounts',
-      description: 'Collectors see only accounts of their assigned customers.',
+      description: 'All roles see all accounts.',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {
@@ -118,7 +118,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       tags: ['Savings'],
       summary: 'Record a deposit (min GHS 10)',
       description:
-        'Collectors (own customers) and office staff. Idempotency key required — a ' +
+        'Any collector or office staff. Idempotency key required — a ' +
         'retried request returns the original transaction.',
       security,
       requestParams: { path: idParam },

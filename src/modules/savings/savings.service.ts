@@ -7,7 +7,6 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { accraDay } from '../../lib/time.js';
-import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import {
   CustomerModel,
   SavingsAccountModel,
@@ -84,13 +83,9 @@ function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
 
 // ---------------------------------------------------------------- helpers
 
-async function loadScopedCustomer(
-  actor: AccessTokenPayload,
-  customerId: Types.ObjectId,
-): Promise<Customer> {
+async function loadCustomer(customerId: Types.ObjectId): Promise<Customer> {
   const customer = await CustomerModel.findById(customerId);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-  assertCanActOnCustomer(actor, customer);
   return customer;
 }
 
@@ -201,18 +196,11 @@ export async function openAccount(
 }
 
 export async function listAccounts(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
   const filter: Record<string, unknown> = {};
-  if (actor.role === 'collector') {
-    const ids = await CustomerModel.find(customerScopeFilter(actor)).select('_id');
-    filter.customerId = { $in: ids.map((c) => c._id) };
-  }
-  if (query.customerId) {
-    if (actor.role === 'collector') await loadScopedCustomer(actor, query.customerId);
-    filter.customerId = query.customerId;
-  }
+  if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
@@ -232,23 +220,21 @@ export async function listAccounts(
 }
 
 export async function getAccount(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSavingsAccount> {
   const account = await SavingsAccountModel.findById(id);
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  await loadScopedCustomer(actor, account.customerId);
   return toPublicSavingsAccount(account);
 }
 
 export async function listTransactions(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   accountId: Types.ObjectId,
   query: ListTxnsQuery,
 ): Promise<{ items: PublicSavingsTxn[]; page: number; limit: number; total: number }> {
   const account = await SavingsAccountModel.findById(accountId);
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  await loadScopedCustomer(actor, account.customerId);
 
   const [txns, total] = await Promise.all([
     SavingsTxnModel.find({ accountId })
@@ -285,7 +271,7 @@ export async function deposit(
 
   const pre = await SavingsAccountModel.findById(accountId);
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  await loadScopedCustomer(actor, pre.customerId);
+  await loadCustomer(pre.customerId);
 
   const session = await mongoose.startSession();
   let txn!: SavingsTxn;

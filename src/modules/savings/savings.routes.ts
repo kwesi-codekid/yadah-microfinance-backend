@@ -69,7 +69,7 @@ savingsRouter.get(
   },
 );
 
-// Collectors (own customers) and office staff both record deposits.
+// Any collector or office staff records deposits.
 savingsRouter.post(
   '/accounts/:id/deposits',
   validate({ params: accountIdParams, body: depositBody }),

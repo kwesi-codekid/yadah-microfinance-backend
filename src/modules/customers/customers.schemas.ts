@@ -67,8 +67,6 @@ const profileFields = {
   photoUrl: uploadedImageUrl.optional(),
   idDocumentFrontUrl: uploadedImageUrl.optional(),
   idDocumentBackUrl: uploadedImageUrl.optional(),
-  // Administration
-  assignedCollectorId: objectId.optional(),
 };
 
 export const createCustomerBody = z.object(profileFields);
@@ -88,7 +86,6 @@ export type UpdateCustomerBody = z.infer<typeof updateCustomerBody>;
 
 export const listCustomersQuery = pagination.extend({
   status: z.enum(['active', 'inactive']).optional(),
-  assignedCollectorId: objectId.optional(),
   search: z.string().min(1).max(100).optional(),
 });
 export type ListCustomersQuery = z.infer<typeof listCustomersQuery>;

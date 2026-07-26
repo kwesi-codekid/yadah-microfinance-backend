@@ -72,7 +72,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Susu'],
       summary: 'List accounts',
-      description: 'Collectors see only accounts of their assigned customers.',
+      description: 'All roles see all accounts.',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {
@@ -96,7 +96,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('The account', accountResult),
-        '403': errorResponse('FORBIDDEN — not your customer'),
+
         '404': errorResponse('NOT_FOUND'),
       },
     },
@@ -123,7 +123,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Record a deposit (single day or catch-up)',
       description:
-        'Collectors (own customers) and office staff. Send daysCovered ≥ 2 for a ' +
+        'Any collector or office staff. Send daysCovered ≥ 2 for a ' +
         'catch-up covering missed days — the amount is computed server-side as ' +
         'dailyAmount × daysCovered. Requires an idempotency key: a retried request ' +
         'returns the original deposit (200) instead of double-recording. Reaching ' +

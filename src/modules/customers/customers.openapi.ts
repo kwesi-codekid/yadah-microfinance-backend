@@ -48,7 +48,6 @@ const publicCustomer = z
       .optional()
       .describe('ID back — from POST /uploads/images?kind=document'),
     registeredById: z.string(),
-    assignedCollectorId: z.string().optional(),
     status: z.enum(['active', 'inactive']),
     createdAt: z.iso.datetime(),
   })
@@ -69,21 +68,18 @@ export const customerPaths: ZodOpenApiPathsObject = {
     post: {
       tags: ['Customers'],
       summary: 'Register a customer (office only)',
-      description:
-        'Account creation happens at the office — collectors cannot create customers. ' +
-        'Office roles may set assignedCollectorId to any active collector.',
+      description: 'Account creation happens at the office — collectors cannot create customers.',
       security,
       requestBody: jsonBody(createCustomerBody),
       responses: {
         '201': jsonResponse('Created', customerResult),
         '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
-        '422': errorResponse('INVALID_COLLECTOR — target is not an active collector'),
       },
     },
     get: {
       tags: ['Customers'],
       summary: 'List customers',
-      description: 'Collectors see only their assigned customers; office roles see all.',
+      description: 'All roles see all customers.',
       security,
       requestParams: { query: listCustomersQuery },
       responses: {
@@ -99,14 +95,13 @@ export const customerPaths: ZodOpenApiPathsObject = {
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('The customer', customerResult),
-        '403': errorResponse('FORBIDDEN — customer not assigned to this collector'),
+
         '404': errorResponse('NOT_FOUND'),
       },
     },
     patch: {
       tags: ['Customers'],
-      summary: 'Update profile or reassign collector (office only)',
-      description: 'Changing assignedCollectorId is the reassignment flow and is audited as such.',
+      summary: 'Update customer profile (office only)',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateCustomerBody),
@@ -114,7 +109,6 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Updated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
-        '422': errorResponse('INVALID_COLLECTOR'),
       },
     },
   },

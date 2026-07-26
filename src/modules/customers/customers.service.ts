@@ -3,10 +3,8 @@ import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
-import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import {
   CustomerModel,
-  UserModel,
   type Customer,
   type CustomerIdentification,
   type NextOfKin,
@@ -65,7 +63,6 @@ export interface PublicCustomer {
   idDocumentFrontUrl?: string;
   idDocumentBackUrl?: string;
   registeredById: string;
-  assignedCollectorId?: string;
   status: 'active' | 'inactive';
   createdAt: Date;
 }
@@ -87,7 +84,6 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
   }
   if (c.identification) out.identification = c.identification;
   if (c.nextOfKin) out.nextOfKin = c.nextOfKin;
-  if (c.assignedCollectorId) out.assignedCollectorId = c.assignedCollectorId.toHexString();
   return out;
 }
 
@@ -104,22 +100,11 @@ function throwIfDuplicate(err: unknown): never {
   throw err as Error;
 }
 
-async function assertActiveCollector(id: Types.ObjectId): Promise<void> {
-  const user = await UserModel.findById(id);
-  if (user?.role !== 'collector' || user.status !== 'active') {
-    throw new AppError('INVALID_COLLECTOR', 'Assigned collector must be an active collector', 422);
-  }
-}
-
 export async function createCustomer(
   actor: AccessTokenPayload,
   body: CreateCustomerBody,
   requestId?: string,
 ): Promise<PublicCustomer> {
-  if (body.assignedCollectorId) {
-    await assertActiveCollector(body.assignedCollectorId);
-  }
-
   const doc: Record<string, unknown> = {
     registeredById: new Types.ObjectId(actor.sub),
     status: 'active',
@@ -127,7 +112,6 @@ export async function createCustomer(
   for (const key of [...SCALAR_FIELDS, ...SUBDOC_FIELDS]) {
     if (body[key] !== undefined) doc[key] = body[key];
   }
-  if (body.assignedCollectorId) doc.assignedCollectorId = body.assignedCollectorId;
 
   const customer = await CustomerModel.create(doc).catch(throwIfDuplicate);
 
@@ -136,19 +120,11 @@ export async function createCustomer(
     action: 'customer.create',
     entityType: 'customer',
     entityId: customer._id,
-    after: {
-      fullName: customer.fullName,
-      phone: customer.phone,
-      assignedCollectorId: customer.assignedCollectorId?.toHexString() ?? null,
-    },
+    after: { fullName: customer.fullName, phone: customer.phone },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   const created = toPublicCustomer(customer);
-  emitAdminEvent('customer.created', {
-    id: created.id,
-    fullName: created.fullName,
-    assignedCollectorId: created.assignedCollectorId ?? null,
-  });
+  emitAdminEvent('customer.created', { id: created.id, fullName: created.fullName });
   return created;
 }
 
@@ -160,14 +136,11 @@ export interface CustomerList {
 }
 
 export async function listCustomers(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   query: ListCustomersQuery,
 ): Promise<CustomerList> {
-  const filter: Record<string, unknown> = { ...customerScopeFilter(actor) };
+  const filter: Record<string, unknown> = {};
   if (query.status) filter.status = query.status;
-  if (query.assignedCollectorId && actor.role !== 'collector') {
-    filter.assignedCollectorId = query.assignedCollectorId;
-  }
   if (query.search !== undefined) {
     const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
@@ -188,12 +161,11 @@ export async function listCustomers(
 }
 
 export async function getCustomer(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findById(id);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-  assertCanActOnCustomer(actor, customer);
   return toPublicCustomer(customer);
 }
 
@@ -205,14 +177,6 @@ export async function updateCustomer(
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findById(id);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-
-  const newCollectorId = patch.assignedCollectorId;
-  const reassigning =
-    newCollectorId !== undefined &&
-    newCollectorId.toHexString() !== customer.assignedCollectorId?.toHexString();
-  if (reassigning) {
-    await assertActiveCollector(newCollectorId);
-  }
 
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
@@ -232,31 +196,18 @@ export async function updateCustomer(
       customer.set(key, next);
     }
   }
-  if (reassigning) {
-    before.assignedCollectorId = customer.assignedCollectorId?.toHexString() ?? null;
-    after.assignedCollectorId = newCollectorId.toHexString();
-    customer.assignedCollectorId = newCollectorId;
-  }
-
   await customer.save().catch(throwIfDuplicate);
 
   if (Object.keys(after).length > 0) {
     await audit({
       actorId: actor.sub,
-      action: reassigning ? 'customer.reassign' : 'customer.update',
+      action: 'customer.update',
       entityType: 'customer',
       entityId: customer._id,
       before,
       after,
       ...(requestId !== undefined ? { requestId } : {}),
     });
-    if (reassigning) {
-      emitAdminEvent('customer.reassigned', {
-        id: customer._id.toHexString(),
-        fullName: customer.fullName,
-        assignedCollectorId: customer.assignedCollectorId?.toHexString() ?? null,
-      });
-    }
   }
   return toPublicCustomer(customer);
 }

@@ -7,7 +7,6 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { accraDay } from '../../lib/time.js';
-import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import {
   CustomerModel,
   SusuAccountModel,
@@ -92,21 +91,10 @@ function toPublicDeposit(d: SusuDeposit): PublicDeposit {
 
 // ---------------------------------------------------------------- helpers
 
-async function loadScopedCustomer(
-  actor: AccessTokenPayload,
-  customerId: Types.ObjectId,
-): Promise<Customer> {
+async function loadCustomer(customerId: Types.ObjectId): Promise<Customer> {
   const customer = await CustomerModel.findById(customerId);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-  assertCanActOnCustomer(actor, customer);
   return customer;
-}
-
-/** Collectors only see accounts belonging to their assigned customers. */
-async function scopeAccountsFilter(actor: AccessTokenPayload): Promise<Record<string, unknown>> {
-  if (actor.role !== 'collector') return {};
-  const ids = await CustomerModel.find(customerScopeFilter(actor)).select('_id');
-  return { customerId: { $in: ids.map((c) => c._id) } };
 }
 
 // ---------------------------------------------------------------- accounts
@@ -166,15 +154,11 @@ export interface AccountList {
 }
 
 export async function listAccounts(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<AccountList> {
-  const filter: Record<string, unknown> = await scopeAccountsFilter(actor);
-  if (query.customerId) {
-    // Explicit customer filter must still respect collector scope.
-    if (actor.role === 'collector') await loadScopedCustomer(actor, query.customerId);
-    filter.customerId = query.customerId;
-  }
+  const filter: Record<string, unknown> = {};
+  if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
@@ -189,23 +173,21 @@ export async function listAccounts(
 }
 
 export async function getAccount(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSusuAccount> {
   const account = await SusuAccountModel.findById(id);
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  await loadScopedCustomer(actor, account.customerId);
   return toPublicAccount(account);
 }
 
 export async function listAccountDeposits(
-  actor: AccessTokenPayload,
+  _actor: AccessTokenPayload,
   accountId: Types.ObjectId,
   query: ListDepositsQuery,
 ): Promise<{ items: PublicDeposit[]; page: number; limit: number; total: number }> {
   const account = await SusuAccountModel.findById(accountId);
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  await loadScopedCustomer(actor, account.customerId);
 
   const [deposits, total] = await Promise.all([
     SusuDepositModel.find({ accountId })
@@ -248,7 +230,7 @@ export async function recordDeposit(
 
   const accountPre = await SusuAccountModel.findById(accountId);
   if (!accountPre) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  const customer = await loadScopedCustomer(actor, accountPre.customerId);
+  const customer = await loadCustomer(accountPre.customerId);
 
   const session = await mongoose.startSession();
   let deposit!: SusuDeposit;
@@ -382,7 +364,7 @@ export async function collectAll(
   channel: Channel,
   requestId?: string,
 ): Promise<CollectAllResult> {
-  const customer = await loadScopedCustomer(actor, customerId);
+  const customer = await loadCustomer(customerId);
 
   // Replay: per-account keys are derived as `${key}#${n}` — any hit means done.
   const prior = await SusuDepositModel.find({
