@@ -58,9 +58,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Open a susu account (office only)',
       description:
-        'One account = one cycle of 31 deposits at a fixed daily amount. The daily ' +
-        'amount is immutable — changing it means closing and opening a new account. ' +
-        'A customer may hold multiple concurrent accounts.',
+        'One account = one cycle of 31 deposits at a fixed daily amount (min GHS 5). ' +
+        'The daily amount is immutable — changing it means closing and opening a new ' +
+        'account. A customer may hold multiple concurrent accounts.',
       security,
       requestBody: jsonBody(openAccountBody),
       responses: {

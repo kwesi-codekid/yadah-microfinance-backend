@@ -6,12 +6,12 @@ import {
   pagination,
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
-import { SUSU_CYCLE_DEPOSITS } from '../../domain/susu.js';
+import { SUSU_CYCLE_DEPOSITS, SUSU_MIN_DAILY_AMOUNT } from '../../domain/susu.js';
 
 export const openAccountBody = z.object({
   customerId: objectId,
   /** Fixed daily amount in pesewas — immutable for the life of the cycle. */
-  dailyAmount: positiveMoneyPesewas,
+  dailyAmount: positiveMoneyPesewas.min(SUSU_MIN_DAILY_AMOUNT, 'Minimum daily amount is GHS 5'),
 });
 export type OpenAccountBody = z.infer<typeof openAccountBody>;
 

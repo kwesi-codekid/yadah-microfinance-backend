@@ -5,6 +5,8 @@
  */
 
 export const SUSU_CYCLE_DEPOSITS = 31;
+/** Minimum fixed daily amount when opening an account — GHS 5. */
+export const SUSU_MIN_DAILY_AMOUNT = 500;
 
 function assertMoneyInt(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 0) {

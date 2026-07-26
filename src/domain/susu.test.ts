@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { formatGhs } from '../lib/money.js';
 import {
   SUSU_CYCLE_DEPOSITS,
+  SUSU_MIN_DAILY_AMOUNT,
   computeClosure,
   computeDepositAmount,
   remainingDeposits,
 } from './susu.js';
+
+describe('SUSU_MIN_DAILY_AMOUNT', () => {
+  it('is GHS 5 in pesewas', () => {
+    expect(SUSU_MIN_DAILY_AMOUNT).toBe(500);
+  });
+});
 
 describe('computeDepositAmount', () => {
   it('multiplies daily amount by days covered', () => {
