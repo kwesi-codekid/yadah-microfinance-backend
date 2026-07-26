@@ -1,5 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
+import { generateAccountNumber, SAVINGS_ACCOUNT_DIGITS } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
@@ -28,6 +29,7 @@ import type { ListAccountsQuery, ListTxnsQuery } from './savings.schemas.js';
 
 export interface PublicSavingsAccount {
   id: string;
+  accountNumber: string;
   customerId: string;
   balance: number;
   /** balance − 50 − 10, never negative (rule 4 — always exposed). */
@@ -40,6 +42,7 @@ export interface PublicSavingsAccount {
 export function toPublicSavingsAccount(a: SavingsAccount): PublicSavingsAccount {
   return {
     id: a._id.toHexString(),
+    accountNumber: a.accountNumber,
     customerId: a.customerId.toHexString(),
     balance: a.balance,
     availableToWithdraw: a.status === 'active' ? availableToWithdraw(a.balance) : 0,
@@ -126,16 +129,27 @@ export async function openAccount(
   let initialTxn: SavingsTxn | undefined;
   try {
     await session.withTransaction(async () => {
-      const [created] = await SavingsAccountModel.create(
-        [
-          {
-            customerId,
-            balance: initialDeposit ?? 0,
-            openedById: new Types.ObjectId(actor.sub),
-          },
-        ],
-        { session },
-      );
+      let created;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          [created] = await SavingsAccountModel.create(
+            [
+              {
+                accountNumber: generateAccountNumber(SAVINGS_ACCOUNT_DIGITS),
+                customerId,
+                balance: initialDeposit ?? 0,
+                openedById: new Types.ObjectId(actor.sub),
+              },
+            ],
+            { session },
+          );
+          break;
+        } catch (err) {
+          // Rare random collision on the unique account number — regenerate.
+          if (err instanceof MongoServerError && err.code === 11000 && attempt < 5) continue;
+          throw err;
+        }
+      }
       account = created as SavingsAccount;
 
       await audit(
@@ -200,6 +214,7 @@ export async function listAccounts(
     filter.customerId = query.customerId;
   }
   if (query.status) filter.status = query.status;
+  if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
   const [accounts, total] = await Promise.all([
     SavingsAccountModel.find(filter)
@@ -451,8 +466,8 @@ export async function withdraw(
       to: customer.phone,
       template: 'savings-withdrawal',
       message:
-        `Yadah: withdrawal of ${formatGhs(txn.amount)} processed (fee ${formatGhs(txn.fee ?? 0)}). ` +
-        `New balance: ${formatGhs(after.balance)}.`,
+        `Yadah: withdrawal of ${formatGhs(txn.amount)} processed on acct ${after.accountNumber} ` +
+        `(fee ${formatGhs(txn.fee ?? 0)}). New balance: ${formatGhs(after.balance)}.`,
       relatedEntityType: 'savings-txn',
       relatedEntityId: txn._id,
     });
@@ -576,7 +591,7 @@ export async function closeAccount(
       to: customer.phone,
       template: 'savings-closure',
       message:
-        `Yadah: your savings account has been closed. Payout: ${formatGhs(result.payout)} ` +
+        `Yadah: savings acct ${pre.accountNumber} has been closed. Payout: ${formatGhs(result.payout)} ` +
         `(fee ${formatGhs(result.fee)}). Please collect at the office.`,
       relatedEntityType: 'savings-account',
       relatedEntityId: accountId,

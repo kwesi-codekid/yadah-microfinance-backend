@@ -51,9 +51,10 @@ export interface Customer {
   purposeOfAccount?: string;
   // Next of kin
   nextOfKin?: NextOfKin;
-  // Attachments
+  // Attachments (URLs from the uploads endpoint)
   photoUrl?: string;
-  idDocumentUrl?: string;
+  idDocumentFrontUrl?: string;
+  idDocumentBackUrl?: string;
   // Administration
   registeredById: Types.ObjectId;
   assignedCollectorId?: Types.ObjectId;
@@ -107,7 +108,8 @@ const customerSchema = new Schema<Customer>(
     nextOfKin: { type: nextOfKinSchema },
 
     photoUrl: { type: String },
-    idDocumentUrl: { type: String },
+    idDocumentFrontUrl: { type: String },
+    idDocumentBackUrl: { type: String },
 
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     assignedCollectorId: { type: Schema.Types.ObjectId, ref: 'User' },

@@ -8,6 +8,7 @@ import { usersRouter } from './modules/users/users.routes.js';
 import { customersRouter } from './modules/customers/customers.routes.js';
 import { susuRouter } from './modules/susu/susu.routes.js';
 import { savingsRouter } from './modules/savings/savings.routes.js';
+import { uploadsRouter } from './modules/uploads/uploads.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -30,6 +31,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/customers', customersRouter);
   app.use('/api/v1/susu', susuRouter);
   app.use('/api/v1/savings', savingsRouter);
+  app.use('/api/v1/uploads', uploadsRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);

@@ -9,6 +9,8 @@ import { moneyField } from './shared.js';
  */
 export interface SavingsAccount {
   _id: Types.ObjectId;
+  /** 10-digit randomized account number, unique across savings accounts. */
+  accountNumber: string;
   customerId: Types.ObjectId;
   balance: number; // pesewas
   status: 'active' | 'closed';
@@ -21,6 +23,7 @@ export interface SavingsAccount {
 
 const savingsAccountSchema = new Schema<SavingsAccount>(
   {
+    accountNumber: { type: String, required: true, unique: true, match: /^\d{10}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     balance: { ...moneyField, default: 0 },
     status: { type: String, enum: ['active', 'closed'], default: 'active' },

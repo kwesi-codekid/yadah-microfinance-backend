@@ -13,6 +13,7 @@ import {
 const susuAccount = z
   .object({
     id: z.string(),
+    accountNumber: z.string().describe('6-digit randomized, unique'),
     customerId: z.string(),
     dailyAmount: z.number().int().describe('Pesewas. Immutable for the life of the cycle.'),
     depositsCount: z.number().int(),

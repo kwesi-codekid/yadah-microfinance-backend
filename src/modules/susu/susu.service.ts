@@ -1,4 +1,6 @@
 import mongoose, { Types } from 'mongoose';
+import { MongoServerError } from 'mongodb';
+import { generateAccountNumber, SUSU_ACCOUNT_DIGITS } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
@@ -28,6 +30,7 @@ import type { ListAccountsQuery, ListDepositsQuery, SummaryQuery } from './susu.
 
 export interface PublicSusuAccount {
   id: string;
+  accountNumber: string;
   customerId: string;
   dailyAmount: number;
   depositsCount: number;
@@ -43,6 +46,7 @@ export interface PublicSusuAccount {
 export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
   return {
     id: a._id.toHexString(),
+    accountNumber: a.accountNumber,
     customerId: a.customerId.toHexString(),
     dailyAmount: a.dailyAmount,
     depositsCount: a.depositsCount,
@@ -119,11 +123,22 @@ export async function openAccount(
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
   }
 
-  const account = await SusuAccountModel.create({
-    customerId,
-    dailyAmount,
-    openedById: new Types.ObjectId(actor.sub),
-  });
+  let account;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      account = await SusuAccountModel.create({
+        accountNumber: generateAccountNumber(SUSU_ACCOUNT_DIGITS),
+        customerId,
+        dailyAmount,
+        openedById: new Types.ObjectId(actor.sub),
+      });
+      break;
+    } catch (err) {
+      // Rare random collision on the unique account number — regenerate.
+      if (err instanceof MongoServerError && err.code === 11000 && attempt < 5) continue;
+      throw err;
+    }
+  }
 
   await audit({
     actorId: actor.sub,
@@ -135,6 +150,7 @@ export async function openAccount(
   });
   emitAdminEvent('susu.account.opened', {
     id: account._id.toHexString(),
+    accountNumber: account.accountNumber,
     customerId: customerId.toHexString(),
     customerName: customer.fullName,
     dailyAmount,
@@ -160,6 +176,7 @@ export async function listAccounts(
     filter.customerId = query.customerId;
   }
   if (query.status) filter.status = query.status;
+  if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
   const [accounts, total] = await Promise.all([
     SusuAccountModel.find(filter)
@@ -321,7 +338,7 @@ export async function recordDeposit(
     to: customer.phone,
     template: 'susu-deposit-receipt',
     message:
-      `Yadah: ${formatGhs(deposit.amount)} received on your susu. ` +
+      `Yadah: ${formatGhs(deposit.amount)} received on susu acct ${accountAfter.accountNumber}. ` +
       `Progress: ${String(deposit.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)}. ` +
       `Total saved: ${formatGhs(accountAfter.totalDeposited)}.`,
     relatedEntityType: 'susu-deposit',
@@ -472,8 +489,13 @@ export async function collectAll(
 
   const accounts = await SusuAccountModel.find({ _id: { $in: active.map((a) => a._id) } });
 
+  const numberById = new Map(active.map((a) => [a._id.toHexString(), a.accountNumber]));
   const lines = created
-    .map((d) => `${formatGhs(d.amount)} (${String(d.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)})`)
+    .map(
+      (d) =>
+        `${numberById.get(d.accountId.toHexString()) ?? '??'}: ${formatGhs(d.amount)} ` +
+        `(${String(d.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)})`,
+    )
     .join(', ');
   await enqueueSms({
     to: customer.phone,
@@ -582,7 +604,7 @@ export async function closeAccount(
       to: customer.phone,
       template: 'susu-withdrawal',
       message:
-        `Yadah: your susu account has been closed. Payout: ${formatGhs(result.payout)} ` +
+        `Yadah: susu acct ${pre.accountNumber} has been closed. Payout: ${formatGhs(result.payout)} ` +
         `(commission ${formatGhs(result.commission)}). Please collect at the office.`,
       relatedEntityType: 'susu-account',
       relatedEntityId: accountId,

@@ -8,6 +8,8 @@ import { moneyField, optionalMoneyField } from './shared.js';
  */
 export interface SusuAccount {
   _id: Types.ObjectId;
+  /** 6-digit randomized account number, unique across susu accounts. */
+  accountNumber: string;
   customerId: Types.ObjectId;
   dailyAmount: number; // pesewas, immutable
   depositsCount: number; // 0..31, denormalized from susu-deposits
@@ -25,6 +27,7 @@ export interface SusuAccount {
 
 const susuAccountSchema = new Schema<SusuAccount>(
   {
+    accountNumber: { type: String, required: true, unique: true, match: /^\d{6}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     dailyAmount: { ...moneyField, immutable: true },
     depositsCount: { type: Number, default: 0, min: 0, max: 31 },

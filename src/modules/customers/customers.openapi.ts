@@ -38,8 +38,15 @@ const publicCustomer = z
         address: z.string().optional(),
       })
       .optional(),
-    photoUrl: z.string().optional(),
-    idDocumentUrl: z.string().optional(),
+    photoUrl: z.string().optional().describe('From POST /uploads/images'),
+    idDocumentFrontUrl: z
+      .string()
+      .optional()
+      .describe('ID front — from POST /uploads/images?kind=document'),
+    idDocumentBackUrl: z
+      .string()
+      .optional()
+      .describe('ID back — from POST /uploads/images?kind=document'),
     registeredById: z.string(),
     assignedCollectorId: z.string().optional(),
     status: z.enum(['active', 'inactive']),
@@ -108,56 +115,6 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
         '422': errorResponse('INVALID_COLLECTOR'),
-      },
-    },
-  },
-  '/customers/{id}/photo': {
-    post: {
-      tags: ['Customers'],
-      summary: 'Upload or replace the customer photo',
-      description:
-        'Office roles or the assigned collector. Multipart form with a `photo` file field ' +
-        '(JPEG/PNG/WebP, max 5 MB). Replaces any existing photo; stored on Cloudinary, ' +
-        'capped at 800×800.',
-      security,
-      requestParams: { path: idParam },
-      requestBody: {
-        content: {
-          'multipart/form-data': {
-            schema: z.object({ photo: z.string().meta({ format: 'binary' }) }),
-          },
-        },
-      },
-      responses: {
-        '200': jsonResponse('Customer with new photoUrl', customerResult),
-        '403': errorResponse('FORBIDDEN — not the assigned collector'),
-        '404': errorResponse('NOT_FOUND'),
-        '413': errorResponse('FILE_TOO_LARGE'),
-        '415': errorResponse('UNSUPPORTED_FILE_TYPE'),
-      },
-    },
-  },
-  '/customers/{id}/id-document': {
-    post: {
-      tags: ['Customers'],
-      summary: 'Upload or replace the ID document scan (office only)',
-      description:
-        'Multipart form with a `photo` file field (JPEG/PNG/WebP, max 5 MB). ' +
-        'Stored at higher resolution (1600px) for legibility.',
-      security,
-      requestParams: { path: idParam },
-      requestBody: {
-        content: {
-          'multipart/form-data': {
-            schema: z.object({ photo: z.string().meta({ format: 'binary' }) }),
-          },
-        },
-      },
-      responses: {
-        '200': jsonResponse('Customer with new idDocumentUrl', customerResult),
-        '404': errorResponse('NOT_FOUND'),
-        '413': errorResponse('FILE_TOO_LARGE'),
-        '415': errorResponse('UNSUPPORTED_FILE_TYPE'),
       },
     },
   },

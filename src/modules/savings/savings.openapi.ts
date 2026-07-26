@@ -12,6 +12,7 @@ import {
 const savingsAccount = z
   .object({
     id: z.string(),
+    accountNumber: z.string().describe('10-digit randomized, unique'),
     customerId: z.string(),
     balance: z.number().int().describe('Pesewas'),
     availableToWithdraw: z

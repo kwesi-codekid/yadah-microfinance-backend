@@ -28,6 +28,11 @@ export const identification = z
     }
   });
 
+/** Only URLs minted by our own uploads endpoint are accepted. */
+export const uploadedImageUrl = z
+  .url()
+  .refine((v) => v.startsWith('https://res.cloudinary.com/'), 'Not an uploaded image URL');
+
 export const nextOfKin = z.object({
   fullName: z.string().min(2).max(120).trim(),
   relationship: z.string().min(2).max(60).trim().optional(),
@@ -58,6 +63,10 @@ const profileFields = {
   purposeOfAccount: z.string().min(2).max(200).trim().optional(),
   // Next of kin
   nextOfKin: nextOfKin.optional(),
+  // Attachments — URLs returned by POST /uploads/images
+  photoUrl: uploadedImageUrl.optional(),
+  idDocumentFrontUrl: uploadedImageUrl.optional(),
+  idDocumentBackUrl: uploadedImageUrl.optional(),
   // Administration
   assignedCollectorId: objectId.optional(),
 };

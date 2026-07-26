@@ -25,6 +25,10 @@ export type OpenAccountBody = z.infer<typeof openAccountBody>;
 export const listAccountsQuery = pagination.extend({
   customerId: objectId.optional(),
   status: z.enum(['active', 'closed']).optional(),
+  accountNumber: z
+    .string()
+    .regex(/^\d{10}$/)
+    .optional(),
 });
 export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 

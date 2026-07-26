@@ -2,7 +2,6 @@ import { MongoServerError } from 'mongodb';
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
-import { uploadCustomerImage } from '../../lib/photos.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { assertCanActOnCustomer, customerScopeFilter } from '../../middleware/rbac.js';
 import {
@@ -36,6 +35,9 @@ const SCALAR_FIELDS = [
   'occupation',
   'employerOrBusiness',
   'purposeOfAccount',
+  'photoUrl',
+  'idDocumentFrontUrl',
+  'idDocumentBackUrl',
 ] as const;
 /** Embedded objects replaced wholesale when present in a patch. */
 const SUBDOC_FIELDS = ['identification', 'nextOfKin'] as const;
@@ -60,7 +62,8 @@ export interface PublicCustomer {
   purposeOfAccount?: string;
   nextOfKin?: NextOfKin;
   photoUrl?: string;
-  idDocumentUrl?: string;
+  idDocumentFrontUrl?: string;
+  idDocumentBackUrl?: string;
   registeredById: string;
   assignedCollectorId?: string;
   status: 'active' | 'inactive';
@@ -84,8 +87,6 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
   }
   if (c.identification) out.identification = c.identification;
   if (c.nextOfKin) out.nextOfKin = c.nextOfKin;
-  if (c.photoUrl !== undefined) out.photoUrl = c.photoUrl;
-  if (c.idDocumentUrl !== undefined) out.idDocumentUrl = c.idDocumentUrl;
   if (c.assignedCollectorId) out.assignedCollectorId = c.assignedCollectorId.toHexString();
   return out;
 }
@@ -258,53 +259,6 @@ export async function updateCustomer(
     }
   }
   return toPublicCustomer(customer);
-}
-
-async function setCustomerImage(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  imageBuffer: Buffer,
-  kind: 'photo' | 'id-document',
-  requestId?: string,
-): Promise<PublicCustomer> {
-  const customer = await CustomerModel.findById(id);
-  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-  assertCanActOnCustomer(actor, customer);
-
-  const field = kind === 'photo' ? 'photoUrl' : 'idDocumentUrl';
-  const url = await uploadCustomerImage(customer._id.toHexString(), imageBuffer, kind);
-  const before = { [field]: customer[field] ?? null };
-  customer[field] = url;
-  await customer.save();
-
-  await audit({
-    actorId: actor.sub,
-    action: kind === 'photo' ? 'customer.photo' : 'customer.id-document',
-    entityType: 'customer',
-    entityId: customer._id,
-    before,
-    after: { [field]: url },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
-  return toPublicCustomer(customer);
-}
-
-export async function setCustomerPhoto(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  imageBuffer: Buffer,
-  requestId?: string,
-): Promise<PublicCustomer> {
-  return setCustomerImage(actor, id, imageBuffer, 'photo', requestId);
-}
-
-export async function setCustomerIdDocument(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  imageBuffer: Buffer,
-  requestId?: string,
-): Promise<PublicCustomer> {
-  return setCustomerImage(actor, id, imageBuffer, 'id-document', requestId);
 }
 
 export async function setCustomerStatus(
