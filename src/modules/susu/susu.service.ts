@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { generateAccountNumber, SUSU_ACCOUNT_DIGITS } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -31,6 +32,8 @@ export interface PublicSusuAccount {
   id: string;
   accountNumber: string;
   customerId: string;
+  /** Present on list responses for display; joined from the customer. */
+  customerName?: string;
   dailyAmount: number;
   depositsCount: number;
   cycleTarget: number;
@@ -162,6 +165,16 @@ export async function listAccounts(
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
+  // Fuzzy: match by customer (typo-tolerant name/phone) or account number prefix.
+  if (query.search !== undefined) {
+    const customerIds = await fuzzyCustomerIds(query.search);
+    const or: Record<string, unknown>[] = [{ customerId: { $in: customerIds } }];
+    if (/^\d{2,6}$/.test(query.search)) {
+      or.push({ accountNumber: { $regex: `^${query.search}` } });
+    }
+    filter.$or = or;
+  }
+
   const [accounts, total] = await Promise.all([
     SusuAccountModel.find(filter)
       .sort({ createdAt: -1 })
@@ -169,7 +182,20 @@ export async function listAccounts(
       .limit(query.limit),
     SusuAccountModel.countDocuments(filter),
   ]);
-  return { items: accounts.map(toPublicAccount), page: query.page, limit: query.limit, total };
+
+  const names = await customerNamesById(accounts.map((a) => a.customerId));
+  const items = accounts.map((a) => ({
+    ...toPublicAccount(a),
+    customerName: names.get(a.customerId.toHexString()) ?? '',
+  }));
+  return { items, page: query.page, limit: query.limit, total };
+}
+
+/** One page-sized join for display names. */
+async function customerNamesById(ids: Types.ObjectId[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.map((id) => id.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
+  return new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
 }
 
 export async function getAccount(

@@ -79,7 +79,9 @@ export const customerPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Customers'],
       summary: 'List customers',
-      description: 'All roles see all customers.',
+      description:
+        'All roles see all customers. `search` is fuzzy (typo-tolerant name, ' +
+        'phone) and returns results in relevance order.',
       security,
       requestParams: { query: listCustomersQuery },
       responses: {

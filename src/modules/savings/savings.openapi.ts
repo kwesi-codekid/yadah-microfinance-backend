@@ -14,6 +14,7 @@ const savingsAccount = z
     id: z.string(),
     accountNumber: z.string().describe('10-digit randomized, unique'),
     customerId: z.string(),
+    customerName: z.string().optional().describe('On list responses, for display'),
     balance: z.number().int().describe('Pesewas'),
     availableToWithdraw: z
       .number()
@@ -65,7 +66,9 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Savings'],
       summary: 'List accounts',
-      description: 'All roles see all accounts.',
+      description:
+        'All roles see all accounts. `search` is fuzzy: typo-tolerant customer ' +
+        'name, phone, or account-number prefix.',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {

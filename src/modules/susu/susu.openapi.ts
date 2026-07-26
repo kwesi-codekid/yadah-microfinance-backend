@@ -15,6 +15,7 @@ const susuAccount = z
     id: z.string(),
     accountNumber: z.string().describe('6-digit randomized, unique'),
     customerId: z.string(),
+    customerName: z.string().optional().describe('On list responses, for display'),
     dailyAmount: z.number().int().describe('Pesewas. Immutable for the life of the cycle.'),
     depositsCount: z.number().int(),
     cycleTarget: z.literal(31),
@@ -72,7 +73,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Susu'],
       summary: 'List accounts',
-      description: 'All roles see all accounts.',
+      description:
+        'All roles see all accounts. `search` is fuzzy: typo-tolerant customer ' +
+        'name, phone, or account-number prefix.',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {

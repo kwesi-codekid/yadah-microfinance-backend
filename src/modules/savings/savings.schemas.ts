@@ -29,6 +29,8 @@ export const listAccountsQuery = pagination.extend({
     .string()
     .regex(/^\d{10}$/)
     .optional(),
+  /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
+  search: z.string().min(1).max(100).optional(),
 });
 export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 

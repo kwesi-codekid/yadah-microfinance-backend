@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
+import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import {
   CustomerModel,
   type Customer,
@@ -141,12 +142,23 @@ export async function listCustomers(
 ): Promise<CustomerList> {
   const filter: Record<string, unknown> = {};
   if (query.status) filter.status = query.status;
+
+  // Fuzzy search: results come back in relevance order, not createdAt.
   if (query.search !== undefined) {
-    const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    filter.$or = [
-      { fullName: { $regex: escaped, $options: 'i' } },
-      { phone: { $regex: escaped, $options: 'i' } },
-    ];
+    const rankedIds = await fuzzyCustomerIds(query.search);
+    filter._id = { $in: rankedIds };
+    const matches = await CustomerModel.find(filter);
+    const rank = new Map(rankedIds.map((id, i) => [id.toHexString(), i]));
+    matches.sort(
+      (a, b) => (rank.get(a._id.toHexString()) ?? 0) - (rank.get(b._id.toHexString()) ?? 0),
+    );
+    const start = (query.page - 1) * query.limit;
+    return {
+      items: matches.slice(start, start + query.limit).map(toPublicCustomer),
+      page: query.page,
+      limit: query.limit,
+      total: matches.length,
+    };
   }
 
   const [customers, total] = await Promise.all([

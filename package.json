@@ -21,6 +21,7 @@
     "cloudinary": "^2.10.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "fuse.js": "^7.5.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.8.0",
     "multer": "^2.2.0",

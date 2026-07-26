@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { generateAccountNumber, SAVINGS_ACCOUNT_DIGITS } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -30,6 +31,8 @@ export interface PublicSavingsAccount {
   id: string;
   accountNumber: string;
   customerId: string;
+  /** Present on list responses for display; joined from the customer. */
+  customerName?: string;
   balance: number;
   /** balance − 50 − 10, never negative (rule 4 — always exposed). */
   availableToWithdraw: number;
@@ -204,6 +207,16 @@ export async function listAccounts(
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
 
+  // Fuzzy: match by customer (typo-tolerant name/phone) or account number prefix.
+  if (query.search !== undefined) {
+    const customerIds = await fuzzyCustomerIds(query.search);
+    const or: Record<string, unknown>[] = [{ customerId: { $in: customerIds } }];
+    if (/^\d{2,10}$/.test(query.search)) {
+      or.push({ accountNumber: { $regex: `^${query.search}` } });
+    }
+    filter.$or = or;
+  }
+
   const [accounts, total] = await Promise.all([
     SavingsAccountModel.find(filter)
       .sort({ createdAt: -1 })
@@ -211,8 +224,15 @@ export async function listAccounts(
       .limit(query.limit),
     SavingsAccountModel.countDocuments(filter),
   ]);
+
+  const unique = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   return {
-    items: accounts.map(toPublicSavingsAccount),
+    items: accounts.map((a) => ({
+      ...toPublicSavingsAccount(a),
+      customerName: names.get(a.customerId.toHexString()) ?? '',
+    })),
     page: query.page,
     limit: query.limit,
     total,
