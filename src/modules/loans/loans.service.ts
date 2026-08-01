@@ -226,6 +226,20 @@ export async function applyForLoan(
   if (open) {
     throw new AppError('LOAN_EXISTS', 'Customer already has a pending or active loan', 409);
   }
+  // Loans and hire purchase block each other (HP guide, client-confirmed).
+  const { HpAgreementModel } = await import('../../models/index.js');
+  const { OPEN_HP_STATUSES } = await import('../hire-purchase/hp.service.js');
+  const openHp = await HpAgreementModel.exists({
+    customerId,
+    status: { $in: OPEN_HP_STATUSES },
+  });
+  if (openHp) {
+    throw new AppError(
+      'HP_EXISTS',
+      'Customer has an open hire purchase agreement — loans and HP block each other',
+      409,
+    );
+  }
 
   const config = await getLoanConfig();
   const tier = tierFor(principal, config.tiers);

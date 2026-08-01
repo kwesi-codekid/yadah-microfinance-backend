@@ -186,7 +186,7 @@ async function seed(): Promise<void> {
     await SusuAccountModel.updateOne(
       { _id: account!._id },
       { $set: { createdAt: openedAt } },
-      { timestamps: false },
+      { timestamps: false, overwriteImmutable: true },
     );
     // History: mostly single days, one catch-up in the middle.
     let seq = 0;
@@ -209,7 +209,7 @@ async function seed(): Promise<void> {
       await SusuDepositModel.updateOne(
         { _id: created[0]!._id },
         { $set: { createdAt: daysAgo(day) } },
-        { timestamps: false },
+        { timestamps: false, overwriteImmutable: true },
       );
       seq += chunk;
       day -= chunk;
@@ -234,7 +234,7 @@ async function seed(): Promise<void> {
     await SavingsAccountModel.updateOne(
       { _id: account!._id },
       { $set: { createdAt: daysAgo(openedDaysAgo) } },
-      { timestamps: false },
+      { timestamps: false, overwriteImmutable: true },
     );
     // Two deposits and (for some) one withdrawal, balanceAfter chain consistent.
     const first = Math.floor(target.balance / 2);
@@ -271,7 +271,7 @@ async function seed(): Promise<void> {
       await SavingsTxnModel.updateOne(
         { _id: created[0]!._id },
         { $set: { createdAt: t.at } },
-        { timestamps: false },
+        { timestamps: false, overwriteImmutable: true },
       );
     }
   }
