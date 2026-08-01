@@ -39,7 +39,9 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/*.js'],
+    // Config files and integration tests sit outside the src tsconfig —
+    // lint them without type information.
+    files: ['**/*.js', 'tests/**/*.ts', 'vitest*.config.ts'],
     ...tseslint.configs.disableTypeChecked,
   },
   {
