@@ -6,6 +6,7 @@ import { susuPaths } from '../modules/susu/susu.openapi.js';
 import { savingsPaths } from '../modules/savings/savings.openapi.js';
 import { uploadPaths } from '../modules/uploads/uploads.openapi.js';
 import { loanPaths } from '../modules/loans/loans.openapi.js';
+import { reportPaths } from '../modules/reports/reports.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -44,6 +45,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
         description:
           'Small 1k–20k / big to 50k GHS · flat 10/20/30% by duration · escalation on original principal · office only',
       },
+      { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
     ],
     paths: {
       ...authPaths,
@@ -53,6 +55,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...savingsPaths,
       ...uploadPaths,
       ...loanPaths,
+      ...reportPaths,
     },
     components: {
       securitySchemes: {
