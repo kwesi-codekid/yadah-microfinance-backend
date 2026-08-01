@@ -29,6 +29,7 @@ export interface Loan {
   closedAt?: Date;
   /** Repaid on time → unlocks the big tier (graduation rule). */
   repaidOnTime?: boolean;
+  rejectionReason?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,6 +58,7 @@ const loanSchema = new Schema<Loan>(
     escalatedAt: { type: Date },
     closedAt: { type: Date },
     repaidOnTime: { type: Boolean },
+    rejectionReason: { type: String, trim: true },
   },
   { timestamps: true },
 );

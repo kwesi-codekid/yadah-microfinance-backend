@@ -10,6 +10,7 @@ export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
 export { SavingsAccountModel, type SavingsAccount } from './savings-account.model.js';
 export { SavingsTxnModel, type SavingsTxn } from './savings-txn.model.js';
 export { LoanModel, type Loan } from './loan.model.js';
+export { LoanConfigModel, type LoanConfig } from './loan-config.model.js';
 export { LoanScheduleModel, type LoanSchedule } from './loan-schedule.model.js';
 export { RepaymentModel, type Repayment } from './repayment.model.js';
 export { SmsLogModel, type SmsLog } from './sms-log.model.js';
