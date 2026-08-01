@@ -45,7 +45,7 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    files: ['**/*.test.ts', '**/*.spec.ts'],
+    files: ['**/*.test.ts', '**/*.spec.ts', 'src/scripts/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
