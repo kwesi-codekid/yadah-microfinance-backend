@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { computeDepositSplit, validatePricing } from './hire-purchase.js';
+import { computeDepositSplit, computeHpFinancing, validatePricing } from './hire-purchase.js';
+
+describe('computeHpFinancing — flat interest, once, on the financed half', () => {
+  it("client's example: 1,000 outstanding at 10% → owes 1,100", () => {
+    expect(computeHpFinancing(100_000, 10)).toEqual({
+      interestAmount: 10_000,
+      totalPayable: 110_000,
+    });
+  });
+  it('zero rate → totalPayable equals financed', () => {
+    expect(computeHpFinancing(100_000, 0)).toEqual({ interestAmount: 0, totalPayable: 100_000 });
+  });
+  it('rounds on odd amounts', () => {
+    expect(computeHpFinancing(100_005, 10).interestAmount).toBe(10_001); // 10000.5 → 10001
+  });
+  it('rejects floats and bad rates', () => {
+    expect(() => computeHpFinancing(100.5, 10)).toThrow();
+    expect(() => computeHpFinancing(100_000, 101)).toThrow();
+  });
+});
 
 describe('computeDepositSplit — 50% deposit, rounded up', () => {
   it('splits an even price exactly in half', () => {

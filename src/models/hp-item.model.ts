@@ -15,6 +15,8 @@ export interface HpItem {
   quantityInStock: number;
   costPrice: number; // pesewas — Yadah's private margin input
   sellingPrice: number; // pesewas — what the customer pays
+  /** Forfeited repossessions come back as 'used' at a new price. */
+  condition: 'new' | 'used';
   status: 'active' | 'discontinued';
   createdById: Types.ObjectId;
   createdAt: Date;
@@ -28,6 +30,7 @@ const hpItemSchema = new Schema<HpItem>(
     quantityInStock: { type: Number, required: true, min: 0 },
     costPrice: moneyField,
     sellingPrice: moneyField,
+    condition: { type: String, enum: ['new', 'used'], default: 'new' },
     status: { type: String, enum: ['active', 'discontinued'], default: 'active' },
     createdById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },

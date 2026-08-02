@@ -5,11 +5,12 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
-import { addMonthsClamped } from '../../domain/loans.js';
+import { addMonthsClamped, allocateRepayment, buildSchedule } from '../../domain/loans.js';
 import {
   HP_ELIGIBILITY_MIN_MONTHS,
   HP_REDEMPTION_WINDOW_MONTHS,
   computeDepositSplit,
+  computeHpFinancing,
   validatePricing,
 } from '../../domain/hire-purchase.js';
 import {
@@ -18,6 +19,7 @@ import {
   HpConfigModel,
   HpItemModel,
   HpPaymentModel,
+  HpScheduleModel,
   LoanModel,
   SavingsAccountModel,
   SavingsTxnModel,
@@ -50,6 +52,7 @@ export interface PublicHpItem {
   quantityInStock: number;
   costPrice: number;
   sellingPrice: number;
+  condition: 'new' | 'used';
   status: string;
 }
 
@@ -61,6 +64,7 @@ function toPublicItem(i: HpItem): PublicHpItem {
     quantityInStock: i.quantityInStock,
     costPrice: i.costPrice,
     sellingPrice: i.sellingPrice,
+    condition: i.condition,
     status: i.status,
   };
 }
@@ -192,7 +196,7 @@ export async function getHpConfig(): Promise<{
   const doc = await HpConfigModel.findOne().sort({ updatedAt: -1 });
   return {
     interestRatePercent: doc?.interestRatePercent ?? 0,
-    interestMethod: 'PENDING_CLIENT_DECISION', // flat vs declining balance — Stage B
+    interestMethod: 'flat-once', // client-confirmed 2026-08-02: flat, applied once to the financed half
   };
 }
 
@@ -285,6 +289,10 @@ export interface PublicHpAgreement {
   financedAmount: number;
   durationMonths: number;
   interestRatePercent: number;
+  interestAmount?: number;
+  totalPayable?: number;
+  /** totalPayable − (totalPaid − deposit); 0 until activation. */
+  remaining: number;
   totalPaid: number;
   status: string;
   itemReleasedAt?: Date;
@@ -295,6 +303,12 @@ export interface PublicHpAgreement {
   closedAt?: Date;
   rejectionReason?: string;
   createdAt: Date;
+}
+
+/** What the customer still owes on the financed portion (post-activation). */
+export function remainingOn(a: HpAgreement): number {
+  if (a.totalPayable === undefined) return 0;
+  return a.totalPayable - (a.totalPaid - a.depositRequired);
 }
 
 /** Customer-facing shape: cost price (Yadah's margin) is deliberately absent. */
@@ -313,6 +327,9 @@ function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
     financedAmount: a.financedAmount,
     durationMonths: a.durationMonths,
     interestRatePercent: a.interestRatePercent,
+    ...(a.interestAmount !== undefined ? { interestAmount: a.interestAmount } : {}),
+    ...(a.totalPayable !== undefined ? { totalPayable: a.totalPayable } : {}),
+    remaining: remainingOn(a),
     totalPaid: a.totalPaid,
     status: a.status,
     ...(a.itemReleasedAt !== undefined ? { itemReleasedAt: a.itemReleasedAt } : {}),
@@ -456,17 +473,39 @@ export async function recordDeposit(
   }
   const customer = await CustomerModel.findById(pre.customerId);
 
+  // Flat interest, once, on the financed half (client-confirmed) — the
+  // repayment plan is generated at activation.
+  const { interestAmount, totalPayable } = computeHpFinancing(
+    pre.financedAmount,
+    pre.interestRatePercent,
+  );
+  const now = new Date();
+  const schedule = buildSchedule(totalPayable, pre.durationMonths, now);
+
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
       const upd = await HpAgreementModel.updateOne(
         { _id: agreementId, status: 'pending' },
-        { $set: { status: 'active', itemReleasedAt: new Date() }, $inc: { totalPaid: amount } },
+        {
+          $set: { status: 'active', itemReleasedAt: now, interestAmount, totalPayable },
+          $inc: { totalPaid: amount },
+        },
         { session },
       );
       if (upd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Agreement changed concurrently — retry', 409);
       }
+      await HpScheduleModel.create(
+        schedule.map((line) => ({
+          agreementId,
+          customerId: pre.customerId,
+          installmentNumber: line.installmentNumber,
+          dueDate: line.dueDate,
+          amountDue: line.amountDue,
+        })),
+        { session, ordered: true },
+      );
       await HpPaymentModel.create(
         [
           {
@@ -489,7 +528,7 @@ export async function recordDeposit(
           entityId: agreementId,
           amountBefore: 0,
           amountAfter: amount,
-          after: { itemReleased: true },
+          after: { itemReleased: true, totalPayable, interestAmount },
           ...(requestId !== undefined ? { requestId } : {}),
         },
         session,
@@ -502,12 +541,14 @@ export async function recordDeposit(
   const after = await HpAgreementModel.findById(agreementId);
   if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (customer) {
+    const monthly = schedule[0]?.amountDue ?? 0;
     await enqueueSms({
       to: customer.phone,
       template: 'hp-deposit-receipt',
       message:
         `Yadah: deposit of ${formatGhs(amount)} received for ${after.itemSnapshot.name}. ` +
-        `Item released. Balance: ${formatGhs(after.financedAmount)} over ${String(after.durationMonths)} months.`,
+        `Item released. Balance: ${formatGhs(totalPayable)} over ${String(after.durationMonths)} months ` +
+        `(about ${formatGhs(monthly)}/month).`,
       relatedEntityType: 'hp-agreement',
       relatedEntityId: agreementId,
     });
@@ -568,9 +609,259 @@ export async function rejectAgreement(
   return toPublicAgreement(after);
 }
 
+// ---------------------------------------------------------------- payments (Stage B)
+
+/**
+ * Core payment writer — runs INSIDE the caller's transaction so transfers
+ * (susu/savings → HP) can reuse it. Applies to instalments oldest-first;
+ * settling the totalPayable transfers ownership. Redemption requires the
+ * FULL remaining balance while the window is open.
+ */
+export async function applyHpPaymentInTxn(
+  actor: AccessTokenPayload,
+  agreement: HpAgreement,
+  amount: number,
+  type: 'installment' | 'redemption',
+  channel: Channel,
+  idempotencyKey: string,
+  session: mongoose.ClientSession,
+  requestId?: string,
+): Promise<{ settled: boolean }> {
+  const remaining = remainingOn(agreement);
+  if (amount > remaining) {
+    throw new AppError(
+      'EXCEEDS_BALANCE',
+      `Amount exceeds the remaining balance (${formatGhs(remaining)})`,
+      422,
+      {
+        remaining,
+        amount,
+      },
+    );
+  }
+  const settled = amount === remaining;
+  const now = new Date();
+
+  const upd = await HpAgreementModel.updateOne(
+    { _id: agreement._id, status: agreement.status, totalPaid: agreement.totalPaid },
+    {
+      $inc: { totalPaid: amount },
+      ...(settled
+        ? {
+            $set: {
+              status: type === 'redemption' ? 'closed-redeemed' : 'closed-completed',
+              closedAt: now,
+            },
+          }
+        : {}),
+    },
+    { session },
+  );
+  if (upd.modifiedCount !== 1) {
+    throw new AppError('CONFLICT', 'Agreement was updated concurrently — retry', 409);
+  }
+
+  const schedule = await HpScheduleModel.find({ agreementId: agreement._id })
+    .sort({ installmentNumber: 1 })
+    .session(session);
+  const additions = allocateRepayment(
+    schedule.map((s) => ({ amountDue: s.amountDue, amountPaid: s.amountPaid })),
+    amount,
+  );
+  for (const [i, line] of schedule.entries()) {
+    const add = additions[i] ?? 0;
+    if (add === 0) continue;
+    const paid = line.amountPaid + add;
+    await HpScheduleModel.updateOne(
+      { _id: line._id },
+      { $set: { amountPaid: paid, status: paid >= line.amountDue ? 'paid' : 'partial' } },
+      { session },
+    );
+  }
+
+  await HpPaymentModel.create(
+    [
+      {
+        agreementId: agreement._id,
+        customerId: agreement.customerId,
+        type,
+        amount,
+        channel,
+        recordedById: new Types.ObjectId(actor.sub),
+        idempotencyKey,
+      },
+    ],
+    { session },
+  );
+  await audit(
+    {
+      actorId: actor.sub,
+      action: type === 'redemption' ? 'hp.redemption.record' : 'hp.payment.record',
+      entityType: 'hp-agreement',
+      entityId: agreement._id,
+      amountBefore: remaining,
+      amountAfter: remaining - amount,
+      after: { settled },
+      ...(requestId !== undefined ? { requestId } : {}),
+    },
+    session,
+  );
+  return { settled };
+}
+
+async function replayPayment(
+  idempotencyKey: string,
+): Promise<{ agreement: PublicHpAgreement; replayed: boolean } | null> {
+  const existing = await HpPaymentModel.findOne({ idempotencyKey });
+  if (!existing) return null;
+  const agreement = await HpAgreementModel.findById(existing.agreementId);
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  return { agreement: toPublicAgreement(agreement), replayed: true };
+}
+
+export async function payInstallment(
+  actor: AccessTokenPayload,
+  agreementId: Types.ObjectId,
+  amount: number,
+  idempotencyKey: string,
+  channel: Channel,
+  requestId?: string,
+): Promise<{ agreement: PublicHpAgreement; replayed: boolean }> {
+  const replayed = await replayPayment(idempotencyKey);
+  if (replayed) return replayed;
+
+  const agreement = await HpAgreementModel.findById(agreementId);
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (agreement.status !== 'active' && agreement.status !== 'in-arrears') {
+    throw new AppError(
+      'AGREEMENT_NOT_OPEN',
+      `Agreement is ${agreement.status} — payments not accepted`,
+      422,
+    );
+  }
+  const customer = await CustomerModel.findById(agreement.customerId);
+
+  const session = await mongoose.startSession();
+  const outcome = { settled: false };
+  try {
+    await session.withTransaction(async () => {
+      const result = await applyHpPaymentInTxn(
+        actor,
+        agreement,
+        amount,
+        'installment',
+        channel,
+        idempotencyKey,
+        session,
+        requestId,
+      );
+      outcome.settled = result.settled;
+      // A payment that clears every month-overdue instalment lifts arrears.
+      if (!result.settled && agreement.status === 'in-arrears') {
+        const stillOverdue = await HpScheduleModel.findOne({
+          agreementId,
+          status: { $ne: 'paid' },
+          dueDate: { $lt: addMonthsClamped(new Date(), -1) },
+        }).session(session);
+        if (!stillOverdue) {
+          await HpAgreementModel.updateOne(
+            { _id: agreementId, status: 'in-arrears' },
+            { $set: { status: 'active' }, $unset: { arrearsAt: '' } },
+            { session },
+          );
+        }
+      }
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await HpAgreementModel.findById(agreementId);
+  if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (customer) {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'hp-payment-receipt',
+      message: outcome.settled
+        ? `Yadah: ${formatGhs(amount)} received. ${after.itemSnapshot.name} is fully paid — the item is now yours!`
+        : `Yadah: ${formatGhs(amount)} received for ${after.itemSnapshot.name}. Balance: ${formatGhs(remainingOn(after))}.`,
+      relatedEntityType: 'hp-agreement',
+      relatedEntityId: agreementId,
+    });
+  }
+  emitAdminEvent(outcome.settled ? 'hp.completed' : 'hp.payment', {
+    id: agreementId.toHexString(),
+    customerId: after.customerId.toHexString(),
+    amount,
+    remaining: remainingOn(after),
+  });
+  return { agreement: toPublicAgreement(after), replayed: false };
+}
+
+export async function redeem(
+  actor: AccessTokenPayload,
+  agreementId: Types.ObjectId,
+  idempotencyKey: string,
+  channel: Channel,
+  requestId?: string,
+): Promise<{ agreement: PublicHpAgreement; amount: number; replayed: boolean }> {
+  const replayed = await replayPayment(idempotencyKey);
+  if (replayed) return { ...replayed, amount: 0 };
+
+  const agreement = await HpAgreementModel.findById(agreementId);
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (agreement.status !== 'repossessed') {
+    throw new AppError('INVALID_TRANSITION', `Cannot redeem a ${agreement.status} agreement`, 409);
+  }
+  if (!agreement.redemptionDeadline || Date.now() > agreement.redemptionDeadline.getTime()) {
+    throw new AppError(
+      'REDEMPTION_WINDOW_LAPSED',
+      'The 1-month redemption window has passed',
+      422,
+      {
+        redemptionDeadline: agreement.redemptionDeadline,
+      },
+    );
+  }
+  const amount = remainingOn(agreement); // redemption = FULL remaining balance
+  const customer = await CustomerModel.findById(agreement.customerId);
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await applyHpPaymentInTxn(
+        actor,
+        agreement,
+        amount,
+        'redemption',
+        channel,
+        idempotencyKey,
+        session,
+        requestId,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await HpAgreementModel.findById(agreementId);
+  if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (customer) {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'hp-redeemed',
+      message: `Yadah: ${formatGhs(amount)} received. ${after.itemSnapshot.name} is redeemed and now yours.`,
+      relatedEntityType: 'hp-agreement',
+      relatedEntityId: agreementId,
+    });
+  }
+  emitAdminEvent('hp.redeemed', { id: agreementId.toHexString(), amount });
+  return { agreement: toPublicAgreement(after), amount, replayed: false };
+}
+
 // ---------------------------------------------------------------- manual state transitions
-// Automation of the arrears trigger (installment ≥1 month overdue) arrives in
-// Stage B with schedules; the transitions themselves are office actions.
+// The arrears trigger is automated (instalment ≥1 month overdue — see
+// lib/hp-arrears.ts); the transitions also remain available as office actions.
 
 export async function markArrears(
   actor: AccessTokenPayload,
@@ -663,11 +954,19 @@ export async function repossess(
   return toPublicAgreement(agreement);
 }
 
+export interface ForfeitRestock {
+  name?: string | undefined;
+  description?: string | undefined;
+  costPrice: number;
+  sellingPrice: number;
+}
+
 export async function forfeit(
   actor: AccessTokenPayload,
   agreementId: Types.ObjectId,
+  restock?: ForfeitRestock,
   requestId?: string,
-): Promise<PublicHpAgreement> {
+): Promise<{ agreement: PublicHpAgreement; restockedItem?: PublicHpItem }> {
   const agreement = await HpAgreementModel.findById(agreementId);
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'repossessed') {
@@ -681,23 +980,67 @@ export async function forfeit(
       { redemptionDeadline: agreement.redemptionDeadline },
     );
   }
-  agreement.status = 'closed-forfeited';
-  agreement.closedAt = new Date();
-  await agreement.save();
-  await audit({
-    actorId: actor.sub,
-    action: 'hp.agreement.forfeit',
-    entityType: 'hp-agreement',
-    entityId: agreementId,
-    amountBefore: agreement.totalPaid,
-    amountAfter: agreement.totalPaid, // forfeited to Yadah for good (HP guide)
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
+  if (restock) validatePricing(restock.costPrice, restock.sellingPrice);
+
+  const session = await mongoose.startSession();
+  let restockedItem: PublicHpItem | undefined;
+  try {
+    await session.withTransaction(async () => {
+      const upd = await HpAgreementModel.updateOne(
+        { _id: agreementId, status: 'repossessed' },
+        { $set: { status: 'closed-forfeited', closedAt: new Date() } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) throw new AppError('CONFLICT', 'Agreement changed — retry', 409);
+
+      // Client-confirmed: forfeited items go back on the shelf as USED at a
+      // new office-set price.
+      if (restock) {
+        const [created] = await HpItemModel.create(
+          [
+            {
+              name: restock.name ?? `${agreement.itemSnapshot.name} (used)`,
+              ...(restock.description !== undefined ? { description: restock.description } : {}),
+              quantityInStock: 1,
+              costPrice: restock.costPrice,
+              sellingPrice: restock.sellingPrice,
+              condition: 'used',
+              createdById: new Types.ObjectId(actor.sub),
+            },
+          ],
+          { session },
+        );
+        restockedItem = toPublicItem(created as HpItem);
+      }
+
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'hp.agreement.forfeit',
+          entityType: 'hp-agreement',
+          entityId: agreementId,
+          amountBefore: agreement.totalPaid,
+          amountAfter: agreement.totalPaid, // forfeited to Yadah for good (HP guide)
+          after: { restocked: restock !== undefined },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await HpAgreementModel.findById(agreementId);
+  if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   emitAdminEvent('hp.forfeited', {
     id: agreementId.toHexString(),
-    item: agreement.itemSnapshot.name,
+    item: after.itemSnapshot.name,
   });
-  return toPublicAgreement(agreement);
+  return {
+    agreement: toPublicAgreement(after),
+    ...(restockedItem ? { restockedItem } : {}),
+  };
 }
 
 // ---------------------------------------------------------------- listing
@@ -734,13 +1077,30 @@ export async function listAgreements(
 
 export async function getAgreement(agreementId: Types.ObjectId): Promise<{
   agreement: PublicHpAgreement;
+  schedule: {
+    installmentNumber: number;
+    dueDate: Date;
+    amountDue: number;
+    amountPaid: number;
+    status: string;
+  }[];
   payments: { id: string; type: string; amount: number; recordedById: string; createdAt: Date }[];
 }> {
   const agreement = await HpAgreementModel.findById(agreementId);
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
-  const payments = await HpPaymentModel.find({ agreementId }).sort({ createdAt: -1 });
+  const [schedule, payments] = await Promise.all([
+    HpScheduleModel.find({ agreementId }).sort({ installmentNumber: 1 }),
+    HpPaymentModel.find({ agreementId }).sort({ createdAt: -1 }),
+  ]);
   return {
     agreement: toPublicAgreement(agreement),
+    schedule: schedule.map((s) => ({
+      installmentNumber: s.installmentNumber,
+      dueDate: s.dueDate,
+      amountDue: s.amountDue,
+      amountPaid: s.amountPaid,
+      status: s.status,
+    })),
     payments: payments.map((p: HpPayment) => ({
       id: p._id.toHexString(),
       type: p.type,

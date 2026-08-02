@@ -6,10 +6,13 @@ import {
   createAgreementBody,
   createItemBody,
   depositBody,
+  forfeitBody,
   listAgreementsQuery,
   listItemsQuery,
+  paymentBody,
   putConfigBody,
   reasonBody,
+  redeemBody,
   updateItemBody,
 } from './hp.schemas.js';
 
@@ -21,6 +24,7 @@ const hpItem = z
     quantityInStock: z.number().int(),
     costPrice: z.number().int().describe('What Yadah paid — office-only, never shown to customers'),
     sellingPrice: z.number().int().describe('What the customer pays'),
+    condition: z.enum(['new', 'used']).describe('Forfeited repossessions restock as used'),
     status: z.enum(['active', 'discontinued']),
   })
   .meta({ id: 'HpItem' });
@@ -38,7 +42,17 @@ const hpAgreement = z
     depositRequired: z.number().int().describe('Exactly 50% of the selling price'),
     financedAmount: z.number().int().describe('The remaining half — interest applies (Stage B)'),
     durationMonths: z.number().int(),
-    interestRatePercent: z.number().int().describe('Snapshotted at signing; METHOD pending client'),
+    interestRatePercent: z.number().int().describe('Snapshotted at signing; flat, applied once'),
+    interestAmount: z.number().int().optional().describe('Set at activation'),
+    totalPayable: z
+      .number()
+      .int()
+      .optional()
+      .describe('financed + interest — what remains after the deposit'),
+    remaining: z
+      .number()
+      .int()
+      .describe('totalPayable minus payments (deposit excluded); 0 before activation'),
     totalPaid: z.number().int(),
     status: z.enum([
       'pending',
@@ -234,6 +248,51 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/agreements/{id}/payments': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Record a monthly payment',
+      description:
+        'Interest is flat, applied once at activation (client-confirmed) — early ' +
+        'settlement pays the same total. Oldest instalment first; overpay refused ' +
+        'with the exact remaining. Settling transfers ownership. Clearing all ' +
+        'month-overdue instalments lifts an arrears flag automatically.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(paymentBody),
+      responses: {
+        '201': jsonResponse(
+          'Recorded',
+          z.object({ agreement: hpAgreement, replayed: z.boolean() }),
+        ),
+        '200': jsonResponse(
+          'Replay of an earlier request',
+          z.object({ agreement: hpAgreement, replayed: z.boolean() }),
+        ),
+        '422': errorResponse('EXCEEDS_BALANCE (details.remaining) or AGREEMENT_NOT_OPEN'),
+      },
+    },
+  },
+  '/hire-purchase/agreements/{id}/redeem': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Redeem a repossessed item (full remaining balance)',
+      description:
+        'Only while the 1-month redemption window is open. The amount is computed ' +
+        'server-side — the full remaining balance — and returned in the response.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(redeemBody),
+      responses: {
+        '201': jsonResponse(
+          'Redeemed — ownership transferred',
+          z.object({ agreement: hpAgreement, amount: z.number().int(), replayed: z.boolean() }),
+        ),
+        '409': errorResponse('INVALID_TRANSITION'),
+        '422': errorResponse('REDEMPTION_WINDOW_LAPSED'),
+      },
+    },
+  },
   '/hire-purchase/agreements/{id}/mark-arrears': {
     post: {
       tags: ['Hire Purchase'],
@@ -269,11 +328,17 @@ export const hpPaths: ZodOpenApiPathsObject = {
       tags: ['Hire Purchase'],
       summary: 'Close as forfeited after the redemption window lapses',
       description:
-        'Refused while the window is still open. Item and payments are forfeited to Yadah for good.',
+        'Refused while the window is still open. Item and payments are forfeited to ' +
+        'Yadah for good. Pass `restock` to put the item back in inventory as USED at ' +
+        'a new office-set price (client-confirmed flow).',
       security,
       requestParams: { path: idParam },
+      requestBody: jsonBody(forfeitBody),
       responses: {
-        '200': jsonResponse('Forfeited', agreementResult),
+        '200': jsonResponse(
+          'Forfeited',
+          z.object({ agreement: hpAgreement, restockedItem: hpItem.optional() }),
+        ),
         '409': errorResponse('INVALID_TRANSITION'),
         '422': errorResponse('REDEMPTION_WINDOW_OPEN (details.redemptionDeadline)'),
       },

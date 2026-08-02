@@ -36,3 +36,23 @@ export function validatePricing(costPrice: number, sellingPrice: number): void {
     throw new Error('sellingPrice must be at least costPrice');
   }
 }
+
+export interface HpFinancing {
+  interestAmount: number;
+  /** financedAmount + interest — what the customer pays after the deposit. */
+  totalPayable: number;
+}
+
+/**
+ * Client-confirmed (2026-08-02): interest is FLAT, applied ONCE to the
+ * financed half. GHS 1,000 outstanding at 10% → owes 1,100 total. Early
+ * settlement never reduces it.
+ */
+export function computeHpFinancing(financedAmount: number, ratePercent: number): HpFinancing {
+  assertMoneyInt(financedAmount, 'financedAmount');
+  if (!Number.isInteger(ratePercent) || ratePercent < 0 || ratePercent > 100) {
+    throw new Error(`ratePercent out of range: ${String(ratePercent)}`);
+  }
+  const interestAmount = Math.round((financedAmount * ratePercent) / 100);
+  return { interestAmount, totalPayable: financedAmount + interestAmount };
+}

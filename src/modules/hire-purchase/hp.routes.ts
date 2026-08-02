@@ -8,22 +8,28 @@ import {
   createItemBody,
   customerIdParams,
   depositBody,
+  forfeitBody,
   idParams,
   listAgreementsQuery,
   listItemsQuery,
+  paymentBody,
   putConfigBody,
   reasonBody,
+  redeemBody,
   updateItemBody,
   type AdjustStockBody,
   type CreateAgreementBody,
   type CreateItemBody,
   type CustomerIdParams,
   type DepositBody,
+  type ForfeitBody,
   type IdParams,
   type ListAgreementsQuery,
   type ListItemsQuery,
+  type PaymentBody,
   type PutConfigBody,
   type ReasonBody,
+  type RedeemBody,
   type UpdateItemBody,
 } from './hp.schemas.js';
 import * as hp from './hp.service.js';
@@ -150,6 +156,35 @@ hpRouter.post(
   },
 );
 
+hpRouter.post(
+  '/agreements/:id/payments',
+  validate({ params: idParams, body: paymentBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: PaymentBody }>(req);
+    hp.payInstallment(
+      getAuth(req),
+      params.id,
+      body.amount,
+      body.idempotencyKey,
+      body.channel,
+      req.id as string,
+    )
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+hpRouter.post(
+  '/agreements/:id/redeem',
+  validate({ params: idParams, body: redeemBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: RedeemBody }>(req);
+    hp.redeem(getAuth(req), params.id, body.idempotencyKey, body.channel, req.id as string)
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
 hpRouter.post('/agreements/:id/mark-arrears', validate({ params: idParams }), (req, res, next) => {
   const { params } = getValidated<{ params: IdParams }>(req);
   hp.markArrears(getAuth(req), params.id, req.id as string)
@@ -168,9 +203,13 @@ hpRouter.post(
   },
 );
 
-hpRouter.post('/agreements/:id/forfeit', validate({ params: idParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: IdParams }>(req);
-  hp.forfeit(getAuth(req), params.id, req.id as string)
-    .then((agreement) => res.json({ agreement }))
-    .catch(next);
-});
+hpRouter.post(
+  '/agreements/:id/forfeit',
+  validate({ params: idParams, body: forfeitBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: ForfeitBody }>(req);
+    hp.forfeit(getAuth(req), params.id, body.restock, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);

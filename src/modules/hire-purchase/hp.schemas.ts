@@ -90,6 +90,45 @@ export const reasonBody = z.object({
 });
 export type ReasonBody = z.infer<typeof reasonBody>;
 
+export const paymentBody = z.object({
+  amount: positiveMoneyPesewas.min(1),
+  idempotencyKey,
+  channel,
+});
+export type PaymentBody = z.infer<typeof paymentBody>;
+
+export const redeemBody = z.object({
+  /** Amount is computed server-side: the FULL remaining balance. */
+  idempotencyKey,
+  channel,
+});
+export type RedeemBody = z.infer<typeof redeemBody>;
+
+export const forfeitBody = z
+  .object({
+    /** Put the item back on the shelf as used, at a new office-set price. */
+    restock: z
+      .object({
+        name: z.string().min(2).max(120).trim().optional(),
+        description: z.string().min(2).max(500).trim().optional(),
+        costPrice: positiveMoneyPesewas,
+        sellingPrice: positiveMoneyPesewas,
+      })
+      .optional(),
+  })
+  .check((ctx) => {
+    const r = ctx.value.restock;
+    if (r && r.sellingPrice < r.costPrice) {
+      ctx.issues.push({
+        code: 'custom',
+        message: 'sellingPrice must be at least costPrice',
+        path: ['restock', 'sellingPrice'],
+        input: r.sellingPrice,
+      });
+    }
+  });
+export type ForfeitBody = z.infer<typeof forfeitBody>;
+
 export const listAgreementsQuery = pagination.extend({
   customerId: objectId.optional(),
   status: z

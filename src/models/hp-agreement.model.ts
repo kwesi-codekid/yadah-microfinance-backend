@@ -24,8 +24,12 @@ export interface HpAgreement {
   /** sellingPrice − depositRequired; interest applies on this (Stage B). */
   financedAmount: number;
   durationMonths: number;
-  /** Configured rate captured at signing; METHOD pending client answer. */
+  /** Configured rate captured at signing. Flat, applied once (client-confirmed). */
   interestRatePercent: number;
+  /** Set at activation: round(financedAmount × rate / 100). */
+  interestAmount?: number;
+  /** Set at activation: financedAmount + interestAmount. */
+  totalPayable?: number;
   totalPaid: number; // deposit + installments + redemption payments
   status:
     | 'pending'
@@ -69,6 +73,8 @@ const hpAgreementSchema = new Schema<HpAgreement>(
     financedAmount: moneyField,
     durationMonths: { type: Number, required: true, min: 1, max: 24 },
     interestRatePercent: { type: Number, required: true, min: 0, max: 100 },
+    interestAmount: { type: Number, min: 0 },
+    totalPayable: { type: Number, min: 0 },
     totalPaid: { ...moneyField, default: 0 },
     status: {
       type: String,
