@@ -35,26 +35,27 @@ describe('loan repayment via susu closure (WBS 7.2)', () => {
     expect(closed?.commissionAmount).toBe(2_000);
   });
 
-  it('refuses an excess payout and rolls the closure back completely', async () => {
+  it('excess payout settles the loan and leaves the rest pending withdrawal', async () => {
     const customerId = await makeCustomer(true);
     const loanId = await activeLoan(customerId);
-    // Pay down to a small remainder so any full cycle overshoots.
+    // Pay down to a small remainder so a full cycle overshoots.
     await loans.repayCash(officer, loanId, 100_000, randomUUID(), 'cash'); // remaining 10,000
 
     const account = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
     await susu.recordDeposit(officer, accountId, 31, randomUUID(), 'cash'); // payout 60,000 ≫ 10,000
 
-    await expect(
-      loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID()),
-    ).rejects.toMatchObject({ code: 'PAYOUT_EXCEEDS_BALANCE' });
+    const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
+    expect(result.susuClosure?.applied).toBe(10_000);
+    expect(result.susuClosure?.excess).toBe(50_000);
+    expect(result.loan.status).toBe('repaid');
 
-    // Rollback proof: account untouched, loan untouched.
+    // Client-confirmed: excess stays in the susu account pending withdrawal.
     const account2 = await SusuAccountModel.findById(accountId);
-    expect(account2?.status).toBe('completed');
-    expect(account2?.payoutAmount).toBeUndefined();
+    expect(account2?.status).toBe('pending-payout');
+    expect(account2?.payoutRemaining).toBe(50_000);
     const loan = await LoanModel.findById(loanId);
-    expect(loan?.totalRepaid).toBe(100_000);
+    expect(loan?.totalRepaid).toBe(110_000);
   });
 
   it('settling exactly via susu closure flips the loan to repaid', async () => {

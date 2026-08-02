@@ -43,6 +43,8 @@ export type RepayBody = z.infer<typeof repayBody>;
 export const susuRepayBody = z.object({
   susuAccountId: objectId,
   idempotencyKey,
+  /** Where any excess payout goes (client-confirmed options). */
+  excessTo: z.enum(['pending-withdrawal', 'savings']).default('pending-withdrawal'),
 });
 export type SusuRepayBody = z.infer<typeof susuRepayBody>;
 

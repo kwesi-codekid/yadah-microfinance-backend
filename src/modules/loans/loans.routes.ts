@@ -133,6 +133,7 @@ loansRouter.post(
         params.id,
         body.susuAccountId,
         body.idempotencyKey,
+        body.excessTo,
         req.id as string,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))

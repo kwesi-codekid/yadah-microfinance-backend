@@ -14,13 +14,16 @@ export interface SusuAccount {
   dailyAmount: number; // pesewas, immutable
   depositsCount: number; // 0..31, denormalized from susu-deposits
   totalDeposited: number; // pesewas, denormalized
-  status: 'active' | 'completed' | 'closed';
+  /** pending-payout: stopped, commission taken, value awaiting disbursement. */
+  status: 'active' | 'completed' | 'pending-payout' | 'closed';
   openedById: Types.ObjectId;
   closedById?: Types.ObjectId;
   closedAt?: Date;
-  /** Set at closure: payout = totalDeposited − commission (1 × dailyAmount). */
+  /** Set when the account stops: payout = totalDeposited − commission (1 × dailyAmount). */
   commissionAmount?: number;
   payoutAmount?: number;
+  /** Undisbursed value (pending-payout accounts); 0 once fully paid out. */
+  payoutRemaining: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,12 +35,17 @@ const susuAccountSchema = new Schema<SusuAccount>(
     dailyAmount: { ...moneyField, immutable: true },
     depositsCount: { type: Number, default: 0, min: 0, max: 31 },
     totalDeposited: { ...moneyField, default: 0 },
-    status: { type: String, enum: ['active', 'completed', 'closed'], default: 'active' },
+    status: {
+      type: String,
+      enum: ['active', 'completed', 'pending-payout', 'closed'],
+      default: 'active',
+    },
     openedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     closedById: { type: Schema.Types.ObjectId, ref: 'User' },
     closedAt: { type: Date },
     commissionAmount: optionalMoneyField,
     payoutAmount: optionalMoneyField,
+    payoutRemaining: { ...moneyField, default: 0 },
   },
   { timestamps: true },
 );

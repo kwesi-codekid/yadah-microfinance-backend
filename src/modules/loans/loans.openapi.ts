@@ -220,10 +220,11 @@ export const loanPaths: ZodOpenApiPathsObject = {
       tags: ['Loans'],
       summary: 'Repay by closing a susu account (atomic across modules)',
       description:
-        'One transaction: the susu account closes with normal commission math and ' +
-        'its payout is applied to the loan. If the payout would exceed the remaining ' +
-        'balance the whole operation is refused (client decision pending on excess) — ' +
-        'repay cash and close the account normally instead.',
+        'One transaction: the susu account stops with normal commission math and its ' +
+        'payout is applied to the loan (capped at the remaining balance). Any excess ' +
+        'either stays in the susu account pending withdrawal (default — collect via ' +
+        'POST /susu/accounts/{id}/payout) or, with excessTo=savings, is credited to ' +
+        'the customer’s active savings account in the same transaction.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(susuRepayBody),

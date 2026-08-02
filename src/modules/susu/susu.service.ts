@@ -12,6 +12,7 @@ import {
   CustomerModel,
   SusuAccountModel,
   SusuDepositModel,
+  SusuPayoutModel,
   type Customer,
   type SusuAccount,
   type SusuDeposit,
@@ -38,9 +39,11 @@ export interface PublicSusuAccount {
   depositsCount: number;
   cycleTarget: number;
   totalDeposited: number;
-  status: 'active' | 'completed' | 'closed';
+  status: 'active' | 'completed' | 'pending-payout' | 'closed';
   commissionAmount?: number;
   payoutAmount?: number;
+  /** Undisbursed value awaiting withdrawal (pending-payout accounts). */
+  payoutRemaining: number;
   openedAt: Date;
   closedAt?: Date;
 }
@@ -57,6 +60,7 @@ export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
     status: a.status,
     ...(a.commissionAmount !== undefined ? { commissionAmount: a.commissionAmount } : {}),
     ...(a.payoutAmount !== undefined ? { payoutAmount: a.payoutAmount } : {}),
+    payoutRemaining: a.payoutRemaining,
     openedAt: a.createdAt,
     ...(a.closedAt !== undefined ? { closedAt: a.closedAt } : {}),
   };
@@ -628,6 +632,132 @@ export async function closeAccount(
   });
 
   return result;
+}
+
+// ---------------------------------------------------------------- pending payout
+
+export interface PayoutResult {
+  account: PublicSusuAccount;
+  amount: number;
+  replayed: boolean;
+}
+
+/**
+ * Cash disbursement of a pending-payout account (office). The account
+ * closes once its remaining value reaches zero.
+ */
+export async function payoutPending(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  amount: number | undefined,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<PayoutResult> {
+  const existing = await SusuPayoutModel.findOne({ idempotencyKey });
+  if (existing) {
+    const account = await SusuAccountModel.findById(existing.accountId);
+    if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+    return { account: toPublicAccount(account), amount: existing.amount, replayed: true };
+  }
+
+  const pre = await SusuAccountModel.findById(accountId);
+  if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (pre.status !== 'pending-payout') {
+    throw new AppError(
+      'NOT_PENDING_PAYOUT',
+      `Account is ${pre.status} — nothing awaiting payout`,
+      422,
+    );
+  }
+  const payAmount = amount ?? pre.payoutRemaining;
+  if (payAmount > pre.payoutRemaining) {
+    throw new AppError(
+      'EXCEEDS_PAYOUT',
+      `Only ${formatGhs(pre.payoutRemaining)} is awaiting payout`,
+      422,
+      {
+        payoutRemaining: pre.payoutRemaining,
+      },
+    );
+  }
+  const customer = await CustomerModel.findById(pre.customerId);
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const closesOut = payAmount === pre.payoutRemaining;
+      const upd = await SusuAccountModel.updateOne(
+        { _id: accountId, status: 'pending-payout', payoutRemaining: pre.payoutRemaining },
+        {
+          $inc: { payoutRemaining: -payAmount },
+          ...(closesOut
+            ? {
+                $set: {
+                  status: 'closed',
+                  closedAt: new Date(),
+                  closedById: new Types.ObjectId(actor.sub),
+                },
+              }
+            : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      await SusuPayoutModel.create(
+        [
+          {
+            accountId,
+            customerId: pre.customerId,
+            amount: payAmount,
+            destination: 'cash',
+            recordedById: new Types.ObjectId(actor.sub),
+            idempotencyKey,
+          },
+        ],
+        { session },
+      );
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.payout',
+          entityType: 'susu-account',
+          entityId: accountId,
+          amountBefore: pre.payoutRemaining,
+          amountAfter: pre.payoutRemaining - payAmount,
+          after: { destination: 'cash' },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await SusuAccountModel.findById(accountId);
+  if (!after) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (customer) {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'susu-payout',
+      message:
+        `Yadah: ${formatGhs(payAmount)} paid out from susu acct ${after.accountNumber}. ` +
+        (after.payoutRemaining > 0
+          ? `Still awaiting withdrawal: ${formatGhs(after.payoutRemaining)}.`
+          : 'The account is now closed. Thank you!'),
+      relatedEntityType: 'susu-account',
+      relatedEntityId: accountId,
+    });
+  }
+  emitAdminEvent('susu.payout', {
+    id: accountId.toHexString(),
+    accountNumber: after.accountNumber,
+    amount: payAmount,
+    payoutRemaining: after.payoutRemaining,
+  });
+  return { account: toPublicAccount(after), amount: payAmount, replayed: false };
 }
 
 // ---------------------------------------------------------------- daily summary

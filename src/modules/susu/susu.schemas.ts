@@ -17,7 +17,7 @@ export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
 export const listAccountsQuery = pagination.extend({
   customerId: objectId.optional(),
-  status: z.enum(['active', 'completed', 'closed']).optional(),
+  status: z.enum(['active', 'completed', 'pending-payout', 'closed']).optional(),
   accountNumber: z
     .string()
     .regex(/^\d{6}$/)
@@ -49,6 +49,13 @@ export type CollectAllBody = z.infer<typeof collectAllBody>;
 
 export const listDepositsQuery = pagination;
 export type ListDepositsQuery = z.infer<typeof listDepositsQuery>;
+
+export const payoutBody = z.object({
+  /** Omit to pay out the full remaining balance. */
+  amount: positiveMoneyPesewas.min(1).optional(),
+  idempotencyKey,
+});
+export type PayoutBody = z.infer<typeof payoutBody>;
 
 export const summaryQuery = z.object({
   /** Accra calendar day, defaults to today. */

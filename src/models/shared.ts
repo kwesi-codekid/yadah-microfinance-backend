@@ -12,7 +12,8 @@ export const moneyField = {
 
 export const optionalMoneyField = { ...moneyField, required: false } as const;
 
-export const CHANNELS = ['cash', 'paystack', 'momo'] as const;
+/** 'transfer' is internal-only (inter-account moves) — API inputs accept cash/paystack/momo. */
+export const CHANNELS = ['cash', 'paystack', 'momo', 'transfer'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export const ROLES = ['admin', 'manager', 'collector'] as const;

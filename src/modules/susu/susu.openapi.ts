@@ -7,6 +7,7 @@ import {
   listAccountsQuery,
   listDepositsQuery,
   openAccountBody,
+  payoutBody,
   summaryQuery,
 } from './susu.schemas.js';
 
@@ -20,9 +21,21 @@ const susuAccount = z
     depositsCount: z.number().int(),
     cycleTarget: z.literal(31),
     totalDeposited: z.number().int(),
-    status: z.enum(['active', 'completed', 'closed']),
-    commissionAmount: z.number().int().optional().describe('Set at closure: 1 day’s deposit'),
-    payoutAmount: z.number().int().optional().describe('Set at closure: total − commission'),
+    status: z.enum(['active', 'completed', 'pending-payout', 'closed']),
+    commissionAmount: z
+      .number()
+      .int()
+      .optional()
+      .describe('Set when the account stops: 1 day’s deposit'),
+    payoutAmount: z
+      .number()
+      .int()
+      .optional()
+      .describe('Set when the account stops: total − commission'),
+    payoutRemaining: z
+      .number()
+      .int()
+      .describe('Undisbursed value awaiting withdrawal (pending-payout)'),
     openedAt: z.iso.datetime(),
     closedAt: z.iso.datetime().optional(),
   })
@@ -192,6 +205,30 @@ export const susuPaths: ZodOpenApiPathsObject = {
         ),
         '403': errorResponse('FORBIDDEN — office only'),
         '409': errorResponse('ALREADY_CLOSED'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/payout': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Pay out a pending-payout balance in cash (office only)',
+      description:
+        'For accounts stopped with value still awaiting withdrawal (e.g. the excess ' +
+        'after a loan repayment via susu closure). Omit amount to pay out everything; ' +
+        'the account closes when its remaining value reaches zero.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(payoutBody),
+      responses: {
+        '201': jsonResponse(
+          'Paid out',
+          z.object({ account: susuAccount, amount: z.number().int(), replayed: z.boolean() }),
+        ),
+        '200': jsonResponse(
+          'Replay of an earlier request',
+          z.object({ account: susuAccount, amount: z.number().int(), replayed: z.boolean() }),
+        ),
+        '422': errorResponse('NOT_PENDING_PAYOUT or EXCEEDS_PAYOUT (details.payoutRemaining)'),
       },
     },
   },

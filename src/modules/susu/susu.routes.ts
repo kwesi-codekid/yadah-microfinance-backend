@@ -9,6 +9,7 @@ import {
   listAccountsQuery,
   listDepositsQuery,
   openAccountBody,
+  payoutBody,
   summaryQuery,
   type AccountIdParams,
   type CollectAllBody,
@@ -16,6 +17,7 @@ import {
   type ListAccountsQuery,
   type ListDepositsQuery,
   type OpenAccountBody,
+  type PayoutBody,
   type SummaryQuery,
 } from './susu.schemas.js';
 import * as susuService from './susu.service.js';
@@ -111,6 +113,20 @@ susuRouter.post(
     susuService
       .closeAccount(getAuth(req), params.id, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Cash disbursement of a pending-payout balance (office only).
+susuRouter.post(
+  '/accounts/:id/payout',
+  requireOffice,
+  validate({ params: accountIdParams, body: payoutBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: PayoutBody }>(req);
+    susuService
+      .payoutPending(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },
 );
