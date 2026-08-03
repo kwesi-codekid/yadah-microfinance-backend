@@ -12,6 +12,7 @@ import { uploadsRouter } from './modules/uploads/uploads.routes.js';
 import { loansRouter } from './modules/loans/loans.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
 import { hpRouter } from './modules/hire-purchase/hp.routes.js';
+import { transfersRouter } from './modules/transfers/transfers.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -38,6 +39,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/loans', loansRouter);
   app.use('/api/v1/reports', reportsRouter);
   app.use('/api/v1/hire-purchase', hpRouter);
+  app.use('/api/v1/transfers', transfersRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);

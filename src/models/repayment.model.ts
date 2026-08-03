@@ -7,7 +7,7 @@ export interface Repayment {
   loanId: Types.ObjectId;
   customerId: Types.ObjectId;
   amount: number; // pesewas
-  source: 'cash' | 'susu-closure';
+  source: 'cash' | 'susu-closure' | 'transfer';
   channel: Channel;
   /** Set when source is susu-closure: the account whose payout paid this. */
   susuAccountId?: Types.ObjectId;
@@ -22,7 +22,7 @@ const repaymentSchema = new Schema<Repayment>(
     loanId: { type: Schema.Types.ObjectId, ref: 'Loan', required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     amount: moneyField,
-    source: { type: String, enum: ['cash', 'susu-closure'], required: true },
+    source: { type: String, enum: ['cash', 'susu-closure', 'transfer'], required: true },
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     susuAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },

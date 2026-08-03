@@ -8,6 +8,7 @@ import { uploadPaths } from '../modules/uploads/uploads.openapi.js';
 import { loanPaths } from '../modules/loans/loans.openapi.js';
 import { reportPaths } from '../modules/reports/reports.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
+import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -50,7 +51,11 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       {
         name: 'Hire Purchase',
         description:
-          'Inventory + agreements: 50% deposit, item release, arrears, repossession with 1-month redemption. Installments arrive once the client confirms the interest method.',
+          'Inventory + agreements: 50% deposit, flat-once interest, monthly instalments, arrears, repossession with 1-month redemption, used-item restock.',
+      },
+      {
+        name: 'Transfers',
+        description: 'Atomic internal moves: susu → savings/loan/HP · savings → susu/loan/HP',
       },
     ],
     paths: {
@@ -63,6 +68,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...loanPaths,
       ...reportPaths,
       ...hpPaths,
+      ...transferPaths,
     },
     components: {
       securitySchemes: {

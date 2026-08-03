@@ -531,11 +531,11 @@ async function replayIfExists(idempotencyKey: string): Promise<RepaymentResult |
  * Core repayment writer — runs INSIDE the caller's transaction. Applies
  * amount to the loan + schedule, flips to repaid when settled.
  */
-async function applyRepaymentInTxn(
+export async function applyRepaymentInTxn(
   actor: AccessTokenPayload,
   loan: Loan,
   amount: number,
-  source: 'cash' | 'susu-closure',
+  source: 'cash' | 'susu-closure' | 'transfer',
   channel: Channel,
   idempotencyKey: string,
   session: mongoose.ClientSession,
