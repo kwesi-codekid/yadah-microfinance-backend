@@ -58,11 +58,6 @@ export const publicUserResponse = z
     phone: z.string(),
     email: z.string().optional(),
     role: z.enum(['admin', 'manager', 'collector']),
-    mustChangePassword: z
-      .boolean()
-      .describe(
-        'True after an admin reset that requires a change — frontend forces the change screen',
-      ),
   })
   .meta({ id: 'PublicUser' });
 

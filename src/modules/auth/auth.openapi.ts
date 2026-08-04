@@ -83,7 +83,7 @@ export const authPaths: ZodOpenApiPathsObject = {
       summary: 'Change own password (authenticated)',
       description:
         'Requires the current password. All OTHER sessions are revoked; the session ' +
-        'making the change survives. Clears any mustChangePassword flag.',
+        'making the change survives.',
       security: [{ bearerAuth: [] }],
       requestBody: jsonBody(changePasswordBody),
       responses: {

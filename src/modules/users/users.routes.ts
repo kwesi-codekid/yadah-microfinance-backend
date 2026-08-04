@@ -80,13 +80,7 @@ usersRouter.post(
       req,
     );
     usersService
-      .resetUserPassword(
-        getAuth(req),
-        params.id,
-        body.newPassword,
-        body.mustChangePassword,
-        req.id as string,
-      )
+      .resetUserPassword(getAuth(req), params.id, body.newPassword, req.id as string)
       .then(() => res.status(204).end())
       .catch(next);
   },

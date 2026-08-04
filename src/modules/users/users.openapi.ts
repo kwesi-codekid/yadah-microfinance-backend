@@ -80,9 +80,8 @@ export const userPaths: ZodOpenApiPathsObject = {
       tags: ['Users'],
       summary: 'Reset a staff member’s password (admin only)',
       description:
-        'Sets a temporary password and revokes all of the user’s sessions. When ' +
-        'mustChangePassword is true, the user is flagged to change it at next login ' +
-        '(surfaced on the login response; not hard-enforced server-side).',
+        'Sets a new password and revokes all of the user’s sessions. The office ' +
+        'communicates it to the staffer, who can change it via /auth/password/change.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(resetUserPasswordBody),

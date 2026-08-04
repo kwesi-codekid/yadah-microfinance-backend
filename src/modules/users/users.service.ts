@@ -138,14 +138,12 @@ export async function resetUserPassword(
   actor: AccessTokenPayload,
   id: Types.ObjectId,
   newPassword: string,
-  mustChangePassword: boolean,
   requestId?: string,
 ): Promise<void> {
   const user = await UserModel.findById(id);
   if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
 
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-  user.mustChangePassword = mustChangePassword;
   user.refreshSessions = []; // every existing session dies now
   await user.save();
 
@@ -154,7 +152,6 @@ export async function resetUserPassword(
     action: 'user.password-reset',
     entityType: 'user',
     entityId: user._id,
-    after: { mustChangePassword },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   await notifyPasswordChanged(user);

@@ -40,7 +40,6 @@ export interface PublicUser {
   phone: string;
   email?: string;
   role: Role;
-  mustChangePassword: boolean;
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -51,7 +50,6 @@ export function toPublicUser(user: User): PublicUser {
     phone: user.phone,
     ...(user.email !== undefined ? { email: user.email } : {}),
     role: user.role,
-    mustChangePassword: user.mustChangePassword,
   };
 }
 
@@ -238,7 +236,6 @@ export async function changePassword(
   }
 
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-  user.mustChangePassword = false;
   user.refreshSessions = user.refreshSessions.filter((s) => s.familyId === auth.fam);
   await user.save();
 
@@ -260,7 +257,6 @@ export async function resetPasswordWithOtp(
   const user = await consumeOtp(phone, code);
 
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-  user.mustChangePassword = false;
   user.refreshSessions = [];
   await user.save();
 

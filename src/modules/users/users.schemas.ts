@@ -39,7 +39,5 @@ export type UserIdParams = z.infer<typeof userIdParams>;
 
 export const resetUserPasswordBody = z.object({
   newPassword: passwordField,
-  /** When true, the user is flagged to change this password at next login. */
-  mustChangePassword: z.boolean().default(false),
 });
 export type ResetUserPasswordBody = z.infer<typeof resetUserPasswordBody>;
