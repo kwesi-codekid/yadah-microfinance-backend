@@ -679,6 +679,23 @@ export async function applyHpPaymentInTxn(
     );
   }
 
+  // A payment that clears every month-overdue instalment lifts arrears —
+  // regardless of how the money arrived (cash or internal transfer).
+  if (!settled && agreement.status === 'in-arrears') {
+    const stillOverdue = await HpScheduleModel.findOne({
+      agreementId: agreement._id,
+      status: { $ne: 'paid' },
+      dueDate: { $lt: addMonthsClamped(now, -1) },
+    }).session(session);
+    if (!stillOverdue) {
+      await HpAgreementModel.updateOne(
+        { _id: agreement._id, status: 'in-arrears' },
+        { $set: { status: 'active' }, $unset: { arrearsAt: '' } },
+        { session },
+      );
+    }
+  }
+
   await HpPaymentModel.create(
     [
       {
@@ -756,21 +773,6 @@ export async function payInstallment(
         requestId,
       );
       outcome.settled = result.settled;
-      // A payment that clears every month-overdue instalment lifts arrears.
-      if (!result.settled && agreement.status === 'in-arrears') {
-        const stillOverdue = await HpScheduleModel.findOne({
-          agreementId,
-          status: { $ne: 'paid' },
-          dueDate: { $lt: addMonthsClamped(new Date(), -1) },
-        }).session(session);
-        if (!stillOverdue) {
-          await HpAgreementModel.updateOne(
-            { _id: agreementId, status: 'in-arrears' },
-            { $set: { status: 'active' }, $unset: { arrearsAt: '' } },
-            { session },
-          );
-        }
-      }
     });
   } finally {
     await session.endSession();

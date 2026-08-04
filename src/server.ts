@@ -4,6 +4,7 @@ import { connectDb, disconnectDb } from './lib/db.js';
 import { startSmsWorker } from './lib/sms.js';
 import { startLoanEscalationWorker } from './lib/loan-escalation.js';
 import { startHpArrearsWorker } from './lib/hp-arrears.js';
+import { startDebtRecoveryWorker } from './lib/debt-recovery.js';
 import { initRealtime } from './lib/realtime.js';
 import { createApp } from './app.js';
 
@@ -13,6 +14,7 @@ await connectDb();
 startSmsWorker();
 startLoanEscalationWorker();
 startHpArrearsWorker();
+startDebtRecoveryWorker();
 
 const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, 'yadah-microfinance-api listening');
