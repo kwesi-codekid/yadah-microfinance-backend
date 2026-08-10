@@ -213,7 +213,7 @@ export async function transfer(
           if (body.amount !== undefined) {
             throw new AppError(
               'AMOUNT_NOT_ALLOWED',
-              'Omit amount: transferring from a running susu account moves its full closure payout',
+              'A running susu account transfers its full payout — leave amount empty',
               422,
             );
           }
