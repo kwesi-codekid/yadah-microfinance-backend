@@ -187,10 +187,10 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
 
   const [firstSusu, firstSavings, susuAccounts, savingsAccounts, openLoan, bigTierUnlocked] =
     await Promise.all([
-      SusuDepositModel.findOne({ customerId }).sort({ createdAt: 1 }),
-      SavingsTxnModel.findOne({ customerId }).sort({ createdAt: 1 }),
-      SusuAccountModel.find({ customerId }),
-      SavingsAccountModel.find({ customerId }),
+      SusuDepositModel.findOne({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+      SavingsTxnModel.findOne({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+      SusuAccountModel.find({ customerId, ...NOT_TRASHED }),
+      SavingsAccountModel.find({ customerId, ...NOT_TRASHED }),
       LoanModel.findOne({ customerId, status: { $in: OPEN_LOAN_STATUSES }, ...NOT_TRASHED }),
       isBigTierUnlocked(customerId),
     ]);
@@ -263,6 +263,7 @@ export async function applyForLoan(
   const openHp = await HpAgreementModel.exists({
     customerId,
     status: { $in: OPEN_HP_STATUSES },
+    ...NOT_TRASHED,
   });
   if (openHp) {
     throw new AppError(

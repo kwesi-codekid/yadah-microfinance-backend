@@ -61,7 +61,7 @@ export const paymentPaths: ZodOpenApiPathsObject = {
         '422': errorResponse(
           'ACCOUNT_NOT_ACTIVE, AMOUNT_MISMATCH, EXCEEDS_REMAINING, AMOUNT_TOO_SMALL, ' +
             'LOAN_NOT_OPEN, EXCEEDS_BALANCE, AGREEMENT_NOT_PENDING, DEPOSIT_MISMATCH, ' +
-            'AGREEMENT_NOT_OPEN, NOT_REDEEMABLE, or NOTHING_TO_REDEEM',
+            'AGREEMENT_NOT_OPEN, NOT_REDEEMABLE, REDEMPTION_WINDOW_LAPSED, or NOTHING_TO_REDEEM',
         ),
         '502': errorResponse('PAYSTACK_ERROR — Paystack unreachable or rejected the charge'),
         '503': errorResponse('PAYMENTS_NOT_CONFIGURED'),

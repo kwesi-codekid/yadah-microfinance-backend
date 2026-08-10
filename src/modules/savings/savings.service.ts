@@ -753,6 +753,14 @@ export async function restoreSavingsAccount(
   if (!account.deletedAt) {
     throw new AppError('NOT_TRASHED', 'Savings account is not in the trash', 409);
   }
+  const owner = await CustomerModel.findOne({ _id: account.customerId, ...NOT_TRASHED });
+  if (!owner) {
+    throw new AppError(
+      'CANNOT_RESTORE',
+      'The customer is in the trash — restore the customer first',
+      422,
+    );
+  }
 
   await SavingsAccountModel.updateOne(
     { _id: account._id },

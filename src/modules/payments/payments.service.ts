@@ -173,13 +173,30 @@ async function resolveTarget(
       if (agreement.status !== 'active' && agreement.status !== 'in-arrears') {
         throw new AppError('AGREEMENT_NOT_OPEN', 'Agreement is not open for payments', 422);
       }
-      return { customerId: agreement.customerId, amount: body.amount ?? 0 };
+      const amount = body.amount ?? 0;
+      const remaining = remainingOn(agreement);
+      if (amount > remaining) {
+        throw new AppError(
+          'EXCEEDS_BALANCE',
+          `Amount exceeds the remaining balance (${formatGhs(remaining)})`,
+          422,
+          { remaining, amount },
+        );
+      }
+      return { customerId: agreement.customerId, amount };
     }
     case 'hp-redemption': {
       const agreement = await HpAgreementModel.findOne({ _id: body.targetId, ...NOT_TRASHED });
       if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
       if (agreement.status !== 'repossessed') {
         throw new AppError('NOT_REDEEMABLE', 'Only repossessed agreements can be redeemed', 422);
+      }
+      // Mirror hp.redeem's window check — never charge a wallet for money
+      // that can no longer be applied.
+      if (!agreement.redemptionDeadline || Date.now() > agreement.redemptionDeadline.getTime()) {
+        throw new AppError('REDEMPTION_WINDOW_LAPSED', 'The redemption window has lapsed', 422, {
+          redemptionDeadline: agreement.redemptionDeadline,
+        });
       }
       const amount = remainingOn(agreement);
       if (amount < 1) throw new AppError('NOTHING_TO_REDEEM', 'Nothing left to redeem', 422);
@@ -351,8 +368,9 @@ async function executeCharge(charge: PaystackCharge): Promise<void> {
     });
   } catch (err) {
     if (!(err instanceof AppError)) throw err;
+    // Never downgrade an already-applied charge (concurrent webhook + verify).
     await PaystackChargeModel.updateOne(
-      { _id: charge._id },
+      { _id: charge._id, executionStatus: { $ne: 'applied' } },
       { $set: { executionStatus: 'failed', failureReason: `${err.code}: ${err.message}` } },
     );
     emitAdminEvent('payment.failed', {
@@ -372,7 +390,23 @@ interface WebhookEvent {
 
 /** Always resolves — webhook responses must be 200 whenever the payload is valid. */
 export async function handleWebhookEvent(event: WebhookEvent): Promise<{ handled: boolean }> {
-  if (event.event !== 'charge.success' || !event.data?.reference) return { handled: false };
+  if (!event.data?.reference) return { handled: false };
+
+  // A declined/expired charge: close the loop so it doesn't sit pending forever.
+  if (event.event === 'charge.failed') {
+    const failed = await PaystackChargeModel.updateOne(
+      { reference: event.data.reference, status: 'pending' },
+      {
+        $set: {
+          status: 'failed',
+          ...(event.data.status !== undefined ? { paystackStatus: event.data.status } : {}),
+          failureReason: 'Charge failed at Paystack (declined, expired or insufficient funds)',
+        },
+      },
+    );
+    return { handled: failed.modifiedCount === 1 };
+  }
+  if (event.event !== 'charge.success') return { handled: false };
 
   const charge = await PaystackChargeModel.findOne({ reference: event.data.reference });
   if (!charge) return { handled: false }; // not ours — acknowledge and ignore
@@ -425,6 +459,20 @@ export async function verifyAndApply(reference: string): Promise<PublicCharge> {
           status: verification.paystackStatus,
         },
       });
+    } else if (
+      verification.paystackStatus === 'failed' ||
+      verification.paystackStatus === 'abandoned'
+    ) {
+      await PaystackChargeModel.updateOne(
+        { reference, status: 'pending' },
+        {
+          $set: {
+            status: 'failed',
+            paystackStatus: verification.paystackStatus,
+            failureReason: `Charge ${verification.paystackStatus} at Paystack`,
+          },
+        },
+      );
     } else {
       await PaystackChargeModel.updateOne(
         { reference },

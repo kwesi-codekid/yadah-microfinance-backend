@@ -37,7 +37,9 @@ const savingsTxn = z
     amount: z.number().int().describe('For withdrawals/closure: what the customer receives'),
     fee: z.number().int().optional().describe('GHS 10 flat on withdrawals and closure'),
     balanceAfter: z.number().int(),
-    channel: z.enum(['cash', 'paystack', 'momo']),
+    channel: z
+      .enum(['cash', 'paystack', 'momo', 'transfer'])
+      .describe("'transfer' = created by an internal transfer"),
     accraDay: z.string().describe('Accra calendar day, YYYY-MM-DD'),
     recordedById: z.string(),
     createdAt: z.iso.datetime(),

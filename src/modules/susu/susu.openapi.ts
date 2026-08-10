@@ -54,7 +54,9 @@ const susuDeposit = z
     daysCovered: z.number().int(),
     seqStart: z.number().int().describe('1-based position in the 31-deposit cycle'),
     seqEnd: z.number().int(),
-    channel: z.enum(['cash', 'paystack', 'momo']),
+    channel: z
+      .enum(['cash', 'paystack', 'momo', 'transfer'])
+      .describe("'transfer' = created by an internal transfer"),
     collectAllBatchId: z.string().optional(),
     createdAt: z.iso.datetime(),
   })

@@ -457,6 +457,13 @@ export async function collectAll(
   const prior = await SusuDepositModel.find({
     idempotencyKey: { $regex: `^${escapeRegex(idempotencyKey)}#` },
   });
+  if (prior.some((d) => d.deletedAt)) {
+    throw new AppError(
+      'CONFLICT',
+      'The original collection was moved to the trash — use a new idempotency key',
+      409,
+    );
+  }
   if (prior.length > 0) {
     const accountIds = prior.map((d) => d.accountId);
     const accounts = await SusuAccountModel.find({ _id: { $in: accountIds } });
@@ -502,9 +509,11 @@ export async function collectAll(
     await session.withTransaction(async () => {
       created.length = 0;
       for (const [i, pre] of active.entries()) {
-        const account = await SusuAccountModel.findOne({ _id: pre._id, status: 'active' }).session(
-          session,
-        );
+        const account = await SusuAccountModel.findOne({
+          _id: pre._id,
+          status: 'active',
+          ...NOT_TRASHED,
+        }).session(session);
         if (!account) {
           throw new AppError('CONFLICT', 'An account changed while collecting — retry', 409);
         }
@@ -1091,6 +1100,14 @@ export async function restoreSusuAccount(
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (!account.deletedAt) {
     throw new AppError('NOT_TRASHED', 'Susu account is not in the trash', 409);
+  }
+  const owner = await CustomerModel.findOne({ _id: account.customerId, ...NOT_TRASHED });
+  if (!owner) {
+    throw new AppError(
+      'CANNOT_RESTORE',
+      'The customer is in the trash — restore the customer first',
+      422,
+    );
   }
   const deletedAt = account.deletedAt;
 
