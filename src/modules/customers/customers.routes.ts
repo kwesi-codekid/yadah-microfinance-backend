@@ -77,6 +77,22 @@ customersRouter.get('/:id', validate({ params: customerIdParams }), (req, res, n
     .catch(next);
 });
 
+// Printable registration form (office only — full PII, same gate as /statement).
+customersRouter.get(
+  '/:id/registration-form',
+  requireOffice,
+  validate({ params: customerIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: CustomerIdParams }>(req);
+    customersService
+      .registrationFormPdf(getAuth(req), params.id)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
+      .catch(next);
+  },
+);
+
 // Statement of account: all products + unified transaction history for a period.
 customersRouter.get(
   '/:id/statement',

@@ -11,10 +11,12 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
+  UserModel,
   type Customer,
   type CustomerIdentification,
   type NextOfKin,
 } from '../../models/index.js';
+import { buildRegistrationFormPdf } from './registration-pdf.js';
 import { NOT_TRASHED, requireDeletedAt } from '../../models/shared.js';
 import type { Pagination } from '../../schemas/common.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
@@ -436,4 +438,19 @@ export async function listCustomerTrash(
     limit: query.limit,
     total,
   };
+}
+
+// ---------------------------------------------------------------- registration form
+
+/** Printable A4 registration form; the photo is embedded when reachable. */
+export async function registrationFormPdf(
+  _actor: AccessTokenPayload,
+  id: Types.ObjectId,
+): Promise<{ buffer: Buffer; filename: string }> {
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  const registeredBy = await UserModel.findById(customer.registeredById, { name: 1 });
+
+  const buffer = await buildRegistrationFormPdf(customer, registeredBy?.name ?? null);
+  return { buffer, filename: `registration-${customer._id.toHexString()}.pdf` };
 }

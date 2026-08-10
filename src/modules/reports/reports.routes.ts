@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { sendExport } from '../../lib/exports.js';
+import { workerStatuses } from '../../lib/worker-status.js';
 import { requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireOffice, requireRole } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   formatOnlyQuery,
@@ -16,6 +17,12 @@ import * as transactionsService from './transactions.service.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireOffice);
+
+// Ops visibility: background-worker heartbeats (admin only; in-memory,
+// resets on restart — every worker also runs immediately at startup).
+reportsRouter.get('/workers', requireRole('admin'), (_req, res) => {
+  res.json({ workers: workerStatuses() });
+});
 
 reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: TransactionsQuery }>(req);

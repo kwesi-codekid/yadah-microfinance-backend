@@ -233,6 +233,27 @@ export const customerPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/customers/{id}/registration-form': {
+    get: {
+      tags: ['Customers'],
+      summary: 'Printable registration form PDF (office only)',
+      description:
+        'A4 PDF of the full registration record — personal details, contact, ' +
+        'identification, occupation, next of kin, administration — with the ' +
+        'customer photo embedded and signature lines at the bottom. ' +
+        'Binary response (application/pdf).',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': {
+          description: 'The registration form',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
   '/customers/{id}/statement': {
     get: {
       tags: ['Customers'],

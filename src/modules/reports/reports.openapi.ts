@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { TXN_MODULES, TXN_TYPES } from '../../domain/transactions.js';
-import { jsonResponse } from '../../openapi/shared.js';
+import { errorResponse, jsonResponse } from '../../openapi/shared.js';
 import { formatOnlyQuery, rangeQuery, transactionsQuery } from './reports.schemas.js';
 
 const security = [{ bearerAuth: [] }];
@@ -118,6 +118,36 @@ export const reportPaths: ZodOpenApiPathsObject = {
       security,
       requestParams: { query: rangeQuery },
       responses: { '200': jsonResponse('Report', z.unknown()) },
+    },
+  },
+  '/reports/workers': {
+    get: {
+      tags: ['Reports'],
+      summary: 'Background-worker heartbeats (admin only)',
+      description:
+        'Last run, outcome and change counters for the SMS, loan-escalation, ' +
+        'HP-arrears and debt-recovery workers. In-memory — resets on restart; ' +
+        'each worker also runs a pass immediately at startup.',
+      security,
+      responses: {
+        '200': jsonResponse(
+          'Worker statuses keyed by name',
+          z.object({
+            workers: z.record(
+              z.string(),
+              z.object({
+                startedAt: z.iso.datetime().nullable(),
+                lastRunAt: z.iso.datetime().nullable(),
+                lastOk: z.boolean().nullable(),
+                lastError: z.string().nullable(),
+                lastChanges: z.record(z.string(), z.number()).nullable(),
+                runCount: z.number().int(),
+              }),
+            ),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — admin only'),
+      },
     },
   },
 };
