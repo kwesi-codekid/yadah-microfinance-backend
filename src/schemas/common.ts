@@ -29,6 +29,19 @@ export const ghanaCardNumber = z
   .string()
   .regex(/^GHA-\d{9}-\d$/, 'Expected a Ghana Card number like GHA-123456789-0');
 
+/** Voter ID number — exactly 8 digits. */
+export const voterIdNumber = z.string().regex(/^\d{8}$/, 'Voter ID numbers are exactly 8 digits');
+
+/** Passport number — a capital letter followed by 8 digits, e.g. G12345678. */
+export const passportNumber = z
+  .string()
+  .regex(/^[A-Z]\d{8}$/, 'Expected a passport number like G12345678');
+
+/** Driver's licence number — 10-20 letters, digits or hyphens. */
+export const driversLicenceNumber = z
+  .string()
+  .regex(/^[A-Za-z0-9-]{10,20}$/, "Driver's licence numbers are 10-20 letters and digits");
+
 export const pagination = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

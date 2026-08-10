@@ -1,11 +1,35 @@
 import { z } from 'zod';
-import { ghanaCardNumber, ghanaPhone, objectId, pagination } from '../../schemas/common.js';
+import {
+  driversLicenceNumber,
+  ghanaCardNumber,
+  ghanaPhone,
+  objectId,
+  pagination,
+  passportNumber,
+  voterIdNumber,
+} from '../../schemas/common.js';
 
 /** GhanaPost GPS digital address, e.g. WR-123-4567 or GA-1834-5678. */
 export const ghanaPostGps = z
   .string()
   .regex(/^[A-Z]{2}-\d{3,4}-\d{4}$/i, 'Expected a GhanaPost address like WR-123-4567')
   .transform((v) => v.toUpperCase());
+
+const idNumberRules: Record<
+  'ghana-card' | 'passport' | 'drivers-license' | 'voter-id',
+  { schema: z.ZodType<string>; message: string }
+> = {
+  'ghana-card': {
+    schema: ghanaCardNumber,
+    message: 'Ghana Card numbers look like GHA-123456789-0',
+  },
+  passport: { schema: passportNumber, message: 'Passport numbers look like G12345678' },
+  'drivers-license': {
+    schema: driversLicenceNumber,
+    message: "Driver's licence numbers are 10-20 letters and digits",
+  },
+  'voter-id': { schema: voterIdNumber, message: 'Voter ID numbers are exactly 8 digits' },
+};
 
 export const identification = z
   .object({
@@ -15,13 +39,11 @@ export const identification = z
     idPlaceOfIssue: z.string().min(2).max(100).trim().optional(),
   })
   .check((ctx) => {
-    if (
-      ctx.value.idType === 'ghana-card' &&
-      !ghanaCardNumber.safeParse(ctx.value.idNumber).success
-    ) {
+    const rule = idNumberRules[ctx.value.idType];
+    if (!rule.schema.safeParse(ctx.value.idNumber).success) {
       ctx.issues.push({
         code: 'custom',
-        message: 'Ghana Card numbers look like GHA-123456789-0',
+        message: rule.message,
         path: ['idNumber'],
         input: ctx.value.idNumber,
       });
@@ -40,10 +62,45 @@ export const nextOfKin = z.object({
   address: z.string().min(2).max(300).trim().optional(),
 });
 
+const MIN_CUSTOMER_AGE_YEARS = 10;
+
+/** Evaluated per parse (not at module load) so long-running processes stay correct. */
+function isAtLeastYearsOld(dateOfBirth: Date, years: number): boolean {
+  const cutoff = new Date();
+  cutoff.setFullYear(cutoff.getFullYear() - years);
+  return dateOfBirth <= cutoff;
+}
+
+export const PHONES_DISTINCT_MESSAGE =
+  'Phone, alternate phone and next-of-kin phone must be different numbers';
+
+/** Returns which fields clash under the pairwise-distinct phone rule. */
+export function phoneClashes(v: {
+  phone?: string | undefined;
+  altPhone?: string | undefined;
+  nextOfKinPhone?: string | undefined;
+}): ('altPhone' | 'nextOfKinPhone')[] {
+  const clashes: ('altPhone' | 'nextOfKinPhone')[] = [];
+  if (v.altPhone !== undefined && v.altPhone === v.phone) clashes.push('altPhone');
+  if (
+    v.nextOfKinPhone !== undefined &&
+    (v.nextOfKinPhone === v.phone || v.nextOfKinPhone === v.altPhone)
+  ) {
+    clashes.push('nextOfKinPhone');
+  }
+  return clashes;
+}
+
 const profileFields = {
   // Personal
   fullName: z.string().min(2).max(120).trim(),
-  dateOfBirth: z.coerce.date().max(new Date(), 'Date of birth must be in the past').optional(),
+  dateOfBirth: z.coerce
+    .date()
+    .refine(
+      (d) => isAtLeastYearsOld(d, MIN_CUSTOMER_AGE_YEARS),
+      `Customer must be at least ${String(MIN_CUSTOMER_AGE_YEARS)} years old`,
+    )
+    .optional(),
   gender: z.enum(['male', 'female']).optional(),
   nationality: z.string().min(2).max(60).trim().optional(),
   maritalStatus: z.enum(['single', 'married', 'other']).optional(),
@@ -71,7 +128,20 @@ const profileFields = {
   idDocumentBackUrl: uploadedImageUrl.describe('ID back — from POST /uploads/images?kind=document'),
 };
 
-export const createCustomerBody = z.object(profileFields);
+export const createCustomerBody = z.object(profileFields).check((ctx) => {
+  for (const clash of phoneClashes({
+    phone: ctx.value.phone,
+    altPhone: ctx.value.altPhone,
+    nextOfKinPhone: ctx.value.nextOfKin?.phone,
+  })) {
+    ctx.issues.push({
+      code: 'custom',
+      message: PHONES_DISTINCT_MESSAGE,
+      path: clash === 'altPhone' ? ['altPhone'] : ['nextOfKin', 'phone'],
+      input: clash === 'altPhone' ? ctx.value.altPhone : ctx.value.nextOfKin?.phone,
+    });
+  }
+});
 export type CreateCustomerBody = z.infer<typeof createCustomerBody>;
 
 export const updateCustomerBody = z

@@ -11,10 +11,12 @@ import {
   type NextOfKin,
 } from '../../models/index.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import type {
-  CreateCustomerBody,
-  ListCustomersQuery,
-  UpdateCustomerBody,
+import {
+  PHONES_DISTINCT_MESSAGE,
+  phoneClashes,
+  type CreateCustomerBody,
+  type ListCustomersQuery,
+  type UpdateCustomerBody,
 } from './customers.schemas.js';
 
 /** Scalar profile fields copied verbatim between body, document, and audit. */
@@ -195,6 +197,17 @@ export async function updateCustomer(
       'Inactive customers cannot be edited — reactivate the customer first',
       409,
     );
+  }
+
+  // Pairwise-distinct phones: the schema can't see stored values on a partial
+  // update, so merge the patch with the document before checking.
+  const clashes = phoneClashes({
+    phone: patch.phone ?? customer.phone,
+    altPhone: patch.altPhone ?? customer.altPhone,
+    nextOfKinPhone: patch.nextOfKin ? patch.nextOfKin.phone : customer.nextOfKin?.phone,
+  });
+  if (clashes.length > 0) {
+    throw new AppError('PHONES_NOT_DISTINCT', PHONES_DISTINCT_MESSAGE, 422, { fields: clashes });
   }
 
   const before: Record<string, unknown> = {};

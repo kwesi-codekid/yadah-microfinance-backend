@@ -137,7 +137,10 @@ export const customerPaths: ZodOpenApiPathsObject = {
       description:
         'Account creation happens at the office — collectors cannot create customers. ' +
         'The customer photo and both ID document images (front and back) are required — ' +
-        'upload them via POST /uploads/images first.',
+        'upload them via POST /uploads/images first. Phone, alternate phone and ' +
+        'next-of-kin phone must all be different numbers. ID numbers are format-checked ' +
+        'per type (Ghana Card GHA-123456789-0, voter ID 8 digits, passport G12345678, ' +
+        "driver's licence 10-20 alphanumerics). Customers must be at least 10 years old.",
       security,
       requestBody: jsonBody(createCustomerBody),
       responses: {
@@ -181,6 +184,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Updated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN, ID_TAKEN, or CUSTOMER_INACTIVE'),
+        '422': errorResponse('PHONES_NOT_DISTINCT'),
       },
     },
   },
