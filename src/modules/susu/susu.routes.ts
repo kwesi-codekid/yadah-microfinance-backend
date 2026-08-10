@@ -117,6 +117,20 @@ susuRouter.post(
   },
 );
 
+// Escape hatch for accounts that cannot cover the commission (office only).
+susuRouter.post(
+  '/accounts/:id/terminate',
+  requireOffice,
+  validate({ params: accountIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: AccountIdParams }>(req);
+    susuService
+      .terminateAccount(getAuth(req), params.id, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
 // Cash disbursement of a pending-payout balance (office only).
 susuRouter.post(
   '/accounts/:id/payout',

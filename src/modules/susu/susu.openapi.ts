@@ -21,7 +21,7 @@ const susuAccount = z
     depositsCount: z.number().int(),
     cycleTarget: z.literal(31),
     totalDeposited: z.number().int(),
-    status: z.enum(['active', 'completed', 'pending-payout', 'closed']),
+    status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']),
     commissionAmount: z
       .number()
       .int()
@@ -210,6 +210,29 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '422': errorResponse(
           'COMMISSION_NOT_COVERED (details.totalDeposited, details.dailyAmount)',
         ),
+      },
+    },
+  },
+  '/susu/accounts/{id}/terminate': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Terminate an account that cannot cover the commission (office only)',
+      description:
+        'Escape hatch for accounts whose deposits are below one day’s amount ' +
+        '(including empty accounts): refunds everything deposited, charges no ' +
+        'commission, and sets the account to `terminated`. Accounts that can cover ' +
+        'the commission must be closed normally. The refund is recorded and appears ' +
+        'in the transactions feed.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse(
+          'Terminated',
+          z.object({ account: susuAccount, refund: z.number().int() }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '409': errorResponse('ALREADY_CLOSED'),
+        '422': errorResponse('CANNOT_TERMINATE (details.totalDeposited, details.dailyAmount)'),
       },
     },
   },

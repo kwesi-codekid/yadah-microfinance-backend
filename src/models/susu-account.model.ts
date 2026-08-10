@@ -14,8 +14,12 @@ export interface SusuAccount {
   dailyAmount: number; // pesewas, immutable
   depositsCount: number; // 0..31, denormalized from susu-deposits
   totalDeposited: number; // pesewas, denormalized
-  /** pending-payout: stopped, commission taken, value awaiting disbursement. */
-  status: 'active' | 'completed' | 'pending-payout' | 'closed';
+  /**
+   * pending-payout: stopped, commission taken, value awaiting disbursement.
+   * terminated: refunded in full with no commission — only reachable while
+   * deposits could not cover the one-day commission.
+   */
+  status: 'active' | 'completed' | 'pending-payout' | 'closed' | 'terminated';
   openedById: Types.ObjectId;
   closedById?: Types.ObjectId;
   closedAt?: Date;
@@ -37,7 +41,7 @@ const susuAccountSchema = new Schema<SusuAccount>(
     totalDeposited: { ...moneyField, default: 0 },
     status: {
       type: String,
-      enum: ['active', 'completed', 'pending-payout', 'closed'],
+      enum: ['active', 'completed', 'pending-payout', 'closed', 'terminated'],
       default: 'active',
     },
     openedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },

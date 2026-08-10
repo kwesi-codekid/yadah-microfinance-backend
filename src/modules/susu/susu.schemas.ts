@@ -17,7 +17,7 @@ export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
 export const listAccountsQuery = pagination.extend({
   customerId: objectId.optional(),
-  status: z.enum(['active', 'completed', 'pending-payout', 'closed']).optional(),
+  status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']).optional(),
   accountNumber: z
     .string()
     .regex(/^\d{6}$/)

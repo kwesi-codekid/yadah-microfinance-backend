@@ -108,3 +108,44 @@ describe('susu closure', () => {
     expect(payoutRows[0]).toMatchObject({ amount: 2_000, destination: 'cash' });
   });
 });
+
+describe('susu termination', () => {
+  it('terminates an empty account with no commission and no payout row', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+
+    const result = await susu.terminateAccount(officer, accountId);
+    expect(result.refund).toBe(0);
+    expect(result.account.status).toBe('terminated');
+
+    const after = await SusuAccountModel.findById(accountId);
+    expect(after?.commissionAmount).toBe(0);
+    expect(await SusuPayoutModel.countDocuments({ accountId })).toBe(0);
+  });
+
+  it('refuses to terminate an account that can cover the commission', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+    await susu.recordDeposit(officer, accountId, 1, randomUUID(), 'cash');
+
+    await expect(susu.terminateAccount(officer, accountId)).rejects.toMatchObject({
+      code: 'CANNOT_TERMINATE',
+    });
+  });
+
+  it('repeat termination reports the account as closed', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+    await susu.terminateAccount(officer, accountId);
+
+    await expect(susu.terminateAccount(officer, accountId)).rejects.toMatchObject({
+      code: 'ALREADY_CLOSED',
+    });
+    await expect(susu.closeAccount(officer, accountId)).rejects.toMatchObject({
+      code: 'ALREADY_CLOSED',
+    });
+  });
+});

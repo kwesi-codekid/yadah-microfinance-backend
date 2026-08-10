@@ -39,7 +39,7 @@ export interface PublicSusuAccount {
   depositsCount: number;
   cycleTarget: number;
   totalDeposited: number;
-  status: 'active' | 'completed' | 'pending-payout' | 'closed';
+  status: 'active' | 'completed' | 'pending-payout' | 'closed' | 'terminated';
   commissionAmount?: number;
   payoutAmount?: number;
   /** Undisbursed value awaiting withdrawal (pending-payout accounts). */
@@ -550,7 +550,7 @@ export async function closeAccount(
 ): Promise<ClosureResult> {
   const pre = await SusuAccountModel.findById(accountId);
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  if (pre.status === 'closed') {
+  if (pre.status === 'closed' || pre.status === 'terminated') {
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
   }
   if (pre.totalDeposited < pre.dailyAmount) {
@@ -666,6 +666,126 @@ export async function closeAccount(
   });
 
   return result;
+}
+
+// ---------------------------------------------------------------- terminate
+
+export interface TerminationResult {
+  account: PublicSusuAccount;
+  refund: number;
+}
+
+/**
+ * Escape hatch for accounts that cannot be closed normally because their
+ * deposits do not cover the one-day commission (including empty accounts).
+ * Refunds everything deposited, charges nothing.
+ */
+export async function terminateAccount(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  requestId?: string,
+): Promise<TerminationResult> {
+  const pre = await SusuAccountModel.findById(accountId);
+  if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (pre.status === 'closed' || pre.status === 'terminated') {
+    throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
+  }
+  if (pre.status !== 'active' && pre.status !== 'completed') {
+    throw new AppError('CANNOT_TERMINATE', `Account is ${pre.status} — pay it out instead`, 422);
+  }
+  if (pre.totalDeposited >= pre.dailyAmount) {
+    throw new AppError(
+      'CANNOT_TERMINATE',
+      'Deposits cover the one-day commission — close the account instead',
+      422,
+      { totalDeposited: pre.totalDeposited, dailyAmount: pre.dailyAmount },
+    );
+  }
+  const customer = await CustomerModel.findById(pre.customerId);
+
+  const session = await mongoose.startSession();
+  let refund = 0;
+  try {
+    await session.withTransaction(async () => {
+      const account = await SusuAccountModel.findOne({
+        _id: accountId,
+        status: { $in: ['active', 'completed'] },
+      }).session(session);
+      if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
+      refund = account.totalDeposited;
+
+      const upd = await SusuAccountModel.updateOne(
+        { _id: account._id, status: account.status, totalDeposited: account.totalDeposited },
+        {
+          $set: {
+            status: 'terminated',
+            closedAt: new Date(),
+            closedById: new Types.ObjectId(actor.sub),
+            commissionAmount: 0,
+            payoutAmount: refund,
+          },
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+
+      if (refund > 0) {
+        await SusuPayoutModel.create(
+          [
+            {
+              accountId: account._id,
+              customerId: account.customerId,
+              amount: refund,
+              destination: 'cash',
+              recordedById: new Types.ObjectId(actor.sub),
+              idempotencyKey: `terminate:${account._id.toHexString()}`,
+            },
+          ],
+          { session },
+        );
+      }
+
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.account.terminate',
+          entityType: 'susu-account',
+          entityId: account._id,
+          amountBefore: account.totalDeposited,
+          amountAfter: refund,
+          after: { refund, depositsCount: account.depositsCount },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await SusuAccountModel.findById(accountId);
+  if (!after) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (customer && refund > 0) {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'susu-termination',
+      message:
+        `Yadah: susu acct ${pre.accountNumber} has been terminated. ` +
+        `Full refund of ${formatGhs(refund)} (no commission). Please collect at the office.`,
+      relatedEntityType: 'susu-account',
+      relatedEntityId: accountId,
+    });
+  }
+  emitAdminEvent('susu.account.terminated', {
+    id: accountId.toHexString(),
+    customerId: pre.customerId.toHexString(),
+    customerName: customer?.fullName ?? '',
+    refund,
+  });
+
+  return { account: toPublicAccount(after), refund };
 }
 
 // ---------------------------------------------------------------- pending payout
