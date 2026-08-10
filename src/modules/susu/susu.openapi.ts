@@ -139,11 +139,12 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Record a deposit (single day or catch-up)',
       description:
-        'Any collector or office staff. Send daysCovered ≥ 2 for a ' +
-        'catch-up covering missed days — the amount is computed server-side as ' +
-        'dailyAmount × daysCovered. Requires an idempotency key: a retried request ' +
-        'returns the original deposit (200) instead of double-recording. Reaching ' +
-        '31 deposits completes the cycle. SMS receipt sent to the customer.',
+        'Any collector or office staff. Send the cash received as `amount` ' +
+        '(pesewas) — it must be a multiple of the daily amount, and the days ' +
+        'covered are derived from it (one multiple = today, more = catch-up on ' +
+        'missed days). Requires an idempotency key: a retried request returns the ' +
+        'original deposit (200) instead of double-recording. Reaching 31 deposits ' +
+        'completes the cycle. SMS receipt sent to the customer.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(depositBody),
@@ -151,7 +152,10 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '201': jsonResponse('Recorded', depositResult),
         '200': jsonResponse('Replay of an earlier request', depositResult),
         '409': errorResponse('CONFLICT — concurrent update, retry'),
-        '422': errorResponse('ACCOUNT_NOT_ACTIVE or EXCEEDS_REMAINING (details.remaining)'),
+        '422': errorResponse(
+          'ACCOUNT_NOT_ACTIVE, AMOUNT_MISMATCH (details.dailyAmount), or ' +
+            'EXCEEDS_REMAINING (details.remaining)',
+        ),
       },
     },
   },

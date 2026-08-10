@@ -16,7 +16,7 @@ const officer = asOfficer();
 async function makeEligibleCustomer(withGhanaCard = false): Promise<Types.ObjectId> {
   const customerId = await makeCustomer(withGhanaCard);
   const account = await susu.openAccount(officer, customerId, 1_000);
-  await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5, randomUUID(), 'cash');
+  await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5_000, randomUUID(), 'cash');
   await SusuDepositModel.updateMany(
     { customerId },
     { $set: { createdAt: new Date(Date.now() - 130 * 24 * 60 * 60 * 1000) } },

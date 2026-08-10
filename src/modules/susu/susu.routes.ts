@@ -78,7 +78,7 @@ susuRouter.post(
       .recordDeposit(
         getAuth(req),
         params.id,
-        body.daysCovered,
+        body.amount,
         body.idempotencyKey,
         body.channel,
         req.id as string,

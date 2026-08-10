@@ -24,7 +24,7 @@ describe('loan repayment via susu closure (WBS 7.2)', () => {
     const loanId = await activeLoan(customerId);
     const account = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 25, randomUUID(), 'cash'); // 500 saved → 480 payout
+    await susu.recordDeposit(officer, accountId, 50_000, randomUUID(), 'cash'); // 500 saved → 480 payout
 
     const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
     expect(result.susuClosure?.payout).toBe(48_000);
@@ -43,7 +43,7 @@ describe('loan repayment via susu closure (WBS 7.2)', () => {
 
     const account = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 31, randomUUID(), 'cash'); // payout 60,000 ≫ 10,000
+    await susu.recordDeposit(officer, accountId, 62_000, randomUUID(), 'cash'); // payout 60,000 ≫ 10,000
 
     const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
     expect(result.susuClosure?.applied).toBe(10_000);
@@ -65,7 +65,7 @@ describe('loan repayment via susu closure (WBS 7.2)', () => {
 
     const account = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 25, randomUUID(), 'cash'); // payout exactly 48,000
+    await susu.recordDeposit(officer, accountId, 50_000, randomUUID(), 'cash'); // payout exactly 48,000
 
     const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
     expect(result.loan.status).toBe('repaid');

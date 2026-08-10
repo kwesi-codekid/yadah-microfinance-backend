@@ -6,7 +6,7 @@ import {
   pagination,
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
-import { SUSU_CYCLE_DEPOSITS, SUSU_MIN_DAILY_AMOUNT } from '../../domain/susu.js';
+import { SUSU_MIN_DAILY_AMOUNT } from '../../domain/susu.js';
 
 export const openAccountBody = z.object({
   customerId: objectId,
@@ -31,8 +31,11 @@ export const accountIdParams = z.object({ id: objectId });
 export type AccountIdParams = z.infer<typeof accountIdParams>;
 
 export const depositBody = z.object({
-  /** 1 = today's deposit; >1 = catch-up covering missed days. */
-  daysCovered: z.number().int().min(1).max(SUSU_CYCLE_DEPOSITS).default(1),
+  /**
+   * Cash received in pesewas — must be a multiple of the account's daily
+   * amount. One multiple = today's deposit; more covers missed days.
+   */
+  amount: positiveMoneyPesewas,
   idempotencyKey,
   channel,
 });

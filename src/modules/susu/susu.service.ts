@@ -17,12 +17,7 @@ import {
   type SusuAccount,
   type SusuDeposit,
 } from '../../models/index.js';
-import {
-  SUSU_CYCLE_DEPOSITS,
-  computeClosure,
-  computeDepositAmount,
-  remainingDeposits,
-} from '../../domain/susu.js';
+import { SUSU_CYCLE_DEPOSITS, computeClosure, remainingDeposits } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type { Channel } from '../../models/shared.js';
 import type { ListAccountsQuery, ListDepositsQuery, SummaryQuery } from './susu.schemas.js';
@@ -241,7 +236,7 @@ export interface DepositResult {
 export async function recordDeposit(
   actor: AccessTokenPayload,
   accountId: Types.ObjectId,
-  daysCovered: number,
+  amount: number,
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
@@ -260,6 +255,16 @@ export async function recordDeposit(
 
   const accountPre = await SusuAccountModel.findById(accountId);
   if (!accountPre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  // dailyAmount is immutable, so the days covered can be derived pre-transaction.
+  if (amount % accountPre.dailyAmount !== 0) {
+    throw new AppError(
+      'AMOUNT_MISMATCH',
+      `Susu deposits must be a multiple of the daily amount (${formatGhs(accountPre.dailyAmount)})`,
+      422,
+      { dailyAmount: accountPre.dailyAmount },
+    );
+  }
+  const daysCovered = amount / accountPre.dailyAmount;
   const customer = await loadCustomer(accountPre.customerId);
 
   const session = await mongoose.startSession();
@@ -286,7 +291,6 @@ export async function recordDeposit(
         );
       }
 
-      const amount = computeDepositAmount(account.dailyAmount, daysCovered);
       const completed = account.depositsCount + daysCovered === SUSU_CYCLE_DEPOSITS;
 
       // Optimistic concurrency: the counters must not have moved since we read them.

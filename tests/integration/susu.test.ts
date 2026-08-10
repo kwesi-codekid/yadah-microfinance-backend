@@ -54,7 +54,7 @@ describe('susu transactions (WBS 7.2)', () => {
 
     const results = await Promise.allSettled(
       Array.from({ length: 5 }, () =>
-        susu.recordDeposit(officer, accountId, 1, randomUUID(), 'cash'),
+        susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash'),
       ),
     );
     const ok = results.filter((r) => r.status === 'fulfilled').length;
@@ -64,14 +64,25 @@ describe('susu transactions (WBS 7.2)', () => {
     expect(await SusuDepositModel.countDocuments({ accountId })).toBe(ok);
   });
 
+  it('rejects a deposit that is not a multiple of the daily amount', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+
+    await expect(
+      susu.recordDeposit(officer, accountId, 1_500, randomUUID(), 'cash'),
+    ).rejects.toMatchObject({ code: 'AMOUNT_MISMATCH' });
+    expect(await SusuDepositModel.countDocuments({ accountId })).toBe(0);
+  });
+
   it('deposit replay under the same idempotency key records exactly once', async () => {
     const customerId = await makeCustomer();
     const account = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new (await import('mongoose')).Types.ObjectId(account.id);
     const key = randomUUID();
 
-    const first = await susu.recordDeposit(officer, accountId, 2, key, 'cash');
-    const second = await susu.recordDeposit(officer, accountId, 2, key, 'cash');
+    const first = await susu.recordDeposit(officer, accountId, 2_000, key, 'cash');
+    const second = await susu.recordDeposit(officer, accountId, 2_000, key, 'cash');
     expect(first.replayed).toBe(false);
     expect(second.replayed).toBe(true);
     expect(second.deposit.id).toBe(first.deposit.id);
@@ -97,7 +108,7 @@ describe('susu closure', () => {
     const customerId = await makeCustomer();
     const account = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 3, randomUUID(), 'cash');
+    await susu.recordDeposit(officer, accountId, 3_000, randomUUID(), 'cash');
 
     const result = await susu.closeAccount(officer, accountId);
     expect(result.commission).toBe(1_000);
@@ -128,7 +139,7 @@ describe('susu termination', () => {
     const customerId = await makeCustomer();
     const account = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 1, randomUUID(), 'cash');
+    await susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash');
 
     await expect(susu.terminateAccount(officer, accountId)).rejects.toMatchObject({
       code: 'CANNOT_TERMINATE',
