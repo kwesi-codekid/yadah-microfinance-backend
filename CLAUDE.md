@@ -13,7 +13,7 @@ Once scaffolding exists (task 1.1 in the WBS), update this file with the actual 
 
 ## Scope discipline
 
-Phase 1 is backend-only, deadline-driven, at full schedule capacity. Prefer the simplest correct implementation. Explicitly out of scope — do not build even if helpful: frontend code, customer portal, hire purchase, offline mode, Paystack/MoMo payment flows (only the `channel` field exists in schemas), AI/analytics.
+Phase 1 is backend-only, deadline-driven, at full schedule capacity. Prefer the simplest correct implementation. Explicitly out of scope — do not build even if helpful: frontend code, customer portal, offline mode, AI/analytics. (Hire purchase and Paystack charges were later pulled INTO scope by client decisions — both are implemented; Paystack money-in lives in `src/modules/payments` and records money only on webhook confirmation.)
 
 ## Planned stack
 
