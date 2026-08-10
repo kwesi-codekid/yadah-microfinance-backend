@@ -63,10 +63,12 @@ const profileFields = {
   purposeOfAccount: z.string().min(2).max(200).trim().optional(),
   // Next of kin
   nextOfKin: nextOfKin.optional(),
-  // Attachments — URLs returned by POST /uploads/images
-  photoUrl: uploadedImageUrl.optional(),
-  idDocumentFrontUrl: uploadedImageUrl.optional(),
-  idDocumentBackUrl: uploadedImageUrl.optional(),
+  // Attachments — required at registration; URLs minted by POST /uploads/images
+  photoUrl: uploadedImageUrl.describe('Customer photo — from POST /uploads/images'),
+  idDocumentFrontUrl: uploadedImageUrl.describe(
+    'ID front — from POST /uploads/images?kind=document',
+  ),
+  idDocumentBackUrl: uploadedImageUrl.describe('ID back — from POST /uploads/images?kind=document'),
 };
 
 export const createCustomerBody = z.object(profileFields);

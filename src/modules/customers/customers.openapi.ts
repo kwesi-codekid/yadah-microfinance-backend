@@ -134,7 +134,10 @@ export const customerPaths: ZodOpenApiPathsObject = {
     post: {
       tags: ['Customers'],
       summary: 'Register a customer (office only)',
-      description: 'Account creation happens at the office — collectors cannot create customers.',
+      description:
+        'Account creation happens at the office — collectors cannot create customers. ' +
+        'The customer photo and both ID document images (front and back) are required — ' +
+        'upload them via POST /uploads/images first.',
       security,
       requestBody: jsonBody(createCustomerBody),
       responses: {
