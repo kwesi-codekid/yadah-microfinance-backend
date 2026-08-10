@@ -13,6 +13,8 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().default('Yadah <onboarding@resend.dev>'),
   CLOUDINARY_URL: z.string().default(''),
   FRONTEND_ORIGIN: z.string().default('*'),
+  /** Paystack secret key (sk_...). Empty = payments endpoints answer 503. */
+  PAYSTACK_SECRET_KEY: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

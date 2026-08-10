@@ -20,6 +20,7 @@ export { HpAgreementModel, type HpAgreement } from './hp-agreement.model.js';
 export { HpPaymentModel, type HpPayment } from './hp-payment.model.js';
 export { HpScheduleModel, type HpSchedule } from './hp-schedule.model.js';
 export { HpConfigModel, type HpConfig } from './hp-config.model.js';
+export { PaystackChargeModel, type PaystackCharge } from './paystack-charge.model.js';
 export { SmsLogModel, type SmsLog } from './sms-log.model.js';
 export { AuditLogModel, type AuditLog } from './audit-log.model.js';
 export { CHANNELS, ROLES, type Channel, type Role } from './shared.js';

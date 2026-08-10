@@ -9,6 +9,7 @@ import { loanPaths } from '../modules/loans/loans.openapi.js';
 import { reportPaths } from '../modules/reports/reports.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
+import { paymentPaths } from '../modules/payments/payments.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -57,6 +58,10 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
         name: 'Transfers',
         description: 'Atomic internal moves: susu → savings/loan/HP · savings → susu/loan/HP',
       },
+      {
+        name: 'Payments',
+        description: 'Paystack mobile-money charges into susu, savings, loans, hire purchase',
+      },
     ],
     paths: {
       ...authPaths,
@@ -69,6 +74,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...reportPaths,
       ...hpPaths,
       ...transferPaths,
+      ...paymentPaths,
     },
     components: {
       securitySchemes: {

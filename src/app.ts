@@ -13,12 +13,20 @@ import { loansRouter } from './modules/loans/loans.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
 import { hpRouter } from './modules/hire-purchase/hp.routes.js';
 import { transfersRouter } from './modules/transfers/transfers.routes.js';
+import { paymentsRouter, paystackWebhookHandler } from './modules/payments/payments.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
 
   app.disable('x-powered-by');
   app.use(httpLogger);
+  // The Paystack webhook signature covers the raw bytes, so this route must
+  // see the body BEFORE the global JSON parser touches it.
+  app.post(
+    '/api/v1/payments/paystack/webhook',
+    express.raw({ type: 'application/json' }),
+    paystackWebhookHandler,
+  );
   app.use(express.json());
 
   app.get('/api/v1/health', (_req, res) => {
@@ -40,6 +48,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/reports', reportsRouter);
   app.use('/api/v1/hire-purchase', hpRouter);
   app.use('/api/v1/transfers', transfersRouter);
+  app.use('/api/v1/payments', paymentsRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);
