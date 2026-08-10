@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { pagination, trashBody } from '../../schemas/common.js';
 import { rangeQuery } from '../reports/reports.schemas.js';
 import { txnTotals, unifiedTransaction } from '../reports/reports.openapi.js';
 import { createCustomerBody, listCustomersQuery, updateCustomerBody } from './customers.schemas.js';
@@ -58,6 +59,18 @@ const publicCustomer = z
 const customerResult = z.object({ customer: publicCustomer });
 const customerList = z.object({
   items: z.array(publicCustomer),
+  page: z.number().int(),
+  limit: z.number().int(),
+  total: z.number().int(),
+});
+const trashedCustomer = publicCustomer.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+const trashedCustomerResult = z.object({ customer: trashedCustomer });
+const trashedCustomerList = z.object({
+  items: z.array(trashedCustomer),
   page: z.number().int(),
   limit: z.number().int(),
   total: z.number().int(),
@@ -161,6 +174,18 @@ export const customerPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/customers/trash': {
+    get: {
+      tags: ['Customers'],
+      summary: 'List trashed customers (office only)',
+      description: 'Paginated, most recently trashed first.',
+      security,
+      requestParams: { query: pagination },
+      responses: {
+        '200': jsonResponse('Paginated trashed customers', trashedCustomerList),
+      },
+    },
+  },
   '/customers/{id}': {
     get: {
       tags: ['Customers'],
@@ -171,6 +196,24 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('The customer', customerResult),
 
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    delete: {
+      tags: ['Customers'],
+      summary: 'Move a customer to the trash (office only)',
+      description:
+        'Soft delete: the customer disappears from normal listings and lookups but stays ' +
+        'restorable via POST /customers/{id}/restore. Refused (CANNOT_TRASH) while the ' +
+        'customer still has open susu accounts, savings accounts, loans or hire-purchase ' +
+        'agreements. The phone number stays reserved (unique index) while the customer is ' +
+        'in the trash.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Trashed customer', trashedCustomerResult),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('CANNOT_TRASH — details: { susu, savings, loans, hirePurchase }'),
       },
     },
     patch: {
@@ -209,7 +252,9 @@ export const customerPaths: ZodOpenApiPathsObject = {
     post: {
       tags: ['Customers'],
       summary: 'Deactivate a customer (office only)',
-      description: 'Idempotent. No delete exists — history must stay intact.',
+      description:
+        'Idempotent. Deactivation blocks edits but keeps the customer visible; ' +
+        'to remove one from listings use DELETE /customers/{id}, which moves it to the trash.',
       security,
       requestParams: { path: idParam },
       responses: {
@@ -227,6 +272,20 @@ export const customerPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse('Reactivated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/customers/{id}/restore': {
+    post: {
+      tags: ['Customers'],
+      summary: 'Restore a customer from the trash (office only)',
+      description: 'Clears the trash fields; the customer reappears in normal listings.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored customer', customerResult),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED — the customer is not in the trash'),
       },
     },
   },

@@ -2,14 +2,21 @@ import { MongoServerError } from 'mongodb';
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
+import { createdAtFilter } from '../../lib/time.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import {
   CustomerModel,
+  HpAgreementModel,
+  LoanModel,
+  SavingsAccountModel,
+  SusuAccountModel,
   type Customer,
   type CustomerIdentification,
   type NextOfKin,
 } from '../../models/index.js';
+import { NOT_TRASHED, requireDeletedAt } from '../../models/shared.js';
+import type { Pagination } from '../../schemas/common.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import {
   PHONES_DISTINCT_MESSAGE,
@@ -142,8 +149,10 @@ export async function listCustomers(
   _actor: AccessTokenPayload,
   query: ListCustomersQuery,
 ): Promise<CustomerList> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.status) filter.status = query.status;
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
 
   // Fuzzy search: results come back in relevance order, not createdAt.
   if (query.search !== undefined) {
@@ -178,7 +187,7 @@ export async function getCustomer(
   _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicCustomer> {
-  const customer = await CustomerModel.findById(id);
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   return toPublicCustomer(customer);
 }
@@ -189,7 +198,7 @@ export async function updateCustomer(
   patch: UpdateCustomerBody,
   requestId?: string,
 ): Promise<PublicCustomer> {
-  const customer = await CustomerModel.findById(id);
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status === 'inactive') {
     throw new AppError(
@@ -250,7 +259,7 @@ export async function setCustomerStatus(
   status: 'active' | 'inactive',
   requestId?: string,
 ): Promise<PublicCustomer> {
-  const customer = await CustomerModel.findById(id);
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status === status) return toPublicCustomer(customer); // idempotent
 
@@ -268,4 +277,140 @@ export async function setCustomerStatus(
     ...(requestId !== undefined ? { requestId } : {}),
   });
   return toPublicCustomer(customer);
+}
+
+/** Public shape of a trashed customer — trash listings and the DELETE response. */
+export interface TrashedCustomer extends PublicCustomer {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedCustomer(c: Customer): TrashedCustomer {
+  return {
+    ...toPublicCustomer(c),
+    deletedAt: requireDeletedAt(c.deletedAt),
+    ...(c.deletedById ? { deletedById: c.deletedById.toHexString() } : {}),
+    ...(c.deleteReason !== undefined ? { deleteReason: c.deleteReason } : {}),
+  };
+}
+
+export async function trashCustomer(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<TrashedCustomer> {
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+
+  // A customer can only go to the trash once every product tie is severed.
+  const [susu, savings, loans, hirePurchase] = await Promise.all([
+    SusuAccountModel.countDocuments({
+      customerId: id,
+      ...NOT_TRASHED,
+      status: { $in: ['active', 'completed', 'pending-payout'] },
+    }),
+    SavingsAccountModel.countDocuments({ customerId: id, ...NOT_TRASHED, status: 'active' }),
+    LoanModel.countDocuments({
+      customerId: id,
+      ...NOT_TRASHED,
+      status: { $in: ['pending', 'approved', 'active', 'arrears'] },
+    }),
+    HpAgreementModel.countDocuments({
+      customerId: id,
+      ...NOT_TRASHED,
+      status: { $in: ['pending', 'active', 'in-arrears', 'repossessed'] },
+    }),
+  ]);
+  if (susu + savings + loans + hirePurchase > 0) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Customer still has open accounts, loans or agreements',
+      422,
+      { susu, savings, loans, hirePurchase },
+    );
+  }
+
+  customer.deletedAt = new Date();
+  customer.deletedById = new Types.ObjectId(actor.sub);
+  if (reason !== undefined) customer.deleteReason = reason;
+  await customer.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'customer.trash',
+    entityType: 'customer',
+    entityId: customer._id,
+    before: { status: customer.status, deletedAt: null },
+    after: {
+      status: customer.status,
+      deletedAt: customer.deletedAt,
+      ...(reason !== undefined ? { deleteReason: reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  const trashed = toTrashedCustomer(customer);
+  emitAdminEvent('customer.trashed', { id: trashed.id, fullName: trashed.fullName });
+  return trashed;
+}
+
+export async function restoreCustomer(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicCustomer> {
+  const customer = await CustomerModel.findById(id);
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  if (!customer.deletedAt) throw new AppError('NOT_TRASHED', 'Customer is not in the trash', 409);
+
+  const before = {
+    status: customer.status,
+    deletedAt: customer.deletedAt,
+    ...(customer.deleteReason !== undefined ? { deleteReason: customer.deleteReason } : {}),
+  };
+  customer.deletedAt = null;
+  customer.set('deletedById', undefined);
+  customer.set('deleteReason', undefined);
+  await customer.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'customer.restore',
+    entityType: 'customer',
+    entityId: customer._id,
+    before,
+    after: { status: customer.status, deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  const restored = toPublicCustomer(customer);
+  emitAdminEvent('customer.restored', { id: restored.id, fullName: restored.fullName });
+  return restored;
+}
+
+export interface CustomerTrashList {
+  items: TrashedCustomer[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export async function listCustomerTrash(
+  _actor: AccessTokenPayload,
+  query: Pagination,
+): Promise<CustomerTrashList> {
+  const filter = { deletedAt: { $ne: null } };
+  const [customers, total] = await Promise.all([
+    CustomerModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    CustomerModel.countDocuments(filter),
+  ]);
+  return {
+    items: customers.map(toTrashedCustomer),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
 }

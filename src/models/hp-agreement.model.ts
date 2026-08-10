@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField } from './shared.js';
+import { moneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * A hire purchase agreement (HP guide). Lifecycle:
@@ -9,7 +9,7 @@ import { moneyField } from './shared.js';
  * exactly and surfaced on every read. Item prices are SNAPSHOTTED at signing
  * so later inventory edits never change a signed agreement.
  */
-export interface HpAgreement {
+export interface HpAgreement extends TrashFields {
   _id: Types.ObjectId;
   customerId: Types.ObjectId;
   itemId: Types.ObjectId;
@@ -98,6 +98,7 @@ const hpAgreementSchema = new Schema<HpAgreement>(
     redemptionDeadline: { type: Date },
     closedAt: { type: Date },
     rejectionReason: { type: String, trim: true },
+    ...trashFields,
   },
   { timestamps: true },
 );

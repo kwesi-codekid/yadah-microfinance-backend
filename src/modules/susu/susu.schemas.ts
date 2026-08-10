@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   channel,
+  dateRangeFields,
+  fromToIssue,
   idempotencyKey,
   objectId,
   pagination,
@@ -15,16 +17,22 @@ export const openAccountBody = z.object({
 });
 export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
-export const listAccountsQuery = pagination.extend({
-  customerId: objectId.optional(),
-  status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']).optional(),
-  accountNumber: z
-    .string()
-    .regex(/^\d{6}$/)
-    .optional(),
-  /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
-  search: z.string().min(1).max(100).optional(),
-});
+export const listAccountsQuery = pagination
+  .extend({
+    customerId: objectId.optional(),
+    status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']).optional(),
+    accountNumber: z
+      .string()
+      .regex(/^\d{6}$/)
+      .optional(),
+    /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 
 export const accountIdParams = z.object({ id: objectId });
@@ -50,8 +58,23 @@ export const collectAllBody = z.object({
 });
 export type CollectAllBody = z.infer<typeof collectAllBody>;
 
-export const listDepositsQuery = pagination;
+export const listDepositsQuery = pagination.extend({ ...dateRangeFields }).check((ctx) => {
+  const issue = fromToIssue(ctx.value);
+  if (issue) ctx.issues.push(issue);
+});
 export type ListDepositsQuery = z.infer<typeof listDepositsQuery>;
+
+export const depositIdParams = z.object({ id: objectId, depositId: objectId });
+export type DepositIdParams = z.infer<typeof depositIdParams>;
+
+export const updateDepositBody = z.object({
+  /** Corrected cash amount, pesewas — must be a multiple of the daily amount. */
+  amount: positiveMoneyPesewas,
+});
+export type UpdateDepositBody = z.infer<typeof updateDepositBody>;
+
+export const listTrashQuery = pagination;
+export type ListTrashQuery = z.infer<typeof listTrashQuery>;
 
 export const payoutBody = z.object({
   /** Omit to pay out the full remaining balance. */

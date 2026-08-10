@@ -7,7 +7,7 @@ import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
-import { accraDay } from '../../lib/time.js';
+import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   CustomerModel,
   SavingsAccountModel,
@@ -22,8 +22,8 @@ import {
   computeWithdrawal,
 } from '../../domain/savings.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import type { Channel } from '../../models/shared.js';
-import type { ListAccountsQuery, ListTxnsQuery } from './savings.schemas.js';
+import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
+import type { ListAccountsQuery, ListTrashQuery, ListTxnsQuery } from './savings.schemas.js';
 
 // ---------------------------------------------------------------- shapes
 
@@ -116,7 +116,7 @@ export async function openAccount(
   channel: Channel,
   requestId?: string,
 ): Promise<{ account: PublicSavingsAccount; initialTxn?: PublicSavingsTxn }> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
@@ -202,10 +202,12 @@ export async function listAccounts(
   _actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
 
   // Fuzzy: match by customer (typo-tolerant name/phone) or account number prefix.
   if (query.search !== undefined) {
@@ -243,7 +245,7 @@ export async function getAccount(
   _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSavingsAccount> {
-  const account = await SavingsAccountModel.findById(id);
+  const account = await SavingsAccountModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
   return toPublicSavingsAccount(account);
 }
@@ -253,15 +255,18 @@ export async function listTransactions(
   accountId: Types.ObjectId,
   query: ListTxnsQuery,
 ): Promise<{ items: PublicSavingsTxn[]; page: number; limit: number; total: number }> {
-  const account = await SavingsAccountModel.findById(accountId);
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
 
+  const txnFilter: Record<string, unknown> = { accountId, ...NOT_TRASHED };
+  const txnDateFilter = createdAtFilter(query.from, query.to);
+  if (txnDateFilter) txnFilter.createdAt = txnDateFilter;
   const [txns, total] = await Promise.all([
-    SavingsTxnModel.find({ accountId })
+    SavingsTxnModel.find(txnFilter)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
-    SavingsTxnModel.countDocuments({ accountId }),
+    SavingsTxnModel.countDocuments(txnFilter),
   ]);
   return { items: txns.map(toPublicTxn), page: query.page, limit: query.limit, total };
 }
@@ -284,12 +289,19 @@ export async function deposit(
 ): Promise<TxnResult> {
   const existing = await SavingsTxnModel.findOne({ idempotencyKey });
   if (existing) {
+    if (existing.deletedAt) {
+      throw new AppError(
+        'CONFLICT',
+        'The original transaction was moved to the trash — use a new idempotency key',
+        409,
+      );
+    }
     const account = await SavingsAccountModel.findById(existing.accountId);
     if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
     return { txn: toPublicTxn(existing), account: toPublicSavingsAccount(account), replayed: true };
   }
 
-  const pre = await SavingsAccountModel.findById(accountId);
+  const pre = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   await loadCustomer(pre.customerId);
 
@@ -300,11 +312,12 @@ export async function deposit(
       const account = await SavingsAccountModel.findOne({
         _id: accountId,
         status: 'active',
+        ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ACCOUNT_NOT_ACTIVE', 'Account is not active', 422);
 
       const upd = await SavingsAccountModel.updateOne(
-        { _id: account._id, status: 'active', balance: account.balance },
+        { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
         { $inc: { balance: amount } },
         { session },
       );
@@ -371,12 +384,19 @@ export async function withdraw(
 ): Promise<TxnResult> {
   const existing = await SavingsTxnModel.findOne({ idempotencyKey });
   if (existing) {
+    if (existing.deletedAt) {
+      throw new AppError(
+        'CONFLICT',
+        'The original transaction was moved to the trash — use a new idempotency key',
+        409,
+      );
+    }
     const account = await SavingsAccountModel.findById(existing.accountId);
     if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
     return { txn: toPublicTxn(existing), account: toPublicSavingsAccount(account), replayed: true };
   }
 
-  const pre = await SavingsAccountModel.findById(accountId);
+  const pre = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   const customer = await CustomerModel.findById(pre.customerId);
 
@@ -387,6 +407,7 @@ export async function withdraw(
       const account = await SavingsAccountModel.findOne({
         _id: accountId,
         status: 'active',
+        ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ACCOUNT_NOT_ACTIVE', 'Account is not active', 422);
 
@@ -394,7 +415,7 @@ export async function withdraw(
       const todayCashOut = await SavingsTxnModel.findOne({
         accountId: account._id,
         accraDay: today,
-        type: { $in: ['withdrawal', 'closure'] },
+        countsTowardDailyLimit: true,
       }).session(session);
       if (todayCashOut) {
         throw new AppError(
@@ -417,7 +438,7 @@ export async function withdraw(
       }
 
       const upd = await SavingsAccountModel.updateOne(
-        { _id: account._id, status: 'active', balance: account.balance },
+        { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
         { $inc: { balance: -computation.totalDebit } },
         { session },
       );
@@ -436,6 +457,7 @@ export async function withdraw(
             balanceAfter: computation.balanceAfter,
             channel: 'cash',
             accraDay: today,
+            countsTowardDailyLimit: true,
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
           },
@@ -502,7 +524,7 @@ export async function closeAccount(
   accountId: Types.ObjectId,
   requestId?: string,
 ): Promise<SavingsClosureResult> {
-  const pre = await SavingsAccountModel.findById(accountId);
+  const pre = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (pre.status === 'closed')
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
@@ -515,6 +537,7 @@ export async function closeAccount(
       const account = await SavingsAccountModel.findOne({
         _id: accountId,
         status: 'active',
+        ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
 
@@ -522,7 +545,7 @@ export async function closeAccount(
       const todayCashOut = await SavingsTxnModel.findOne({
         accountId: account._id,
         accraDay: today,
-        type: { $in: ['withdrawal', 'closure'] },
+        countsTowardDailyLimit: true,
       }).session(session);
       if (todayCashOut) {
         throw new AppError(
@@ -535,7 +558,7 @@ export async function closeAccount(
       const { fee, payout, flagged } = computeSavingsClosure(account.balance);
       const now = new Date();
       const upd = await SavingsAccountModel.updateOne(
-        { _id: account._id, status: 'active', balance: account.balance },
+        { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
         {
           $set: {
             status: 'closed',
@@ -561,6 +584,7 @@ export async function closeAccount(
             balanceAfter: 0,
             channel: 'cash',
             accraDay: today,
+            countsTowardDailyLimit: true,
             recordedById: new Types.ObjectId(actor.sub),
           },
         ],
@@ -612,4 +636,382 @@ export async function closeAccount(
     flagged: result.flagged,
   });
   return result;
+}
+
+// ---------------------------------------------------------------- trash
+
+export interface TrashedSavingsAccount extends PublicSavingsAccount {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+/** Only called on docs known to be trashed, so deletedAt is set. */
+function toTrashedSavingsAccount(a: SavingsAccount): TrashedSavingsAccount {
+  return {
+    ...toPublicSavingsAccount(a),
+    deletedAt: requireDeletedAt(a.deletedAt),
+    ...(a.deletedById !== undefined ? { deletedById: a.deletedById.toHexString() } : {}),
+    ...(a.deleteReason !== undefined ? { deleteReason: a.deleteReason } : {}),
+  };
+}
+
+export async function trashSavingsAccount(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<{ account: TrashedSavingsAccount }> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+
+  // Trashed transactions count too — any history at all blocks the trash.
+  const txnCount = await SavingsTxnModel.countDocuments({ accountId: account._id });
+  if (account.status !== 'active' || account.balance !== 0 || txnCount !== 0) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only empty, unused savings accounts can be moved to the trash',
+      422,
+      { status: account.status, balance: account.balance, txnCount },
+    );
+  }
+
+  const now = new Date();
+  await SavingsAccountModel.updateOne(
+    { _id: account._id },
+    {
+      $set: {
+        deletedAt: now,
+        deletedById: new Types.ObjectId(actor.sub),
+        ...(reason !== undefined ? { deleteReason: reason } : {}),
+      },
+    },
+  );
+  account.deletedAt = now;
+  account.deletedById = new Types.ObjectId(actor.sub);
+  if (reason !== undefined) account.deleteReason = reason;
+
+  await audit({
+    actorId: actor.sub,
+    action: 'savings.account.trash',
+    entityType: 'savings-account',
+    entityId: account._id,
+    before: { status: account.status, deletedAt: null },
+    after: {
+      status: account.status,
+      deletedAt: now,
+      ...(reason !== undefined ? { reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+
+  emitAdminEvent('savings.account.trashed', {
+    id: account._id.toHexString(),
+    accountNumber: account.accountNumber,
+    customerId: account.customerId.toHexString(),
+  });
+  return { account: toTrashedSavingsAccount(account) };
+}
+
+export async function restoreSavingsAccount(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  requestId?: string,
+): Promise<{ account: PublicSavingsAccount }> {
+  const account = await SavingsAccountModel.findById(accountId);
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (!account.deletedAt) {
+    throw new AppError('NOT_TRASHED', 'Savings account is not in the trash', 409);
+  }
+
+  await SavingsAccountModel.updateOne(
+    { _id: account._id },
+    { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+  );
+
+  await audit({
+    actorId: actor.sub,
+    action: 'savings.account.restore',
+    entityType: 'savings-account',
+    entityId: account._id,
+    before: { status: account.status, deletedAt: account.deletedAt },
+    after: { status: account.status, deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+
+  emitAdminEvent('savings.account.restored', {
+    id: account._id.toHexString(),
+    accountNumber: account.accountNumber,
+    customerId: account.customerId.toHexString(),
+  });
+  return { account: toPublicSavingsAccount(account) };
+}
+
+export async function listSavingsAccountTrash(
+  _actor: AccessTokenPayload,
+  query: ListTrashQuery,
+): Promise<{ items: TrashedSavingsAccount[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [accounts, total] = await Promise.all([
+    SavingsAccountModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SavingsAccountModel.countDocuments(filter),
+  ]);
+
+  const unique = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: accounts.map((a) => ({
+      ...toTrashedSavingsAccount(a),
+      customerName: names.get(a.customerId.toHexString()) ?? '',
+    })),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
+}
+
+// ---------------------------------------------------------------- txn trash
+
+export interface TrashedSavingsTxn extends PublicSavingsTxn {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedTxn(t: SavingsTxn): TrashedSavingsTxn {
+  return {
+    ...toPublicTxn(t),
+    deletedAt: requireDeletedAt(t.deletedAt),
+    ...(t.deletedById !== undefined ? { deletedById: t.deletedById.toHexString() } : {}),
+    ...(t.deleteReason !== undefined ? { deleteReason: t.deleteReason } : {}),
+  };
+}
+
+/**
+ * Moving a transaction to the trash reverses its balance effect, so only the
+ * newest live transaction of an active account qualifies — older mistakes are
+ * corrected by trashing forward from the end, keeping the balance history
+ * consistent. Trashing a withdrawal also frees its 1-per-day slot.
+ */
+export async function trashSavingsTxn(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  txnId: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<{ txn: TrashedSavingsTxn; account: PublicSavingsAccount }> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const txn = await SavingsTxnModel.findOne({ _id: txnId, accountId, ...NOT_TRASHED });
+  if (!txn) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+
+  if (txn.type === 'closure') {
+    throw new AppError('CANNOT_TRASH', 'Closure transactions cannot be moved to the trash', 422);
+  }
+  if (txn.channel === 'transfer') {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Transactions created by a transfer cannot be trashed on their own',
+      422,
+    );
+  }
+  if (account.status !== 'active') {
+    throw new AppError('CANNOT_TRASH', 'Only transactions on active accounts can be trashed', 422);
+  }
+  const newest = await SavingsTxnModel.findOne({ accountId, ...NOT_TRASHED }).sort({
+    createdAt: -1,
+    _id: -1,
+  });
+  if (!newest?._id.equals(txn._id)) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only the most recent transaction can be moved to the trash',
+      422,
+    );
+  }
+
+  // deposit: take the money back out; withdrawal: put amount + fee back in.
+  const delta = txn.type === 'deposit' ? -txn.amount : txn.amount + (txn.fee ?? 0);
+  const now = new Date();
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await SavingsAccountModel.updateOne(
+        { _id: accountId, status: 'active', balance: txn.balanceAfter, ...NOT_TRASHED },
+        { $inc: { balance: delta } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const txnUpd = await SavingsTxnModel.updateOne(
+        { _id: txnId, deletedAt: null },
+        {
+          $set: {
+            deletedAt: now,
+            deletedById: new Types.ObjectId(actor.sub),
+            ...(reason !== undefined ? { deleteReason: reason } : {}),
+          },
+          $unset: { countsTowardDailyLimit: '' },
+        },
+        { session },
+      );
+      if (txnUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Transaction changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'savings.txn.trash',
+          entityType: 'savings-txn',
+          entityId: txnId,
+          amountBefore: txn.balanceAfter,
+          amountAfter: txn.balanceAfter + delta,
+          before: { type: txn.type, amount: txn.amount, deletedAt: null },
+          after: {
+            type: txn.type,
+            amount: txn.amount,
+            deletedAt: now,
+            ...(reason !== undefined ? { reason } : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const [afterTxn, afterAccount] = await Promise.all([
+    SavingsTxnModel.findById(txnId),
+    SavingsAccountModel.findById(accountId),
+  ]);
+  if (!afterTxn || !afterAccount) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+  emitAdminEvent('savings.txn.trashed', {
+    accountId: accountId.toHexString(),
+    txnId: txnId.toHexString(),
+    type: txn.type,
+    amount: txn.amount,
+    balance: afterAccount.balance,
+  });
+  return { txn: toTrashedTxn(afterTxn), account: toPublicSavingsAccount(afterAccount) };
+}
+
+export async function restoreSavingsTxn(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  txnId: Types.ObjectId,
+  requestId?: string,
+): Promise<{ txn: PublicSavingsTxn; account: PublicSavingsAccount }> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const txn = await SavingsTxnModel.findOne({ _id: txnId, accountId });
+  if (!txn) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+  if (!txn.deletedAt) {
+    throw new AppError('NOT_TRASHED', 'Transaction is not in the trash', 409);
+  }
+  if (account.status !== 'active') {
+    throw new AppError('CANNOT_RESTORE', 'Only active accounts can take a restore', 422);
+  }
+  const newerLive = await SavingsTxnModel.findOne({
+    accountId,
+    ...NOT_TRASHED,
+    createdAt: { $gt: txn.createdAt },
+  });
+  if (newerLive) {
+    throw new AppError(
+      'CANNOT_RESTORE',
+      'Newer transactions exist on the account — the balance has moved on',
+      422,
+    );
+  }
+
+  // Reverse of trash: deposit puts the money back; withdrawal re-debits.
+  const delta = txn.type === 'deposit' ? txn.amount : -(txn.amount + (txn.fee ?? 0));
+  const expectedBalance = txn.balanceAfter - delta;
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await SavingsAccountModel.updateOne(
+        { _id: accountId, status: 'active', balance: expectedBalance, ...NOT_TRASHED },
+        { $inc: { balance: delta } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const txnUpd = await SavingsTxnModel.updateOne(
+        { _id: txnId, deletedAt: { $ne: null } },
+        {
+          $set: {
+            deletedAt: null,
+            ...(txn.type === 'withdrawal' ? { countsTowardDailyLimit: true } : {}),
+          },
+          $unset: { deletedById: '', deleteReason: '' },
+        },
+        { session },
+      );
+      if (txnUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Transaction changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'savings.txn.restore',
+          entityType: 'savings-txn',
+          entityId: txnId,
+          amountBefore: expectedBalance,
+          amountAfter: txn.balanceAfter,
+          before: { type: txn.type, amount: txn.amount, deletedAt: txn.deletedAt },
+          after: { type: txn.type, amount: txn.amount, deletedAt: null },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } catch (err) {
+    // Restoring a withdrawal re-claims its accraDay — taken meanwhile → 409.
+    mapDuplicateKey(err);
+  } finally {
+    await session.endSession();
+  }
+
+  const [afterTxn, afterAccount] = await Promise.all([
+    SavingsTxnModel.findById(txnId),
+    SavingsAccountModel.findById(accountId),
+  ]);
+  if (!afterTxn || !afterAccount) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+  emitAdminEvent('savings.txn.restored', {
+    accountId: accountId.toHexString(),
+    txnId: txnId.toHexString(),
+    type: txn.type,
+    amount: txn.amount,
+    balance: afterAccount.balance,
+  });
+  return { txn: toPublicTxn(afterTxn), account: toPublicSavingsAccount(afterAccount) };
+}
+
+export async function listSavingsTxnTrash(
+  _actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  query: ListTrashQuery,
+): Promise<{ items: TrashedSavingsTxn[]; page: number; limit: number; total: number }> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const filter = { accountId, deletedAt: { $ne: null } };
+  const [txns, total] = await Promise.all([
+    SavingsTxnModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SavingsTxnModel.countDocuments(filter),
+  ]);
+  return { items: txns.map(toTrashedTxn), page: query.page, limit: query.limit, total };
 }

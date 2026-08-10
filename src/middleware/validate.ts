@@ -27,7 +27,11 @@ export function validate(schemas: ValidationSchemas): RequestHandler {
     for (const part of ['body', 'query', 'params'] as const) {
       const schema = schemas[part];
       if (!schema) continue;
-      const result = schema.safeParse(req[part]);
+      // A bodyless request (e.g. DELETE) leaves req.body undefined in
+      // Express 5 — validate it as an empty object so all-optional body
+      // schemas pass without forcing clients to send `{}`.
+      const input: unknown = part === 'body' && req.body === undefined ? {} : req[part];
+      const result = schema.safeParse(input);
       if (result.success) {
         validated[part] = result.data;
       } else {

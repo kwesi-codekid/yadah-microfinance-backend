@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   channel,
+  dateRangeFields,
+  fromToIssue,
   idempotencyKey,
   objectId,
   pagination,
@@ -22,20 +24,29 @@ export const openAccountBody = z
   });
 export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
-export const listAccountsQuery = pagination.extend({
-  customerId: objectId.optional(),
-  status: z.enum(['active', 'closed']).optional(),
-  accountNumber: z
-    .string()
-    .regex(/^\d{10}$/)
-    .optional(),
-  /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
-  search: z.string().min(1).max(100).optional(),
-});
+export const listAccountsQuery = pagination
+  .extend({
+    customerId: objectId.optional(),
+    status: z.enum(['active', 'closed']).optional(),
+    accountNumber: z
+      .string()
+      .regex(/^\d{10}$/)
+      .optional(),
+    /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 
 export const accountIdParams = z.object({ id: objectId });
 export type AccountIdParams = z.infer<typeof accountIdParams>;
+
+export const txnIdParams = z.object({ id: objectId, txnId: objectId });
+export type TxnIdParams = z.infer<typeof txnIdParams>;
 
 export const depositBody = z.object({
   amount: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 10'),
@@ -51,5 +62,13 @@ export const withdrawalBody = z.object({
 });
 export type WithdrawalBody = z.infer<typeof withdrawalBody>;
 
-export const listTxnsQuery = pagination;
+export const listTxnsQuery = pagination.extend({ ...dateRangeFields }).check((ctx) => {
+  const issue = fromToIssue(ctx.value);
+  if (issue) ctx.issues.push(issue);
+});
 export type ListTxnsQuery = z.infer<typeof listTxnsQuery>;
+
+export const listTrashQuery = pagination;
+export type ListTrashQuery = z.infer<typeof listTrashQuery>;
+
+export { trashBody, type TrashBody } from '../../schemas/common.js';

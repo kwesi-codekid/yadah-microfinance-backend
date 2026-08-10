@@ -7,18 +7,22 @@ import {
   customerIdParams,
   listLoansQuery,
   loanIdParams,
+  loanTrashQuery,
   putConfigBody,
   rejectBody,
   repayBody,
   susuRepayBody,
+  trashBody,
   type ApplyBody,
   type CustomerIdParams,
   type ListLoansQuery,
   type LoanIdParams,
+  type LoanTrashQuery,
   type PutConfigBody,
   type RejectBody,
   type RepayBody,
   type SusuRepayBody,
+  type TrashBody,
 } from './loans.schemas.js';
 import * as loansService from './loans.service.js';
 
@@ -75,11 +79,40 @@ loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
     .catch(next);
 });
 
+// Registered BEFORE '/:id' so 'trash' is never captured as a loan id.
+loansRouter.get('/trash', validate({ query: loanTrashQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: LoanTrashQuery }>(req);
+  loansService
+    .listLoanTrash(query)
+    .then((list) => res.json(list))
+    .catch(next);
+});
+
 loansRouter.get('/:id', validate({ params: loanIdParams }), (req, res, next) => {
   const { params } = getValidated<{ params: LoanIdParams }>(req);
   loansService
     .getLoan(params.id)
     .then((detail) => res.json(detail))
+    .catch(next);
+});
+
+loansRouter.delete(
+  '/:id',
+  validate({ params: loanIdParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: LoanIdParams; body: TrashBody }>(req);
+    loansService
+      .trashLoan(getAuth(req), params.id, body.reason, req.id as string)
+      .then((loan) => res.json({ loan }))
+      .catch(next);
+  },
+);
+
+loansRouter.post('/:id/restore', validate({ params: loanIdParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: LoanIdParams }>(req);
+  loansService
+    .restoreLoan(getAuth(req), params.id, req.id as string)
+    .then((loan) => res.json({ loan }))
     .catch(next);
 });
 

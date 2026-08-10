@@ -13,6 +13,8 @@ import {
   putConfigBody,
   reasonBody,
   redeemBody,
+  trashBody,
+  trashListQuery,
   updateItemBody,
 } from './hp.schemas.js';
 
@@ -80,6 +82,18 @@ const hpAgreement = z
   })
   .meta({ id: 'HpAgreement' });
 
+const trashedHpItem = hpItem.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
+const trashedHpAgreement = hpAgreement.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
 const agreementResult = z.object({ agreement: hpAgreement });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string() });
@@ -115,6 +129,26 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/items/trash': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'List trashed inventory items',
+      description: 'Newest-trashed first. Restore via POST /hire-purchase/items/{id}/restore.',
+      security,
+      requestParams: { query: trashListQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated trashed items',
+          z.object({
+            items: z.array(trashedHpItem),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+      },
+    },
+  },
   '/hire-purchase/items/{id}': {
     patch: {
       tags: ['Hire Purchase'],
@@ -126,6 +160,33 @@ export const hpPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse('Updated', z.object({ item: hpItem })),
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    delete: {
+      tags: ['Hire Purchase'],
+      summary: 'Move an item to the trash (soft delete)',
+      description:
+        'Only items never used by an agreement can be trashed. Trashed items vanish from normal listings until restored.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Trashed', z.object({ item: trashedHpItem })),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('CANNOT_TRASH (details.agreements)'),
+      },
+    },
+  },
+  '/hire-purchase/items/{id}/restore': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Restore an item from the trash',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', z.object({ item: hpItem })),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED'),
       },
     },
   },
@@ -204,6 +265,26 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/agreements/trash': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'List trashed agreements',
+      description: 'Newest-trashed first. Restore via POST /hire-purchase/agreements/{id}/restore.',
+      security,
+      requestParams: { query: trashListQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated trashed agreements',
+          z.object({
+            items: z.array(trashedHpAgreement),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+      },
+    },
+  },
   '/hire-purchase/agreements/{id}': {
     get: {
       tags: ['Hire Purchase'],
@@ -211,6 +292,36 @@ export const hpPaths: ZodOpenApiPathsObject = {
       security,
       requestParams: { path: idParam },
       responses: { '200': jsonResponse('Detail', z.unknown()), '404': errorResponse('NOT_FOUND') },
+    },
+    delete: {
+      tags: ['Hire Purchase'],
+      summary: 'Move an agreement to the trash (soft delete)',
+      description:
+        'Only unpaid pending or rejected agreements. Trashing a pending agreement restocks its item (the item never left the shop).',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Trashed', z.object({ agreement: trashedHpAgreement })),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('CANNOT_TRASH (details.status, details.payments)'),
+      },
+    },
+  },
+  '/hire-purchase/agreements/{id}/restore': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Restore an agreement from the trash',
+      description:
+        'Restoring a pending agreement re-reserves a unit of its item — refused if the item is out of stock.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', agreementResult),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED'),
+        '422': errorResponse('OUT_OF_STOCK'),
+      },
     },
   },
   '/hire-purchase/agreements/{id}/deposit': {

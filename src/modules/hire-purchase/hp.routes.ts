@@ -16,6 +16,8 @@ import {
   putConfigBody,
   reasonBody,
   redeemBody,
+  trashBody,
+  trashListQuery,
   updateItemBody,
   type AdjustStockBody,
   type CreateAgreementBody,
@@ -30,6 +32,8 @@ import {
   type PutConfigBody,
   type ReasonBody,
   type RedeemBody,
+  type TrashBody,
+  type TrashListQuery,
   type UpdateItemBody,
 } from './hp.schemas.js';
 import * as hp from './hp.service.js';
@@ -51,6 +55,28 @@ hpRouter.get('/items', validate({ query: listItemsQuery }), (req, res, next) => 
   const { query } = getValidated<{ query: ListItemsQuery }>(req);
   hp.listItems(query)
     .then((list) => res.json(list))
+    .catch(next);
+});
+
+// Registered before the /items/:id routes so 'trash' is never read as an id.
+hpRouter.get('/items/trash', validate({ query: trashListQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: TrashListQuery }>(req);
+  hp.listHpItemTrash(query)
+    .then((list) => res.json(list))
+    .catch(next);
+});
+
+hpRouter.delete('/items/:id', validate({ params: idParams, body: trashBody }), (req, res, next) => {
+  const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
+  hp.trashHpItem(getAuth(req), params.id, body.reason, req.id as string)
+    .then((item) => res.json({ item }))
+    .catch(next);
+});
+
+hpRouter.post('/items/:id/restore', validate({ params: idParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: IdParams }>(req);
+  hp.restoreHpItem(getAuth(req), params.id, req.id as string)
+    .then((item) => res.json({ item }))
     .catch(next);
 });
 
@@ -117,6 +143,32 @@ hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res,
   const { query } = getValidated<{ query: ListAgreementsQuery }>(req);
   hp.listAgreements(query)
     .then((list) => res.json(list))
+    .catch(next);
+});
+
+// Registered before the /agreements/:id routes so 'trash' is never read as an id.
+hpRouter.get('/agreements/trash', validate({ query: trashListQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: TrashListQuery }>(req);
+  hp.listHpAgreementTrash(query)
+    .then((list) => res.json(list))
+    .catch(next);
+});
+
+hpRouter.delete(
+  '/agreements/:id',
+  validate({ params: idParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
+    hp.trashHpAgreement(getAuth(req), params.id, body.reason, req.id as string)
+      .then((agreement) => res.json({ agreement }))
+      .catch(next);
+  },
+);
+
+hpRouter.post('/agreements/:id/restore', validate({ params: idParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: IdParams }>(req);
+  hp.restoreHpAgreement(getAuth(req), params.id, req.id as string)
+    .then((agreement) => res.json({ agreement }))
     .catch(next);
 });
 

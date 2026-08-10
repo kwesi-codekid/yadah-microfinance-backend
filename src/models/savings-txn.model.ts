@@ -1,7 +1,14 @@
 import { Schema, model, type Types } from 'mongoose';
-import { CHANNELS, moneyField, optionalMoneyField, type Channel } from './shared.js';
+import {
+  CHANNELS,
+  moneyField,
+  optionalMoneyField,
+  trashFields,
+  type Channel,
+  type TrashFields,
+} from './shared.js';
 
-export interface SavingsTxn {
+export interface SavingsTxn extends TrashFields {
   _id: Types.ObjectId;
   accountId: Types.ObjectId;
   customerId: Types.ObjectId;
@@ -12,6 +19,12 @@ export interface SavingsTxn {
   channel: Channel;
   /** Accra calendar day (YYYY-MM-DD) — backs the 1-withdrawal-per-day rule. */
   accraDay: string;
+  /**
+   * Set on live withdrawals/closures — the marker the 1-per-day unique index
+   * keys on (partial indexes cannot match `deletedAt: null`). Unset when the
+   * txn is trashed so the day frees up; restore re-sets it.
+   */
+  countsTowardDailyLimit?: boolean;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
@@ -28,18 +41,21 @@ const savingsTxnSchema = new Schema<SavingsTxn>(
     balanceAfter: moneyField,
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     accraDay: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    countsTowardDailyLimit: { type: Boolean },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
+    ...trashFields,
   },
   { timestamps: true },
 );
 
 savingsTxnSchema.index({ accountId: 1, createdAt: -1 });
 savingsTxnSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
-// One withdrawal (or closure) per account per Accra day, enforced at the index level too.
+// One withdrawal (or closure) per account per Accra day, enforced at the index
+// level too. Existing databases need src/scripts/migrate-trash-index.ts once.
 savingsTxnSchema.index(
   { accountId: 1, accraDay: 1 },
-  { unique: true, partialFilterExpression: { type: { $in: ['withdrawal', 'closure'] } } },
+  { unique: true, partialFilterExpression: { countsTowardDailyLimit: true } },
 );
 
 export const SavingsTxnModel = model<SavingsTxn>('SavingsTxn', savingsTxnSchema, 'savings-txns');

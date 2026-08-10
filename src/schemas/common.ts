@@ -73,6 +73,12 @@ export function fromToIssue(v: { from?: string | undefined; to?: string | undefi
 export const exportFormat = z.enum(['json', 'csv', 'xlsx']).default('json');
 export type ExportFormat = z.infer<typeof exportFormat>;
 
+/** Optional reason recorded when moving an item to the trash. */
+export const trashBody = z.object({
+  reason: z.string().min(2).max(300).trim().optional(),
+});
+export type TrashBody = z.infer<typeof trashBody>;
+
 /** Future-proofing only — Phase 1 records cash; no online-payment flows. */
 export const channel = z.enum(['cash', 'paystack', 'momo']).default('cash');
 

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
+import { pagination, trashBody, type Pagination, type TrashBody } from '../../schemas/common.js';
 import {
   createCustomerBody,
   customerIdParams,
@@ -39,6 +40,15 @@ customersRouter.get('/', validate({ query: listCustomersQuery }), (req, res, nex
   const { query } = getValidated<{ query: ListCustomersQuery }>(req);
   customersService
     .listCustomers(getAuth(req), query)
+    .then((list) => res.json(list))
+    .catch(next);
+});
+
+// Trash listing — registered BEFORE /:id so 'trash' is never captured as an id.
+customersRouter.get('/trash', requireOffice, validate({ query: pagination }), (req, res, next) => {
+  const { query } = getValidated<{ query: Pagination }>(req);
+  customersService
+    .listCustomerTrash(getAuth(req), query)
     .then((list) => res.json(list))
     .catch(next);
 });
@@ -110,6 +120,33 @@ customersRouter.post(
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
     customersService
       .setCustomerStatus(getAuth(req), params.id, 'active', req.id as string)
+      .then((customer) => res.json({ customer }))
+      .catch(next);
+  },
+);
+
+// Soft delete — refused while the customer still has open products.
+customersRouter.delete(
+  '/:id',
+  requireOffice,
+  validate({ params: customerIdParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: CustomerIdParams; body: TrashBody }>(req);
+    customersService
+      .trashCustomer(getAuth(req), params.id, body.reason, req.id as string)
+      .then((customer) => res.json({ customer }))
+      .catch(next);
+  },
+);
+
+customersRouter.post(
+  '/:id/restore',
+  requireOffice,
+  validate({ params: customerIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: CustomerIdParams }>(req);
+    customersService
+      .restoreCustomer(getAuth(req), params.id, req.id as string)
       .then((customer) => res.json({ customer }))
       .catch(next);
   },

@@ -4,10 +4,12 @@ import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
   applyBody,
   listLoansQuery,
+  loanTrashQuery,
   putConfigBody,
   rejectBody,
   repayBody,
   susuRepayBody,
+  trashBody,
 } from './loans.schemas.js';
 
 const publicLoan = z
@@ -46,6 +48,13 @@ const repaymentResult = z.object({
 });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Loan id') });
+
+/** Public shape + trash metadata, inlined (kept out of the shared Loan component). */
+const trashedLoan = publicLoan.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
 
 export const loanPaths: ZodOpenApiPathsObject = {
   '/loans/config': {
@@ -132,6 +141,26 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/loans/trash': {
+    get: {
+      tags: ['Loans'],
+      summary: 'List trashed loan applications',
+      description: 'Soft-deleted applications, newest first. Restore via POST /loans/{id}/restore.',
+      security,
+      requestParams: { query: loanTrashQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated trash',
+          z.object({
+            items: z.array(trashedLoan),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+      },
+    },
+  },
   '/loans/{id}': {
     get: {
       tags: ['Loans'],
@@ -165,6 +194,37 @@ export const loanPaths: ZodOpenApiPathsObject = {
           }),
         ),
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    delete: {
+      tags: ['Loans'],
+      summary: 'Move a loan application to the trash (soft delete)',
+      description:
+        'Only pending or rejected applications can be trashed — approved money ' +
+        'history never leaves the ledger. Optional reason is recorded.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Trashed', z.object({ loan: trashedLoan })),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('CANNOT_TRASH — loan is not pending or rejected'),
+      },
+    },
+  },
+  '/loans/{id}/restore': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Restore a loan application from the trash',
+      description:
+        'A pending application re-checks the one-open-loan rule before restoring; ' +
+        'rejected applications restore unconditionally.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', loanResult),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED, or LOAN_EXISTS — customer already has an open loan'),
       },
     },
   },

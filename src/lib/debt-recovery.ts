@@ -7,6 +7,7 @@ import {
   type HpAgreement,
   type Loan,
 } from '../models/index.js';
+import { NOT_TRASHED } from '../models/shared.js';
 import { availableToWithdraw } from '../domain/savings.js';
 import { remainingOn } from '../modules/hire-purchase/hp.service.js';
 import { transfer } from '../modules/transfers/transfers.service.js';
@@ -104,6 +105,7 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
     customerId,
     status: 'pending-payout',
     payoutRemaining: { $gt: 0 },
+    ...NOT_TRASHED,
   });
   for (const account of pending) {
     if (remaining < 1) return;
@@ -117,7 +119,7 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
   }
 
   // 2. Savings — normal withdrawal rules apply (fee, 1/day, min balance).
-  const savings = await SavingsAccountModel.find({ customerId, status: 'active' });
+  const savings = await SavingsAccountModel.find({ customerId, status: 'active', ...NOT_TRASHED });
   for (const account of savings) {
     if (remaining < 1) return;
     const available = availableToWithdraw(account.balance);
@@ -134,7 +136,7 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
   // 3 & 4. Completed cycles first, then active ones — stopping takes the
   // one-day commission once; any excess stays pending for the customer.
   for (const status of ['completed', 'active'] as const) {
-    const accounts = await SusuAccountModel.find({ customerId, status });
+    const accounts = await SusuAccountModel.find({ customerId, status, ...NOT_TRASHED });
     for (const account of accounts) {
       if (remaining < 1) return;
       await attempt(debt, { type: 'susu', accountId: account._id }, undefined, recovered);
@@ -149,12 +151,13 @@ export async function runDebtRecoveryPass(): Promise<{ recoveredTotal: number }>
 
   const overdueLoans = await LoanModel.find({
     $or: [{ status: 'arrears' }, { status: 'active', dueDate: { $lt: now } }],
+    ...NOT_TRASHED,
   });
   for (const loan of overdueLoans) {
     await recoverDebt({ kind: 'loan', doc: loan }, recovered);
   }
 
-  const overdueHp = await HpAgreementModel.find({ status: 'in-arrears' });
+  const overdueHp = await HpAgreementModel.find({ status: 'in-arrears', ...NOT_TRASHED });
   for (const agreement of overdueHp) {
     await recoverDebt({ kind: 'hire-purchase', doc: agreement }, recovered);
   }

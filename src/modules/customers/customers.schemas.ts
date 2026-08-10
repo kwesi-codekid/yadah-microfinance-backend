@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
+  dateRangeFields,
   driversLicenceNumber,
+  fromToIssue,
   ghanaCardNumber,
   ghanaPhone,
   objectId,
@@ -156,10 +158,17 @@ export const updateCustomerBody = z
   });
 export type UpdateCustomerBody = z.infer<typeof updateCustomerBody>;
 
-export const listCustomersQuery = pagination.extend({
-  status: z.enum(['active', 'inactive']).optional(),
-  search: z.string().min(1).max(100).optional(),
-});
+export const listCustomersQuery = pagination
+  .extend({
+    status: z.enum(['active', 'inactive']).optional(),
+    search: z.string().min(1).max(100).optional(),
+    /** Registration-date range (inclusive Accra days). */
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListCustomersQuery = z.infer<typeof listCustomersQuery>;
 
 export const customerIdParams = z.object({ id: objectId });

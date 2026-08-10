@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { ghanaPhone, objectId, pagination } from '../../schemas/common.js';
+import {
+  dateRangeFields,
+  fromToIssue,
+  ghanaPhone,
+  objectId,
+  pagination,
+} from '../../schemas/common.js';
 import { passwordField, username } from '../auth/auth.schemas.js';
 
 const ROLE = z.enum(['admin', 'manager', 'collector']);
@@ -27,11 +33,17 @@ export const updateUserBody = z
   });
 export type UpdateUserBody = z.infer<typeof updateUserBody>;
 
-export const listUsersQuery = pagination.extend({
-  role: ROLE.optional(),
-  status: STATUS.optional(),
-  search: z.string().min(1).max(100).optional(),
-});
+export const listUsersQuery = pagination
+  .extend({
+    role: ROLE.optional(),
+    status: STATUS.optional(),
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListUsersQuery = z.infer<typeof listUsersQuery>;
 
 export const userIdParams = z.object({ id: objectId });

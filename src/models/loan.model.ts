@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField } from './shared.js';
+import { moneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * Tiers: small 1,000–20,000 · big 20,001–50,000 (GHS, stored as pesewas).
@@ -8,7 +8,7 @@ import { moneyField } from './shared.js';
  * past 30% the amount freezes and the loan is flagged in arrears.
  * One active loan per customer — enforced in the service layer, no exceptions.
  */
-export interface Loan {
+export interface Loan extends TrashFields {
   _id: Types.ObjectId;
   customerId: Types.ObjectId;
   tier: 'small' | 'big';
@@ -59,6 +59,7 @@ const loanSchema = new Schema<Loan>(
     closedAt: { type: Date },
     repaidOnTime: { type: Boolean },
     rejectionReason: { type: String, trim: true },
+    ...trashFields,
   },
   { timestamps: true },
 );

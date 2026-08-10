@@ -2,23 +2,30 @@ import { Router } from 'express';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
+import { trashBody, type TrashBody } from '../../schemas/common.js';
 import {
   accountIdParams,
   collectAllBody,
   depositBody,
+  depositIdParams,
   listAccountsQuery,
   listDepositsQuery,
+  listTrashQuery,
   openAccountBody,
   payoutBody,
   summaryQuery,
+  updateDepositBody,
   type AccountIdParams,
   type CollectAllBody,
   type DepositBody,
+  type DepositIdParams,
   type ListAccountsQuery,
   type ListDepositsQuery,
+  type ListTrashQuery,
   type OpenAccountBody,
   type PayoutBody,
   type SummaryQuery,
+  type UpdateDepositBody,
 } from './susu.schemas.js';
 import * as susuService from './susu.service.js';
 
@@ -46,6 +53,20 @@ susuRouter.get('/accounts', validate({ query: listAccountsQuery }), (req, res, n
     .catch(next);
 });
 
+// Registered BEFORE /accounts/:id so 'trash' is not captured as an id.
+susuRouter.get(
+  '/accounts/trash',
+  requireOffice,
+  validate({ query: listTrashQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: ListTrashQuery }>(req);
+    susuService
+      .listSusuAccountTrash(getAuth(req), query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
 susuRouter.get('/accounts/:id', validate({ params: accountIdParams }), (req, res, next) => {
   const { params } = getValidated<{ params: AccountIdParams }>(req);
   susuService
@@ -64,6 +85,63 @@ susuRouter.get(
     susuService
       .listAccountDeposits(getAuth(req), params.id, query)
       .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
+// Trashed deposits of one account (office only).
+susuRouter.get(
+  '/accounts/:id/deposits/trash',
+  requireOffice,
+  validate({ params: accountIdParams, query: listTrashQuery }),
+  (req, res, next) => {
+    const { params, query } = getValidated<{ params: AccountIdParams; query: ListTrashQuery }>(req);
+    susuService
+      .listDepositTrash(getAuth(req), params.id, query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
+// Correct the most recent deposit's amount (office only).
+susuRouter.patch(
+  '/accounts/:id/deposits/:depositId',
+  requireOffice,
+  validate({ params: depositIdParams, body: updateDepositBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: DepositIdParams; body: UpdateDepositBody }>(
+      req,
+    );
+    susuService
+      .updateDeposit(getAuth(req), params.id, params.depositId, body.amount, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Trash the most recent deposit — reverses the account counters atomically.
+susuRouter.delete(
+  '/accounts/:id/deposits/:depositId',
+  requireOffice,
+  validate({ params: depositIdParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: DepositIdParams; body: TrashBody }>(req);
+    susuService
+      .trashDeposit(getAuth(req), params.id, params.depositId, body.reason, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+susuRouter.post(
+  '/accounts/:id/deposits/:depositId/restore',
+  requireOffice,
+  validate({ params: depositIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: DepositIdParams }>(req);
+    susuService
+      .restoreDeposit(getAuth(req), params.id, params.depositId, req.id as string)
+      .then((result) => res.json(result))
       .catch(next);
   },
 );
@@ -127,6 +205,33 @@ susuRouter.post(
     susuService
       .terminateAccount(getAuth(req), params.id, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Trash: only empty, unused accounts — used accounts go through close/terminate.
+susuRouter.delete(
+  '/accounts/:id',
+  requireOffice,
+  validate({ params: accountIdParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: TrashBody }>(req);
+    susuService
+      .trashSusuAccount(getAuth(req), params.id, body.reason, req.id as string)
+      .then((account) => res.json({ account }))
+      .catch(next);
+  },
+);
+
+susuRouter.post(
+  '/accounts/:id/restore',
+  requireOffice,
+  validate({ params: accountIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: AccountIdParams }>(req);
+    susuService
+      .restoreSusuAccount(getAuth(req), params.id, req.id as string)
+      .then((account) => res.json({ account }))
       .catch(next);
   },
 );

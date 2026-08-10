@@ -1,6 +1,7 @@
 import mongoose, { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
+import { createdAtFilter } from '../../lib/time.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
@@ -30,12 +31,13 @@ import {
   type HpPayment,
 } from '../../models/index.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import type { Channel } from '../../models/shared.js';
+import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
   CreateAgreementBody,
   CreateItemBody,
   ListAgreementsQuery,
   ListItemsQuery,
+  TrashListQuery,
   UpdateItemBody,
 } from './hp.schemas.js';
 
@@ -99,13 +101,15 @@ export async function createItem(
 export async function listItems(
   query: ListItemsQuery,
 ): Promise<{ items: PublicHpItem[]; page: number; limit: number; total: number }> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.status) filter.status = query.status;
   if (query.inStockOnly) filter.quantityInStock = { $gt: 0 };
   if (query.search !== undefined) {
     const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.name = { $regex: escaped, $options: 'i' };
   }
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
   const [items, total] = await Promise.all([
     HpItemModel.find(filter)
       .sort({ createdAt: -1 })
@@ -122,7 +126,7 @@ export async function updateItem(
   patch: UpdateItemBody,
   requestId?: string,
 ): Promise<PublicHpItem> {
-  const item = await HpItemModel.findById(id);
+  const item = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!item) throw new AppError('NOT_FOUND', 'Item not found', 404);
 
   const before: Record<string, unknown> = {};
@@ -159,7 +163,7 @@ export async function adjustStock(
   reason: string,
   requestId?: string,
 ): Promise<PublicHpItem> {
-  const item = await HpItemModel.findById(id);
+  const item = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!item) throw new AppError('NOT_FOUND', 'Item not found', 404);
   if (item.quantityInStock + delta < 0) {
     throw new AppError('STOCK_UNDERFLOW', 'Adjustment would make stock negative', 422, {
@@ -182,9 +186,114 @@ export async function adjustStock(
     after: { quantityInStock: item.quantityInStock + delta, reason },
     ...(requestId !== undefined ? { requestId } : {}),
   });
-  const fresh = await HpItemModel.findById(id);
+  const fresh = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!fresh) throw new AppError('NOT_FOUND', 'Item not found', 404);
   return toPublicItem(fresh);
+}
+
+// ---------------------------------------------------------------- item trash
+
+export interface TrashedHpItem extends PublicHpItem {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedItem(i: HpItem): TrashedHpItem {
+  return {
+    ...toPublicItem(i),
+    deletedAt: requireDeletedAt(i.deletedAt),
+    ...(i.deletedById !== undefined ? { deletedById: i.deletedById.toHexString() } : {}),
+    ...(i.deleteReason !== undefined ? { deleteReason: i.deleteReason } : {}),
+  };
+}
+
+export async function trashHpItem(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<TrashedHpItem> {
+  const item = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!item) throw new AppError('NOT_FOUND', 'Item not found', 404);
+  // Any agreement — open, closed or trashed — pins the item as history.
+  const agreements = await HpAgreementModel.countDocuments({ itemId: id });
+  if (agreements > 0) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Items already used by agreements cannot be moved to the trash',
+      422,
+      { agreements },
+    );
+  }
+  const trashed = await HpItemModel.findOneAndUpdate(
+    { _id: id, ...NOT_TRASHED },
+    {
+      $set: {
+        deletedAt: new Date(),
+        deletedById: new Types.ObjectId(actor.sub),
+        ...(reason !== undefined ? { deleteReason: reason } : {}),
+      },
+    },
+    { returnDocument: 'after' },
+  );
+  if (!trashed) throw new AppError('NOT_FOUND', 'Item not found', 404);
+  await audit({
+    actorId: actor.sub,
+    action: 'hp.item.trash',
+    entityType: 'hp-item',
+    entityId: id,
+    before: { status: item.status, deletedAt: null },
+    after: {
+      status: trashed.status,
+      deletedAt: trashed.deletedAt,
+      ...(reason !== undefined ? { reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('hp.item.trashed', { id: id.toHexString(), name: item.name });
+  return toTrashedItem(trashed);
+}
+
+export async function restoreHpItem(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicHpItem> {
+  const item = await HpItemModel.findById(id);
+  if (!item) throw new AppError('NOT_FOUND', 'Item not found', 404);
+  if (!item.deletedAt) throw new AppError('NOT_TRASHED', 'Item is not in the trash', 409);
+  const restored = await HpItemModel.findOneAndUpdate(
+    { _id: id, deletedAt: { $ne: null } },
+    { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+    { returnDocument: 'after' },
+  );
+  if (!restored) throw new AppError('NOT_TRASHED', 'Item is not in the trash', 409);
+  await audit({
+    actorId: actor.sub,
+    action: 'hp.item.restore',
+    entityType: 'hp-item',
+    entityId: id,
+    before: { status: item.status, deletedAt: item.deletedAt },
+    after: { status: restored.status, deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('hp.item.restored', { id: id.toHexString(), name: restored.name });
+  return toPublicItem(restored);
+}
+
+export async function listHpItemTrash(
+  query: TrashListQuery,
+): Promise<{ items: TrashedHpItem[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [items, total] = await Promise.all([
+    HpItemModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    HpItemModel.countDocuments(filter),
+  ]);
+  return { items: items.map(toTrashedItem), page: query.page, limit: query.limit, total };
 }
 
 // ---------------------------------------------------------------- config
@@ -237,16 +346,16 @@ export interface HpEligibility {
 }
 
 export async function hpEligibility(customerId: Types.ObjectId): Promise<HpEligibility> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
   const [activeSusu, activeSavings, firstSusu, firstSavings, openLoan, openHp] = await Promise.all([
-    SusuAccountModel.exists({ customerId, status: 'active' }),
-    SavingsAccountModel.exists({ customerId, status: 'active' }),
-    SusuDepositModel.findOne({ customerId }).sort({ createdAt: 1 }),
-    SavingsTxnModel.findOne({ customerId }).sort({ createdAt: 1 }),
-    LoanModel.exists({ customerId, status: { $in: OPEN_LOAN_STATUSES } }),
-    HpAgreementModel.exists({ customerId, status: { $in: OPEN_HP_STATUSES } }),
+    SusuAccountModel.exists({ customerId, status: 'active', ...NOT_TRASHED }),
+    SavingsAccountModel.exists({ customerId, status: 'active', ...NOT_TRASHED }),
+    SusuDepositModel.findOne({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+    SavingsTxnModel.findOne({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+    LoanModel.exists({ customerId, status: { $in: OPEN_LOAN_STATUSES }, ...NOT_TRASHED }),
+    HpAgreementModel.exists({ customerId, status: { $in: OPEN_HP_STATUSES }, ...NOT_TRASHED }),
   ]);
 
   const firsts = [firstSusu?.createdAt, firstSavings?.createdAt].filter(
@@ -354,10 +463,10 @@ export async function createAgreement(
       reasons: eligibility.reasons,
     });
   }
-  const customer = await CustomerModel.findById(body.customerId);
+  const customer = await CustomerModel.findOne({ _id: body.customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
-  const item = await HpItemModel.findById(body.itemId);
+  const item = await HpItemModel.findOne({ _id: body.itemId, ...NOT_TRASHED });
   if (item?.status !== 'active') {
     throw new AppError('NOT_FOUND', 'Item not found or discontinued', 404);
   }
@@ -458,7 +567,7 @@ export async function recordDeposit(
     return { agreement: toPublicAgreement(agreement), replayed: true };
   }
 
-  const pre = await HpAgreementModel.findById(agreementId);
+  const pre = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (pre.status !== 'pending') {
     throw new AppError('NOT_PENDING', `Agreement is ${pre.status} — deposit not applicable`, 422);
@@ -568,7 +677,7 @@ export async function rejectAgreement(
   reason: string,
   requestId?: string,
 ): Promise<PublicHpAgreement> {
-  const pre = await HpAgreementModel.findById(agreementId);
+  const pre = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (pre.status !== 'pending') {
     throw new AppError('NOT_PENDING', `Agreement is ${pre.status}`, 409);
@@ -747,7 +856,7 @@ export async function payInstallment(
   const replayed = await replayPayment(idempotencyKey);
   if (replayed) return replayed;
 
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'active' && agreement.status !== 'in-arrears') {
     throw new AppError(
@@ -810,7 +919,7 @@ export async function redeem(
   const replayed = await replayPayment(idempotencyKey);
   if (replayed) return { ...replayed, amount: 0 };
 
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'repossessed') {
     throw new AppError('INVALID_TRANSITION', `Cannot redeem a ${agreement.status} agreement`, 409);
@@ -870,7 +979,7 @@ export async function markArrears(
   agreementId: Types.ObjectId,
   requestId?: string,
 ): Promise<PublicHpAgreement> {
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'active') {
     throw new AppError('INVALID_TRANSITION', `Cannot mark ${agreement.status} as in-arrears`, 409);
@@ -910,7 +1019,7 @@ export async function repossess(
   reason: string,
   requestId?: string,
 ): Promise<PublicHpAgreement> {
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'active' && agreement.status !== 'in-arrears') {
     throw new AppError(
@@ -969,7 +1078,7 @@ export async function forfeit(
   restock?: ForfeitRestock,
   requestId?: string,
 ): Promise<{ agreement: PublicHpAgreement; restockedItem?: PublicHpItem }> {
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   if (agreement.status !== 'repossessed') {
     throw new AppError('INVALID_TRANSITION', `Cannot forfeit a ${agreement.status} agreement`, 409);
@@ -1050,12 +1159,14 @@ export async function forfeit(
 export async function listAgreements(
   query: ListAgreementsQuery,
 ): Promise<{ items: PublicHpAgreement[]; page: number; limit: number; total: number }> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.search !== undefined) {
     filter.customerId = { $in: await fuzzyCustomerIds(query.search) };
   }
+  const agreementDateFilter = createdAtFilter(query.from, query.to);
+  if (agreementDateFilter) filter.createdAt = agreementDateFilter;
   const [agreements, total] = await Promise.all([
     HpAgreementModel.find(filter)
       .sort({ createdAt: -1 })
@@ -1088,7 +1199,7 @@ export async function getAgreement(agreementId: Types.ObjectId): Promise<{
   }[];
   payments: { id: string; type: string; amount: number; recordedById: string; createdAt: Date }[];
 }> {
-  const agreement = await HpAgreementModel.findById(agreementId);
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   const [schedule, payments] = await Promise.all([
     HpScheduleModel.find({ agreementId }).sort({ installmentNumber: 1 }),
@@ -1110,5 +1221,227 @@ export async function getAgreement(agreementId: Types.ObjectId): Promise<{
       recordedById: p.recordedById.toHexString(),
       createdAt: p.createdAt,
     })),
+  };
+}
+
+// ---------------------------------------------------------------- agreement trash
+
+export interface TrashedHpAgreement extends PublicHpAgreement {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedAgreement(a: HpAgreement): TrashedHpAgreement {
+  return {
+    ...toPublicAgreement(a),
+    deletedAt: requireDeletedAt(a.deletedAt),
+    ...(a.deletedById !== undefined ? { deletedById: a.deletedById.toHexString() } : {}),
+    ...(a.deleteReason !== undefined ? { deleteReason: a.deleteReason } : {}),
+  };
+}
+
+export async function trashHpAgreement(
+  actor: AccessTokenPayload,
+  agreementId: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<TrashedHpAgreement> {
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  const payments = await HpPaymentModel.countDocuments({ agreementId });
+  if ((agreement.status !== 'pending' && agreement.status !== 'rejected') || payments > 0) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only unpaid pending or rejected agreements can be moved to the trash',
+      422,
+      { status: agreement.status, payments },
+    );
+  }
+  const trashSet = {
+    deletedAt: new Date(),
+    deletedById: new Types.ObjectId(actor.sub),
+    ...(reason !== undefined ? { deleteReason: reason } : {}),
+  };
+
+  if (agreement.status === 'pending') {
+    // Stock decremented at signing and the item never left the shop —
+    // restock atomically with the trashing (mirrors reject).
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const upd = await HpAgreementModel.updateOne(
+          { _id: agreementId, status: 'pending', ...NOT_TRASHED },
+          { $set: trashSet },
+          { session },
+        );
+        if (upd.modifiedCount !== 1) {
+          throw new AppError('CONFLICT', 'Agreement changed concurrently — retry', 409);
+        }
+        await HpItemModel.updateOne(
+          { _id: agreement.itemId },
+          { $inc: { quantityInStock: 1 } },
+          { session },
+        );
+        await audit(
+          {
+            actorId: actor.sub,
+            action: 'hp.agreement.trash',
+            entityType: 'hp-agreement',
+            entityId: agreementId,
+            before: { status: agreement.status, deletedAt: null },
+            after: {
+              status: agreement.status,
+              deletedAt: trashSet.deletedAt,
+              stockRestored: true,
+              ...(reason !== undefined ? { reason } : {}),
+            },
+            ...(requestId !== undefined ? { requestId } : {}),
+          },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+  } else {
+    // Rejected agreements already restocked at rejection — plain write.
+    const upd = await HpAgreementModel.updateOne(
+      { _id: agreementId, status: 'rejected', ...NOT_TRASHED },
+      { $set: trashSet },
+    );
+    if (upd.modifiedCount !== 1) {
+      throw new AppError('CONFLICT', 'Agreement changed concurrently — retry', 409);
+    }
+    await audit({
+      actorId: actor.sub,
+      action: 'hp.agreement.trash',
+      entityType: 'hp-agreement',
+      entityId: agreementId,
+      before: { status: agreement.status, deletedAt: null },
+      after: {
+        status: agreement.status,
+        deletedAt: trashSet.deletedAt,
+        ...(reason !== undefined ? { reason } : {}),
+      },
+      ...(requestId !== undefined ? { requestId } : {}),
+    });
+  }
+
+  const after = await HpAgreementModel.findById(agreementId);
+  if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  emitAdminEvent('hp.agreement.trashed', {
+    id: agreementId.toHexString(),
+    customerId: agreement.customerId.toHexString(),
+    item: agreement.itemSnapshot.name,
+    status: agreement.status,
+  });
+  return toTrashedAgreement(after);
+}
+
+export async function restoreHpAgreement(
+  actor: AccessTokenPayload,
+  agreementId: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicHpAgreement> {
+  const agreement = await HpAgreementModel.findById(agreementId);
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (!agreement.deletedAt) {
+    throw new AppError('NOT_TRASHED', 'Agreement is not in the trash', 409);
+  }
+
+  if (agreement.status === 'pending') {
+    // A pending agreement holds a unit of the item — re-reserve it with the
+    // same stock guard as signing.
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const stockUpd = await HpItemModel.updateOne(
+          { _id: agreement.itemId, quantityInStock: { $gte: 1 } },
+          { $inc: { quantityInStock: -1 } },
+          { session },
+        );
+        if (stockUpd.modifiedCount !== 1) {
+          throw new AppError(
+            'OUT_OF_STOCK',
+            'Item is out of stock — cannot restore the agreement',
+            422,
+          );
+        }
+        const upd = await HpAgreementModel.updateOne(
+          { _id: agreementId, deletedAt: { $ne: null } },
+          { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+          { session },
+        );
+        if (upd.modifiedCount !== 1) {
+          throw new AppError('CONFLICT', 'Agreement changed concurrently — retry', 409);
+        }
+        await audit(
+          {
+            actorId: actor.sub,
+            action: 'hp.agreement.restore',
+            entityType: 'hp-agreement',
+            entityId: agreementId,
+            before: { status: agreement.status, deletedAt: agreement.deletedAt },
+            after: { status: agreement.status, deletedAt: null, stockReserved: true },
+            ...(requestId !== undefined ? { requestId } : {}),
+          },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+  } else {
+    const upd = await HpAgreementModel.updateOne(
+      { _id: agreementId, deletedAt: { $ne: null } },
+      { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+    );
+    if (upd.modifiedCount !== 1) {
+      throw new AppError('NOT_TRASHED', 'Agreement is not in the trash', 409);
+    }
+    await audit({
+      actorId: actor.sub,
+      action: 'hp.agreement.restore',
+      entityType: 'hp-agreement',
+      entityId: agreementId,
+      before: { status: agreement.status, deletedAt: agreement.deletedAt },
+      after: { status: agreement.status, deletedAt: null },
+      ...(requestId !== undefined ? { requestId } : {}),
+    });
+  }
+
+  const after = await HpAgreementModel.findById(agreementId);
+  if (!after) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  emitAdminEvent('hp.agreement.restored', {
+    id: agreementId.toHexString(),
+    customerId: agreement.customerId.toHexString(),
+    item: agreement.itemSnapshot.name,
+  });
+  return toPublicAgreement(after);
+}
+
+export async function listHpAgreementTrash(
+  query: TrashListQuery,
+): Promise<{ items: TrashedHpAgreement[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [agreements, total] = await Promise.all([
+    HpAgreementModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    HpAgreementModel.countDocuments(filter),
+  ]);
+  const unique = [...new Set(agreements.map((a) => a.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: agreements.map((a) => ({
+      ...toTrashedAgreement(a),
+      customerName: names.get(a.customerId.toHexString()) ?? '',
+    })),
+    page: query.page,
+    limit: query.limit,
+    total,
   };
 }

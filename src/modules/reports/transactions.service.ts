@@ -18,6 +18,7 @@ import {
   SusuDepositModel,
   UserModel,
 } from '../../models/index.js';
+import { NOT_TRASHED } from '../../models/shared.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 import { rangeToWindow } from './reports.service.js';
 import type { TransactionsQuery } from './reports.schemas.js';
@@ -103,7 +104,7 @@ function buildBranches(
       {
         coll: 'susu-deposits',
         stages: [
-          { $match: { createdAt, ...byCustomer } },
+          { $match: { createdAt, ...byCustomer, ...NOT_TRASHED } },
           {
             $project: {
               type: { $literal: 'susu-deposit' },
@@ -147,7 +148,7 @@ function buildBranches(
     branches.push({
       coll: 'savings-txns',
       stages: [
-        { $match: { createdAt, ...byCustomer } },
+        { $match: { createdAt, ...byCustomer, ...NOT_TRASHED } },
         {
           $project: {
             type: { $concat: ['savings-', '$type'] },
@@ -172,7 +173,13 @@ function buildBranches(
       {
         coll: 'loans',
         stages: [
-          { $match: { disbursedAt: { $gte: window.start, $lt: window.end }, ...byCustomer } },
+          {
+            $match: {
+              disbursedAt: { $gte: window.start, $lt: window.end },
+              ...byCustomer,
+              ...NOT_TRASHED,
+            },
+          },
           {
             $project: {
               type: { $literal: 'loan-disbursement' },
@@ -514,7 +521,7 @@ export interface CustomerStatement {
 /** Balance of a savings account as of an instant: last txn before it, else 0. */
 async function balanceAsOf(accountId: Types.ObjectId, instant: Date): Promise<number> {
   const last = await SavingsTxnModel.findOne(
-    { accountId, createdAt: { $lt: instant } },
+    { accountId, createdAt: { $lt: instant }, ...NOT_TRASHED },
     { balanceAfter: 1 },
   ).sort({ createdAt: -1, _id: -1 });
   return last?.balanceAfter ?? 0;
@@ -525,15 +532,19 @@ export async function customerStatement(
   from?: string,
   to?: string,
 ): Promise<CustomerStatement> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   const window = rangeToWindow(from, to);
 
   const [susuAccounts, savingsAccounts, loans, hpAgreements, raw] = await Promise.all([
-    SusuAccountModel.find({ customerId }).sort({ createdAt: 1 }),
-    SavingsAccountModel.find({ customerId }).sort({ createdAt: 1 }),
-    LoanModel.find({ customerId, status: { $ne: 'rejected' } }).sort({ createdAt: 1 }),
-    HpAgreementModel.find({ customerId, status: { $ne: 'rejected' } }).sort({ createdAt: 1 }),
+    SusuAccountModel.find({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+    SavingsAccountModel.find({ customerId, ...NOT_TRASHED }).sort({ createdAt: 1 }),
+    LoanModel.find({ customerId, status: { $ne: 'rejected' }, ...NOT_TRASHED }).sort({
+      createdAt: 1,
+    }),
+    HpAgreementModel.find({ customerId, status: { $ne: 'rejected' }, ...NOT_TRASHED }).sort({
+      createdAt: 1,
+    }),
     SusuDepositModel.aggregate<RawRow>([
       ...unionStages(buildBranches(window, customerId)),
       { $sort: { createdAt: 1, _id: 1 } },

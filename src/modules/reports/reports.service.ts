@@ -8,6 +8,7 @@ import {
   SusuDepositModel,
   UserModel,
 } from '../../models/index.js';
+import { NOT_TRASHED } from '../../models/shared.js';
 
 /** Inclusive Accra-day range → UTC window (Ghana is UTC+0 year-round). */
 export function rangeToWindow(
@@ -46,11 +47,11 @@ export async function collectionsByStaff(
 
   const [susu, savings] = await Promise.all([
     SusuDepositModel.aggregate<{ _id: Types.ObjectId; count: number; amount: number }>([
-      { $match: { createdAt } },
+      { $match: { createdAt, ...NOT_TRASHED } },
       { $group: { _id: '$collectorId', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
     SavingsTxnModel.aggregate<{ _id: Types.ObjectId; count: number; amount: number }>([
-      { $match: { createdAt, type: 'deposit' } },
+      { $match: { createdAt, type: 'deposit', ...NOT_TRASHED } },
       { $group: { _id: '$recordedById', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
   ]);
@@ -127,9 +128,10 @@ export async function outstandingLoans(): Promise<{
   rows: OutstandingLoanRow[];
   totalRemaining: number;
 }> {
-  const loans = await LoanModel.find({ status: { $in: ['active', 'arrears'] } }).sort({
-    dueDate: 1,
-  });
+  const loans = await LoanModel.find({
+    status: { $in: ['active', 'arrears'] },
+    ...NOT_TRASHED,
+  }).sort({ dueDate: 1 });
   const names = new Map(
     (
       await CustomerModel.find(
@@ -204,6 +206,7 @@ export async function commissionEarned(from?: string, to?: string): Promise<Comm
           status: 'closed',
           closedAt: { $gte: window.start, $lt: window.end },
           commissionAmount: { $gt: 0 },
+          ...NOT_TRASHED,
         },
       },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$commissionAmount' } } },
@@ -214,6 +217,7 @@ export async function commissionEarned(from?: string, to?: string): Promise<Comm
           createdAt: { $gte: window.start, $lt: window.end },
           type: { $in: ['withdrawal', 'closure'] },
           fee: { $gt: 0 },
+          ...NOT_TRASHED,
         },
       },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$fee' } } },

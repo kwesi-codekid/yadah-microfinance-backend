@@ -25,6 +25,7 @@ import {
   type Customer,
   type Transfer,
 } from '../../models/index.js';
+import { NOT_TRASHED } from '../../models/shared.js';
 import { applyRepaymentInTxn } from '../loans/loans.service.js';
 import { applyHpPaymentInTxn, remainingOn } from '../hire-purchase/hp.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
@@ -83,8 +84,8 @@ export async function transfer(
   // ---- resolve both sides and the owning customer
   const fromDoc =
     body.from.type === 'susu'
-      ? await SusuAccountModel.findById(body.from.accountId)
-      : await SavingsAccountModel.findById(body.from.accountId);
+      ? await SusuAccountModel.findOne({ _id: body.from.accountId, ...NOT_TRASHED })
+      : await SavingsAccountModel.findOne({ _id: body.from.accountId, ...NOT_TRASHED });
   if (!fromDoc) throw new AppError('NOT_FOUND', 'Source account not found', 404);
   const customerId = fromDoc.customerId;
 
@@ -96,17 +97,17 @@ export async function transfer(
         : body.to.accountId;
   const toDoc =
     body.to.type === 'savings'
-      ? await SavingsAccountModel.findById(toId)
+      ? await SavingsAccountModel.findOne({ _id: toId, ...NOT_TRASHED })
       : body.to.type === 'susu'
-        ? await SusuAccountModel.findById(toId)
+        ? await SusuAccountModel.findOne({ _id: toId, ...NOT_TRASHED })
         : body.to.type === 'loan'
-          ? await LoanModel.findById(toId)
-          : await HpAgreementModel.findById(toId);
+          ? await LoanModel.findOne({ _id: toId, ...NOT_TRASHED })
+          : await HpAgreementModel.findOne({ _id: toId, ...NOT_TRASHED });
   if (!toDoc) throw new AppError('NOT_FOUND', 'Destination not found', 404);
   if (!toDoc.customerId.equals(customerId)) {
     throw new AppError('CUSTOMER_MISMATCH', 'Both sides must belong to the same customer', 422);
   }
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
   const session = await mongoose.startSession();
@@ -123,6 +124,7 @@ export async function transfer(
         const account = await SavingsAccountModel.findOne({
           _id: body.from.accountId,
           status: 'active',
+          ...NOT_TRASHED,
         }).session(session);
         if (!account)
           throw new AppError('ACCOUNT_NOT_ACTIVE', 'Savings account is not active', 422);
@@ -133,7 +135,7 @@ export async function transfer(
         const todayCashOut = await SavingsTxnModel.findOne({
           accountId: account._id,
           accraDay: today,
-          type: { $in: ['withdrawal', 'closure'] },
+          countsTowardDailyLimit: true,
         }).session(session);
         if (todayCashOut) {
           throw new AppError(
@@ -171,6 +173,7 @@ export async function transfer(
               balanceAfter: computation.balanceAfter,
               channel: 'transfer',
               accraDay: today,
+              countsTowardDailyLimit: true,
               recordedById: actorId,
             },
           ],
@@ -192,9 +195,10 @@ export async function transfer(
         pool = amount;
         fee = computation.fee;
       } else {
-        const account = await SusuAccountModel.findOne({ _id: body.from.accountId }).session(
-          session,
-        );
+        const account = await SusuAccountModel.findOne({
+          _id: body.from.accountId,
+          ...NOT_TRASHED,
+        }).session(session);
         if (!account) throw new AppError('NOT_FOUND', 'Source account not found', 404);
         if (account.status === 'pending-payout') {
           const draw = body.amount ?? account.payoutRemaining;
@@ -233,9 +237,11 @@ export async function transfer(
       // ---------------- destination side
       let credited: number;
       if (body.to.type === 'savings') {
-        const target = await SavingsAccountModel.findOne({ _id: toId, status: 'active' }).session(
-          session,
-        );
+        const target = await SavingsAccountModel.findOne({
+          _id: toId,
+          status: 'active',
+          ...NOT_TRASHED,
+        }).session(session);
         if (!target)
           throw new AppError(
             'ACCOUNT_NOT_ACTIVE',
@@ -280,9 +286,11 @@ export async function transfer(
           session,
         );
       } else if (body.to.type === 'susu') {
-        const target = await SusuAccountModel.findOne({ _id: toId, status: 'active' }).session(
-          session,
-        );
+        const target = await SusuAccountModel.findOne({
+          _id: toId,
+          status: 'active',
+          ...NOT_TRASHED,
+        }).session(session);
         if (!target)
           throw new AppError('ACCOUNT_NOT_ACTIVE', 'Destination susu account is not active', 422);
         if (pool % target.dailyAmount !== 0) {
@@ -347,7 +355,7 @@ export async function transfer(
           session,
         );
       } else if (body.to.type === 'loan') {
-        const loan = await LoanModel.findById(toId).session(session);
+        const loan = await LoanModel.findOne({ _id: toId, ...NOT_TRASHED }).session(session);
         if (!loan || (loan.status !== 'active' && loan.status !== 'arrears')) {
           throw new AppError('LOAN_NOT_OPEN', 'Loan is not open for repayment', 422);
         }
@@ -365,7 +373,9 @@ export async function transfer(
           requestId,
         );
       } else {
-        const agreement = await HpAgreementModel.findById(toId).session(session);
+        const agreement = await HpAgreementModel.findOne({ _id: toId, ...NOT_TRASHED }).session(
+          session,
+        );
         if (!agreement || (agreement.status !== 'active' && agreement.status !== 'in-arrears')) {
           throw new AppError(
             'AGREEMENT_NOT_OPEN',
@@ -389,9 +399,10 @@ export async function transfer(
       // ---------------- settle the susu source (stop / draw down)
       const excess = pool - credited;
       if (body.from.type === 'susu') {
-        const account = await SusuAccountModel.findOne({ _id: body.from.accountId }).session(
-          session,
-        );
+        const account = await SusuAccountModel.findOne({
+          _id: body.from.accountId,
+          ...NOT_TRASHED,
+        }).session(session);
         if (!account) throw new AppError('NOT_FOUND', 'Source account not found', 404);
         if (susuSourceStopping) {
           const keepsPending = excess > 0;

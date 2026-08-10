@@ -4,8 +4,10 @@ import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
   depositBody,
   listAccountsQuery,
+  listTrashQuery,
   listTxnsQuery,
   openAccountBody,
+  trashBody,
   withdrawalBody,
 } from './savings.schemas.js';
 
@@ -42,9 +44,25 @@ const savingsTxn = z
   })
   .meta({ id: 'SavingsTxn' });
 
+const trashedSavingsAccount = savingsAccount.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
+const trashedSavingsTxn = savingsTxn.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
 const txnResult = z.object({ txn: savingsTxn, account: savingsAccount, replayed: z.boolean() });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Savings account id') });
+const txnIdParam = z.object({
+  id: z.string().describe('Savings account id'),
+  txnId: z.string().describe('Transaction id'),
+});
 
 export const savingsPaths: ZodOpenApiPathsObject = {
   '/savings/accounts': {
@@ -84,6 +102,27 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/savings/accounts/trash': {
+    get: {
+      tags: ['Savings'],
+      summary: 'List trashed savings accounts (office only)',
+      description: 'Most recently trashed first.',
+      security,
+      requestParams: { query: listTrashQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated trashed accounts',
+          z.object({
+            items: z.array(trashedSavingsAccount),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+      },
+    },
+  },
   '/savings/accounts/{id}': {
     get: {
       tags: ['Savings'],
@@ -94,6 +133,36 @@ export const savingsPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('The account', z.object({ account: savingsAccount })),
         '403': errorResponse('FORBIDDEN'),
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    delete: {
+      tags: ['Savings'],
+      summary: 'Move an account to the trash (office only)',
+      description:
+        'Only an active account with zero balance and no transactions ever recorded ' +
+        'can be trashed. Optional reason (2-300 chars) is stored with the entry.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Trashed', z.object({ account: trashedSavingsAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND — missing or already trashed'),
+        '422': errorResponse('CANNOT_TRASH — account has a balance, transactions, or is closed'),
+      },
+    },
+  },
+  '/savings/accounts/{id}/restore': {
+    post: {
+      tags: ['Savings'],
+      summary: 'Restore an account from the trash (office only)',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', z.object({ account: savingsAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED — account is not in the trash'),
       },
     },
   },
@@ -113,6 +182,69 @@ export const savingsPaths: ZodOpenApiPathsObject = {
             total: z.number(),
           }),
         ),
+      },
+    },
+  },
+  '/savings/accounts/{id}/transactions/trash': {
+    get: {
+      tags: ['Savings'],
+      summary: 'List trashed transactions of an account (office only)',
+      security,
+      requestParams: { path: idParam, query: listTrashQuery },
+      responses: {
+        '200': jsonResponse(
+          'Trashed transactions, most recently trashed first',
+          z.object({
+            items: z.array(trashedSavingsTxn),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/savings/accounts/{id}/transactions/{txnId}': {
+    delete: {
+      tags: ['Savings'],
+      summary: 'Move a transaction to the trash (office only)',
+      description:
+        'Reverses the balance effect atomically. Only the newest live deposit or ' +
+        'withdrawal of an active account qualifies — closures and transfer-created ' +
+        'transactions are immutable. Trashing a withdrawal frees its 1-per-day slot.',
+      security,
+      requestParams: { path: txnIdParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse(
+          'Moved to the trash',
+          z.object({ txn: trashedSavingsTxn, account: savingsAccount }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — concurrent update, retry'),
+        '422': errorResponse('CANNOT_TRASH'),
+      },
+    },
+  },
+  '/savings/accounts/{id}/transactions/{txnId}/restore': {
+    post: {
+      tags: ['Savings'],
+      summary: 'Restore a trashed transaction (office only)',
+      description:
+        'Re-applies the balance effect. Only possible while no newer live ' +
+        'transactions exist; restoring a withdrawal re-claims its day — if the day ' +
+        'is taken meanwhile the restore is refused (WITHDRAWAL_LIMIT).',
+      security,
+      requestParams: { path: txnIdParam },
+      responses: {
+        '200': jsonResponse('Restored', z.object({ txn: savingsTxn, account: savingsAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED, WITHDRAWAL_LIMIT, or CONFLICT'),
+        '422': errorResponse('CANNOT_RESTORE'),
       },
     },
   },

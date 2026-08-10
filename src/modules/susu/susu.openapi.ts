@@ -1,14 +1,17 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { trashBody } from '../../schemas/common.js';
 import {
   collectAllBody,
   depositBody,
   listAccountsQuery,
   listDepositsQuery,
+  listTrashQuery,
   openAccountBody,
   payoutBody,
   summaryQuery,
+  updateDepositBody,
 } from './susu.schemas.js';
 
 const susuAccount = z
@@ -57,6 +60,23 @@ const susuDeposit = z
   })
   .meta({ id: 'SusuDeposit' });
 
+const trashedSusuAccount = susuAccount.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
+const trashedSusuDeposit = susuDeposit.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
+const depositIdParam = z.object({
+  id: z.string().describe('Susu account id'),
+  depositId: z.string().describe('Deposit id'),
+});
+
 const accountResult = z.object({ account: susuAccount });
 const depositResult = z.object({
   deposit: susuDeposit,
@@ -104,6 +124,27 @@ export const susuPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/susu/accounts/trash': {
+    get: {
+      tags: ['Susu'],
+      summary: 'List trashed susu accounts (office only)',
+      description: 'Accounts moved to the trash, most recently trashed first.',
+      security,
+      requestParams: { query: listTrashQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated trashed accounts',
+          z.object({
+            items: z.array(trashedSusuAccount),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+      },
+    },
+  },
   '/susu/accounts/{id}': {
     get: {
       tags: ['Susu'],
@@ -114,6 +155,42 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('The account', accountResult),
 
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    delete: {
+      tags: ['Susu'],
+      summary: 'Move a susu account to the trash (office only)',
+      description:
+        'Only empty, unused accounts qualify: active status with no deposits ever ' +
+        'recorded and nothing awaiting payout. Used accounts must go through ' +
+        'close/terminate instead. An optional reason is stored with the trashed ' +
+        'account, which disappears from normal endpoints until restored.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Moved to the trash', z.object({ account: trashedSusuAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse(
+          'CANNOT_TRASH (details.status, details.depositsCount, details.totalDeposited, ' +
+            'details.payoutRemaining, details.depositRecords)',
+        ),
+      },
+    },
+  },
+  '/susu/accounts/{id}/restore': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Restore a susu account from the trash (office only)',
+      description: 'Clears the trash fields; the account reappears on normal endpoints.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', accountResult),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED — the account is not in the trash'),
       },
     },
   },
@@ -156,6 +233,95 @@ export const susuPaths: ZodOpenApiPathsObject = {
           'ACCOUNT_NOT_ACTIVE, AMOUNT_MISMATCH (details.dailyAmount), or ' +
             'EXCEEDS_REMAINING (details.remaining)',
         ),
+      },
+    },
+  },
+  '/susu/accounts/{id}/deposits/trash': {
+    get: {
+      tags: ['Susu'],
+      summary: 'List trashed deposits of an account (office only)',
+      security,
+      requestParams: { path: idParam, query: listTrashQuery },
+      responses: {
+        '200': jsonResponse(
+          'Trashed deposits, most recently trashed first',
+          z.object({
+            items: z.array(trashedSusuDeposit),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/deposits/{depositId}': {
+    patch: {
+      tags: ['Susu'],
+      summary: 'Correct the most recent deposit’s amount (office only)',
+      description:
+        'Data-entry fixes. Only the most recent deposit of an open account can ' +
+        'change; the new amount must be a multiple of the daily amount and the days ' +
+        'covered are re-derived. Account counters adjust atomically, including ' +
+        'completing or un-completing the 31-day cycle. Transfer-created deposits ' +
+        'are immutable.',
+      security,
+      requestParams: { path: depositIdParam },
+      requestBody: jsonBody(updateDepositBody),
+      responses: {
+        '200': jsonResponse(
+          'Corrected',
+          z.object({ deposit: susuDeposit, account: susuAccount, replayed: z.boolean() }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — concurrent update, retry'),
+        '422': errorResponse(
+          'CANNOT_TRASH (not the latest deposit / closed account / transfer-created), ' +
+            'AMOUNT_MISMATCH (details.dailyAmount), or EXCEEDS_REMAINING (details.remaining)',
+        ),
+      },
+    },
+    delete: {
+      tags: ['Susu'],
+      summary: 'Move the most recent deposit to the trash (office only)',
+      description:
+        'Reverses the account counters atomically (deposits count, total ' +
+        'deposited, completed → active when the 31st deposit is removed). Only the ' +
+        'most recent deposit of an open account qualifies; transfer-created ' +
+        'deposits are immutable.',
+      security,
+      requestParams: { path: depositIdParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse(
+          'Moved to the trash',
+          z.object({ deposit: trashedSusuDeposit, account: susuAccount }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — concurrent update, retry'),
+        '422': errorResponse('CANNOT_TRASH'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/deposits/{depositId}/restore': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Restore a trashed deposit (office only)',
+      description:
+        'Re-applies the deposit. Only possible while its cycle positions are still ' +
+        'free (nothing newer recorded since the trash).',
+      security,
+      requestParams: { path: depositIdParam },
+      responses: {
+        '200': jsonResponse('Restored', z.object({ deposit: susuDeposit, account: susuAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED or CONFLICT'),
+        '422': errorResponse('CANNOT_RESTORE (details.seqStart, details.depositsCount)'),
       },
     },
   },

@@ -21,7 +21,7 @@ import {
   type Repayment,
   type SavingsAccount,
 } from '../../models/index.js';
-import { accraDay } from '../../lib/time.js';
+import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   DEFAULT_RATES,
   DEFAULT_TIERS,
@@ -36,8 +36,8 @@ import {
 } from '../../domain/loans.js';
 import { computeClosure } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import type { Channel } from '../../models/shared.js';
-import type { ListLoansQuery, PutConfigBody } from './loans.schemas.js';
+import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
+import type { ListLoansQuery, LoanTrashQuery, PutConfigBody } from './loans.schemas.js';
 
 // ---------------------------------------------------------------- config
 
@@ -153,12 +153,13 @@ async function isBigTierUnlocked(customerId: Types.ObjectId): Promise<boolean> {
     tier: 'small',
     status: 'repaid',
     repaidOnTime: true,
+    ...NOT_TRASHED,
   });
   return graduated !== null;
 }
 
 export async function eligibilitySummary(customerId: Types.ObjectId): Promise<EligibilitySummary> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
   const [firstSusu, firstSavings, susuAccounts, savingsAccounts, openLoan, bigTierUnlocked] =
@@ -167,7 +168,7 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
       SavingsTxnModel.findOne({ customerId }).sort({ createdAt: 1 }),
       SusuAccountModel.find({ customerId }),
       SavingsAccountModel.find({ customerId }),
-      LoanModel.findOne({ customerId, status: { $in: OPEN_LOAN_STATUSES } }),
+      LoanModel.findOne({ customerId, status: { $in: OPEN_LOAN_STATUSES }, ...NOT_TRASHED }),
       isBigTierUnlocked(customerId),
     ]);
 
@@ -211,7 +212,7 @@ export async function applyForLoan(
   durationMonths: LoanDuration,
   requestId?: string,
 ): Promise<PublicLoan> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
@@ -225,7 +226,11 @@ export async function applyForLoan(
   }
 
   // One open loan per customer — always refused, no exception paths (rule 7).
-  const open = await LoanModel.findOne({ customerId, status: { $in: OPEN_LOAN_STATUSES } });
+  const open = await LoanModel.findOne({
+    customerId,
+    status: { $in: OPEN_LOAN_STATUSES },
+    ...NOT_TRASHED,
+  });
   if (open) {
     throw new AppError('LOAN_EXISTS', 'Customer already has a pending or active loan', 409);
   }
@@ -300,7 +305,7 @@ export async function approveLoan(
   loanId: Types.ObjectId,
   requestId?: string,
 ): Promise<PublicLoan> {
-  const pre = await LoanModel.findById(loanId);
+  const pre = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   if (pre.status !== 'pending') {
     throw new AppError('NOT_PENDING', `Loan is ${pre.status}, not pending`, 409);
@@ -396,7 +401,7 @@ export async function rejectLoan(
   reason: string,
   requestId?: string,
 ): Promise<PublicLoan> {
-  const loan = await LoanModel.findById(loanId);
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   if (loan.status !== 'pending') {
     throw new AppError('NOT_PENDING', `Loan is ${loan.status}, not pending`, 409);
@@ -423,12 +428,14 @@ export async function rejectLoan(
 export async function listLoans(
   query: ListLoansQuery,
 ): Promise<{ items: PublicLoan[]; page: number; limit: number; total: number }> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.search !== undefined) {
     filter.customerId = { $in: await fuzzyCustomerIds(query.search) };
   }
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
 
   const [loans, total] = await Promise.all([
     LoanModel.find(filter)
@@ -471,7 +478,7 @@ export interface LoanDetail {
 }
 
 export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
-  const loan = await LoanModel.findById(loanId);
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   const [schedule, repayments] = await Promise.all([
     LoanScheduleModel.find({ loanId }).sort({ installmentNumber: 1 }),
@@ -555,7 +562,7 @@ export async function applyRepaymentInTxn(
   const fullyRepaid = amount === remaining;
   const now = new Date();
   const upd = await LoanModel.updateOne(
-    { _id: loan._id, status: loan.status, totalRepaid: loan.totalRepaid },
+    { _id: loan._id, status: loan.status, totalRepaid: loan.totalRepaid, ...NOT_TRASHED },
     {
       $inc: { totalRepaid: amount },
       ...(fullyRepaid
@@ -633,7 +640,7 @@ export async function applyRepaymentInTxn(
 async function loadOpenLoanForRepayment(
   loanId: Types.ObjectId,
 ): Promise<{ loan: Loan; customer: Customer | null }> {
-  const loan = await LoanModel.findById(loanId);
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   if (loan.status !== 'active' && loan.status !== 'arrears') {
     throw new AppError('LOAN_NOT_OPEN', `Loan is ${loan.status} — nothing to repay`, 422);
@@ -928,5 +935,150 @@ export async function repayViaSusuClosure(
     loan: toPublicLoan(after),
     replayed: false,
     susuClosure: { accountId: susuAccountId.toHexString(), ...closure },
+  };
+}
+
+// ---------------------------------------------------------------- trash
+
+export interface TrashedLoan extends PublicLoan {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedLoan(l: Loan): TrashedLoan {
+  return {
+    ...toPublicLoan(l),
+    deletedAt: requireDeletedAt(l.deletedAt),
+    ...(l.deletedById !== undefined ? { deletedById: l.deletedById.toHexString() } : {}),
+    ...(l.deleteReason !== undefined ? { deleteReason: l.deleteReason } : {}),
+  };
+}
+
+/**
+ * Soft delete. Only applications that never moved money — pending or
+ * rejected — can go to the trash; everything else is ledger history.
+ */
+export async function trashLoan(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  reason?: string,
+  requestId?: string,
+): Promise<TrashedLoan> {
+  const pre = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  if (pre.status !== 'pending' && pre.status !== 'rejected') {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only pending or rejected loan applications can be moved to the trash',
+      422,
+      { status: pre.status },
+    );
+  }
+
+  const now = new Date();
+  const loan = await LoanModel.findOneAndUpdate(
+    { _id: loanId, status: pre.status, ...NOT_TRASHED },
+    {
+      $set: {
+        deletedAt: now,
+        deletedById: new Types.ObjectId(actor.sub),
+        ...(reason !== undefined ? { deleteReason: reason } : {}),
+      },
+    },
+    { returnDocument: 'after' },
+  );
+  if (!loan) throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+
+  await audit({
+    actorId: actor.sub,
+    action: 'loan.trash',
+    entityType: 'loan',
+    entityId: pre._id,
+    before: { status: pre.status, deletedAt: null },
+    after: {
+      status: loan.status,
+      deletedAt: now.toISOString(),
+      ...(reason !== undefined ? { reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('loan.trashed', {
+    id: pre._id.toHexString(),
+    customerId: pre.customerId.toHexString(),
+    status: pre.status,
+    principal: pre.principal,
+  });
+  return toTrashedLoan(loan);
+}
+
+export async function restoreLoan(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicLoan> {
+  const pre = await LoanModel.findById(loanId);
+  if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  if (!pre.deletedAt) throw new AppError('NOT_TRASHED', 'Loan is not in the trash', 409);
+
+  // A restored pending application re-enters the open set, so the one-open-
+  // loan rule must still hold. Rejected loans restore unconditionally.
+  if (pre.status === 'pending') {
+    const open = await LoanModel.findOne({
+      customerId: pre.customerId,
+      status: { $in: OPEN_LOAN_STATUSES },
+      ...NOT_TRASHED,
+    });
+    if (open) {
+      throw new AppError('LOAN_EXISTS', 'Customer already has a pending or active loan', 409);
+    }
+  }
+
+  const loan = await LoanModel.findOneAndUpdate(
+    { _id: loanId, deletedAt: { $ne: null } },
+    { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+    { returnDocument: 'after' },
+  );
+  if (!loan) throw new AppError('NOT_TRASHED', 'Loan is not in the trash', 409);
+
+  await audit({
+    actorId: actor.sub,
+    action: 'loan.restore',
+    entityType: 'loan',
+    entityId: pre._id,
+    before: { status: pre.status, deletedAt: pre.deletedAt.toISOString() },
+    after: { status: loan.status, deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('loan.restored', {
+    id: pre._id.toHexString(),
+    customerId: pre.customerId.toHexString(),
+    status: loan.status,
+  });
+  return toPublicLoan(loan);
+}
+
+export async function listLoanTrash(
+  query: LoanTrashQuery,
+): Promise<{ items: TrashedLoan[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [loans, total] = await Promise.all([
+    LoanModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    LoanModel.countDocuments(filter),
+  ]);
+  const unique = [...new Set(loans.map((l) => l.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: loans.map((l) => ({
+      ...toTrashedLoan(l),
+      customerName: names.get(l.customerId.toHexString()) ?? '',
+    })),
+    page: query.page,
+    limit: query.limit,
+    total,
   };
 }

@@ -3,6 +3,7 @@ import { MongoServerError } from 'mongodb';
 import type { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
+import { createdAtFilter } from '../../lib/time.js';
 import { UserModel } from '../../models/index.js';
 import {
   BCRYPT_COST,
@@ -62,6 +63,8 @@ export async function listUsers(query: ListUsersQuery): Promise<UserList> {
   const filter: Record<string, unknown> = {};
   if (query.role) filter.role = query.role;
   if (query.status) filter.status = query.status;
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
   if (query.search !== undefined) {
     const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [

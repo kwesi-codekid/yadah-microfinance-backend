@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField } from './shared.js';
+import { moneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * Rules: min deposit GHS 10 · no interest · max 1 withdrawal per Accra day ·
@@ -7,7 +7,7 @@ import { moneyField } from './shared.js';
  * withdrawable only on closure. availableToWithdraw = balance − 5000 − 1000
  * is computed in the service layer, never stored.
  */
-export interface SavingsAccount {
+export interface SavingsAccount extends TrashFields {
   _id: Types.ObjectId;
   /** 10-digit randomized account number, unique across savings accounts. */
   accountNumber: string;
@@ -30,6 +30,7 @@ const savingsAccountSchema = new Schema<SavingsAccount>(
     openedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     closedById: { type: Schema.Types.ObjectId, ref: 'User' },
     closedAt: { type: Date },
+    ...trashFields,
   },
   { timestamps: true },
 );

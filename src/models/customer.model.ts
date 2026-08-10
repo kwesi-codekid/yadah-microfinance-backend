@@ -1,4 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
+import { trashFields, type TrashFields } from './shared.js';
 
 /**
  * Shaped after the client's paper "Savings Account Opening Form".
@@ -26,7 +27,7 @@ export interface NextOfKin {
   address?: string;
 }
 
-export interface Customer {
+export interface Customer extends TrashFields {
   _id: Types.ObjectId;
   // Personal
   fullName: string; // as on ID
@@ -112,6 +113,7 @@ const customerSchema = new Schema<Customer>(
 
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
+    ...trashFields,
   },
   { timestamps: true },
 );

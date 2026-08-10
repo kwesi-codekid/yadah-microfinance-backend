@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { LoanModel } from '../models/index.js';
+import { NOT_TRASHED } from '../models/shared.js';
 import { computeInterest, escalationActionFor, type LoanRates } from '../domain/loans.js';
 import { audit } from './audit.js';
 import { emitAdminEvent } from './realtime.js';
@@ -21,7 +22,7 @@ export async function runEscalationPass(
   let escalated = 0;
   let frozen = 0;
 
-  const candidates = await LoanModel.find({ status: 'active', frozen: false });
+  const candidates = await LoanModel.find({ status: 'active', frozen: false, ...NOT_TRASHED });
   for (const loan of candidates) {
     const start = loan.disbursedAt ?? loan.approvedAt;
     if (!start) continue;

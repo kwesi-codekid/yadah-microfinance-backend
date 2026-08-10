@@ -1,12 +1,12 @@
 import { Schema, model, type Types } from 'mongoose';
-import { CHANNELS, moneyField, type Channel } from './shared.js';
+import { CHANNELS, moneyField, trashFields, type Channel, type TrashFields } from './shared.js';
 
 /**
  * One recorded collection against one account. A catch-up payment covers
  * several missed days in one document: amount = dailyAmount × daysCovered.
  * seqStart/seqEnd are the 1-based positions in the 31-deposit cycle.
  */
-export interface SusuDeposit {
+export interface SusuDeposit extends TrashFields {
   _id: Types.ObjectId;
   accountId: Types.ObjectId;
   customerId: Types.ObjectId;
@@ -35,6 +35,7 @@ const susuDepositSchema = new Schema<SusuDeposit>(
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     collectAllBatchId: { type: Schema.Types.ObjectId },
     idempotencyKey: { type: String },
+    ...trashFields,
   },
   { timestamps: true },
 );

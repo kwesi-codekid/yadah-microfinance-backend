@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField } from './shared.js';
+import { moneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * Hire purchase inventory (HP guide: Yadah stocks physical items). Both
@@ -8,7 +8,7 @@ import { moneyField } from './shared.js';
  * simply enters the same number twice. Cost price is NEVER exposed in
  * customer-facing responses.
  */
-export interface HpItem {
+export interface HpItem extends TrashFields {
   _id: Types.ObjectId;
   name: string;
   description?: string;
@@ -33,6 +33,7 @@ const hpItemSchema = new Schema<HpItem>(
     condition: { type: String, enum: ['new', 'used'], default: 'new' },
     status: { type: String, enum: ['active', 'discontinued'], default: 'active' },
     createdById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    ...trashFields,
   },
   { timestamps: true },
 );

@@ -40,3 +40,9 @@ export const trashFields = {
 
 /** Query fragment excluding trashed docs (`null` also matches missing). */
 export const NOT_TRASHED = { deletedAt: null } as const;
+
+/** For trash-only mappers: narrows deletedAt, failing loud on a live doc. */
+export function requireDeletedAt(deletedAt: Date | null | undefined): Date {
+  if (!deletedAt) throw new Error('Expected a trashed document (deletedAt not set)');
+  return deletedAt;
+}

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   channel,
+  dateRangeFields,
+  fromToIssue,
   idempotencyKey,
   objectId,
   pagination,
@@ -54,11 +56,17 @@ export const adjustStockBody = z.object({
 });
 export type AdjustStockBody = z.infer<typeof adjustStockBody>;
 
-export const listItemsQuery = pagination.extend({
-  status: z.enum(['active', 'discontinued']).optional(),
-  search: z.string().min(1).max(100).optional(),
-  inStockOnly: z.coerce.boolean().default(false),
-});
+export const listItemsQuery = pagination
+  .extend({
+    status: z.enum(['active', 'discontinued']).optional(),
+    search: z.string().min(1).max(100).optional(),
+    inStockOnly: z.coerce.boolean().default(false),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListItemsQuery = z.infer<typeof listItemsQuery>;
 
 // ---- config
@@ -129,23 +137,36 @@ export const forfeitBody = z
   });
 export type ForfeitBody = z.infer<typeof forfeitBody>;
 
-export const listAgreementsQuery = pagination.extend({
-  customerId: objectId.optional(),
-  status: z
-    .enum([
-      'pending',
-      'rejected',
-      'active',
-      'in-arrears',
-      'repossessed',
-      'closed-redeemed',
-      'closed-forfeited',
-      'closed-completed',
-    ])
-    .optional(),
-  search: z.string().min(1).max(100).optional(),
-});
+export const listAgreementsQuery = pagination
+  .extend({
+    customerId: objectId.optional(),
+    status: z
+      .enum([
+        'pending',
+        'rejected',
+        'active',
+        'in-arrears',
+        'repossessed',
+        'closed-redeemed',
+        'closed-forfeited',
+        'closed-completed',
+      ])
+      .optional(),
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListAgreementsQuery = z.infer<typeof listAgreementsQuery>;
+
+// ---- trash
+
+export { trashBody, type TrashBody } from '../../schemas/common.js';
+
+export const trashListQuery = pagination;
+export type TrashListQuery = z.infer<typeof trashListQuery>;
 
 export const idParams = z.object({ id: objectId });
 export type IdParams = z.infer<typeof idParams>;

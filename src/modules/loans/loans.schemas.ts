@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   channel,
+  dateRangeFields,
+  fromToIssue,
   idempotencyKey,
   objectId,
   pagination,
@@ -14,13 +16,26 @@ export const applyBody = z.object({
 });
 export type ApplyBody = z.infer<typeof applyBody>;
 
-export const listLoansQuery = pagination.extend({
-  customerId: objectId.optional(),
-  status: z.enum(['pending', 'active', 'repaid', 'rejected', 'arrears']).optional(),
-  /** Fuzzy: typo-tolerant customer name or phone. */
-  search: z.string().min(1).max(100).optional(),
-});
+export const listLoansQuery = pagination
+  .extend({
+    customerId: objectId.optional(),
+    status: z.enum(['pending', 'active', 'repaid', 'rejected', 'arrears']).optional(),
+    /** Fuzzy: typo-tolerant customer name or phone. */
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListLoansQuery = z.infer<typeof listLoansQuery>;
+
+/** Trash listing is plain pagination — newest-trashed first. */
+export const loanTrashQuery = pagination;
+export type LoanTrashQuery = z.infer<typeof loanTrashQuery>;
+
+// Shared trash body (optional reason) — re-exported so routes keep a single schema source.
+export { trashBody, type TrashBody } from '../../schemas/common.js';
 
 export const loanIdParams = z.object({ id: objectId });
 export type LoanIdParams = z.infer<typeof loanIdParams>;

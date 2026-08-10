@@ -1,6 +1,7 @@
 import Fuse from 'fuse.js';
 import type { Types } from 'mongoose';
 import { CustomerModel } from '../models/index.js';
+import { NOT_TRASHED } from '../models/shared.js';
 
 interface CustomerSearchDoc {
   _id: Types.ObjectId;
@@ -17,9 +18,10 @@ interface CustomerSearchDoc {
  * search volume makes this measurably slow.
  */
 export async function fuzzyCustomerIds(term: string, limit = 200): Promise<Types.ObjectId[]> {
-  const customers = await CustomerModel.find({}, { fullName: 1, phone: 1, altPhone: 1 }).lean<
-    CustomerSearchDoc[]
-  >();
+  const customers = await CustomerModel.find(
+    { ...NOT_TRASHED },
+    { fullName: 1, phone: 1, altPhone: 1 },
+  ).lean<CustomerSearchDoc[]>();
 
   const fuse = new Fuse(customers, {
     keys: [

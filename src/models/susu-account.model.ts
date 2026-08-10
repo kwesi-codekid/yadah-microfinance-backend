@@ -1,12 +1,12 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField, optionalMoneyField } from './shared.js';
+import { moneyField, optionalMoneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * One account = one cycle of 31 deposits at a fixed daily amount.
  * dailyAmount is IMMUTABLE after opening — changing it means close + reopen.
  * The cycle ends at 31 recorded deposits, however long that takes.
  */
-export interface SusuAccount {
+export interface SusuAccount extends TrashFields {
   _id: Types.ObjectId;
   /** 6-digit randomized account number, unique across susu accounts. */
   accountNumber: string;
@@ -50,6 +50,7 @@ const susuAccountSchema = new Schema<SusuAccount>(
     commissionAmount: optionalMoneyField,
     payoutAmount: optionalMoneyField,
     payoutRemaining: { ...moneyField, default: 0 },
+    ...trashFields,
   },
   { timestamps: true },
 );

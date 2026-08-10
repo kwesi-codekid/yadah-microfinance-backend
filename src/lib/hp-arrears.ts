@@ -1,4 +1,5 @@
 import { CustomerModel, HpAgreementModel, HpScheduleModel } from '../models/index.js';
+import { NOT_TRASHED } from '../models/shared.js';
 import { addMonthsClamped } from '../domain/loans.js';
 import { formatGhs } from './money.js';
 import { audit } from './audit.js';
@@ -21,7 +22,11 @@ export async function runHpArrearsPass(): Promise<{ flagged: number }> {
   }).distinct('agreementId');
   if (overdue.length === 0) return { flagged };
 
-  const agreements = await HpAgreementModel.find({ _id: { $in: overdue }, status: 'active' });
+  const agreements = await HpAgreementModel.find({
+    _id: { $in: overdue },
+    status: 'active',
+    ...NOT_TRASHED,
+  });
   for (const agreement of agreements) {
     const upd = await HpAgreementModel.updateOne(
       { _id: agreement._id, status: 'active' },

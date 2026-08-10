@@ -7,7 +7,7 @@ import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
-import { accraDay } from '../../lib/time.js';
+import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   CustomerModel,
   SusuAccountModel,
@@ -19,8 +19,13 @@ import {
 } from '../../models/index.js';
 import { SUSU_CYCLE_DEPOSITS, computeClosure, remainingDeposits } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import type { Channel } from '../../models/shared.js';
-import type { ListAccountsQuery, ListDepositsQuery, SummaryQuery } from './susu.schemas.js';
+import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
+import type {
+  ListAccountsQuery,
+  ListDepositsQuery,
+  ListTrashQuery,
+  SummaryQuery,
+} from './susu.schemas.js';
 
 // ---------------------------------------------------------------- shapes
 
@@ -107,7 +112,7 @@ export async function openAccount(
   dailyAmount: number,
   requestId?: string,
 ): Promise<PublicSusuAccount> {
-  const customer = await CustomerModel.findById(customerId);
+  const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
@@ -159,10 +164,12 @@ export async function listAccounts(
   _actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<AccountList> {
-  const filter: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
 
   // Fuzzy: match by customer (typo-tolerant name/phone) or account number prefix.
   if (query.search !== undefined) {
@@ -201,7 +208,7 @@ export async function getAccount(
   _actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSusuAccount> {
-  const account = await SusuAccountModel.findById(id);
+  const account = await SusuAccountModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
   return toPublicAccount(account);
 }
@@ -211,15 +218,18 @@ export async function listAccountDeposits(
   accountId: Types.ObjectId,
   query: ListDepositsQuery,
 ): Promise<{ items: PublicDeposit[]; page: number; limit: number; total: number }> {
-  const account = await SusuAccountModel.findById(accountId);
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
 
+  const depositFilter: Record<string, unknown> = { accountId, ...NOT_TRASHED };
+  const depositDateFilter = createdAtFilter(query.from, query.to);
+  if (depositDateFilter) depositFilter.createdAt = depositDateFilter;
   const [deposits, total] = await Promise.all([
-    SusuDepositModel.find({ accountId })
+    SusuDepositModel.find(depositFilter)
       .sort({ seqStart: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
-    SusuDepositModel.countDocuments({ accountId }),
+    SusuDepositModel.countDocuments(depositFilter),
   ]);
   return { items: deposits.map(toPublicDeposit), page: query.page, limit: query.limit, total };
 }
@@ -244,6 +254,13 @@ export async function recordDeposit(
   // Replay of a retried mobile request → return the original, write nothing.
   const existing = await SusuDepositModel.findOne({ idempotencyKey });
   if (existing) {
+    if (existing.deletedAt) {
+      throw new AppError(
+        'CONFLICT',
+        'The original deposit was moved to the trash — use a new idempotency key',
+        409,
+      );
+    }
     const account = await SusuAccountModel.findById(existing.accountId);
     if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
     return {
@@ -253,7 +270,7 @@ export async function recordDeposit(
     };
   }
 
-  const accountPre = await SusuAccountModel.findById(accountId);
+  const accountPre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!accountPre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   // dailyAmount is immutable, so the days covered can be derived pre-transaction.
   if (amount % accountPre.dailyAmount !== 0) {
@@ -271,9 +288,11 @@ export async function recordDeposit(
   let deposit!: SusuDeposit;
   try {
     await session.withTransaction(async () => {
-      const account = await SusuAccountModel.findOne({ _id: accountId, status: 'active' }).session(
-        session,
-      );
+      const account = await SusuAccountModel.findOne({
+        _id: accountId,
+        status: 'active',
+        ...NOT_TRASHED,
+      }).session(session);
       if (!account) {
         throw new AppError(
           'ACCOUNT_NOT_ACTIVE',
@@ -416,7 +435,11 @@ export async function collectAll(
     };
   }
 
-  const active = await SusuAccountModel.find({ customerId, status: 'active' }).sort({
+  const active = await SusuAccountModel.find({
+    customerId,
+    status: 'active',
+    ...NOT_TRASHED,
+  }).sort({
     createdAt: 1,
   });
   if (active.length === 0) {
@@ -552,7 +575,7 @@ export async function closeAccount(
   accountId: Types.ObjectId,
   requestId?: string,
 ): Promise<ClosureResult> {
-  const pre = await SusuAccountModel.findById(accountId);
+  const pre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (pre.status === 'closed' || pre.status === 'terminated') {
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
@@ -574,6 +597,7 @@ export async function closeAccount(
       const account = await SusuAccountModel.findOne({
         _id: accountId,
         status: { $in: ['active', 'completed'] },
+        ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
       if (account.totalDeposited < account.dailyAmount) {
@@ -689,7 +713,7 @@ export async function terminateAccount(
   accountId: Types.ObjectId,
   requestId?: string,
 ): Promise<TerminationResult> {
-  const pre = await SusuAccountModel.findById(accountId);
+  const pre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (pre.status === 'closed' || pre.status === 'terminated') {
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
@@ -714,6 +738,7 @@ export async function terminateAccount(
       const account = await SusuAccountModel.findOne({
         _id: accountId,
         status: { $in: ['active', 'completed'] },
+        ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
       refund = account.totalDeposited;
@@ -818,7 +843,7 @@ export async function payoutPending(
     return { account: toPublicAccount(account), amount: existing.amount, replayed: true };
   }
 
-  const pre = await SusuAccountModel.findById(accountId);
+  const pre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (pre.status !== 'pending-payout') {
     throw new AppError(
@@ -918,6 +943,168 @@ export async function payoutPending(
   return { account: toPublicAccount(after), amount: payAmount, replayed: false };
 }
 
+// ---------------------------------------------------------------- trash
+
+export interface PublicTrashedSusuAccount extends PublicSusuAccount {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toPublicTrashedAccount(a: SusuAccount): PublicTrashedSusuAccount {
+  return {
+    ...toPublicAccount(a),
+    // Only ever called on docs in the trash, where deletedAt is set.
+    deletedAt: requireDeletedAt(a.deletedAt),
+    ...(a.deletedById ? { deletedById: a.deletedById.toHexString() } : {}),
+    ...(a.deleteReason !== undefined ? { deleteReason: a.deleteReason } : {}),
+  };
+}
+
+/**
+ * Moves an account to the trash. Only empty, unused accounts qualify — an
+ * account that ever held money must go through close/terminate so the ledger
+ * keeps its history. Single-doc write, no transaction.
+ */
+export async function trashSusuAccount(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<PublicTrashedSusuAccount> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+
+  // Includes trashed deposits — any deposit ever recorded blocks the trash.
+  const depositRecords = await SusuDepositModel.countDocuments({ accountId });
+  if (
+    account.status !== 'active' ||
+    account.depositsCount !== 0 ||
+    account.totalDeposited !== 0 ||
+    account.payoutRemaining !== 0 ||
+    depositRecords !== 0
+  ) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only empty, unused susu accounts can be moved to the trash',
+      422,
+      {
+        status: account.status,
+        depositsCount: account.depositsCount,
+        totalDeposited: account.totalDeposited,
+        payoutRemaining: account.payoutRemaining,
+        depositRecords,
+      },
+    );
+  }
+  const customer = await CustomerModel.findById(account.customerId);
+
+  const now = new Date();
+  const upd = await SusuAccountModel.updateOne(
+    {
+      _id: accountId,
+      ...NOT_TRASHED,
+      status: 'active',
+      depositsCount: 0,
+      totalDeposited: 0,
+      payoutRemaining: 0,
+    },
+    {
+      $set: {
+        deletedAt: now,
+        deletedById: new Types.ObjectId(actor.sub),
+        ...(reason !== undefined ? { deleteReason: reason } : {}),
+      },
+    },
+  );
+  if (upd.modifiedCount !== 1) {
+    throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+  }
+
+  await audit({
+    actorId: actor.sub,
+    action: 'susu.account.trash',
+    entityType: 'susu-account',
+    entityId: account._id,
+    before: { status: account.status, deletedAt: null },
+    after: {
+      status: account.status,
+      deletedAt: now.toISOString(),
+      ...(reason !== undefined ? { reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('susu.account.trashed', {
+    id: account._id.toHexString(),
+    accountNumber: account.accountNumber,
+    customerId: account.customerId.toHexString(),
+    customerName: customer?.fullName ?? '',
+  });
+
+  account.deletedAt = now;
+  account.deletedById = new Types.ObjectId(actor.sub);
+  if (reason !== undefined) account.deleteReason = reason;
+  return toPublicTrashedAccount(account);
+}
+
+/** Restores a trashed account. Unconditional — trashing has no side effects to reverse. */
+export async function restoreSusuAccount(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicSusuAccount> {
+  const account = await SusuAccountModel.findById(accountId);
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (!account.deletedAt) {
+    throw new AppError('NOT_TRASHED', 'Susu account is not in the trash', 409);
+  }
+  const deletedAt = account.deletedAt;
+
+  await SusuAccountModel.updateOne(
+    { _id: accountId },
+    { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+  );
+
+  await audit({
+    actorId: actor.sub,
+    action: 'susu.account.restore',
+    entityType: 'susu-account',
+    entityId: account._id,
+    before: { status: account.status, deletedAt: deletedAt.toISOString() },
+    after: { status: account.status, deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  emitAdminEvent('susu.account.restored', {
+    id: account._id.toHexString(),
+    accountNumber: account.accountNumber,
+    customerId: account.customerId.toHexString(),
+  });
+
+  account.deletedAt = null;
+  return toPublicAccount(account);
+}
+
+export async function listSusuAccountTrash(
+  _actor: AccessTokenPayload,
+  query: ListTrashQuery,
+): Promise<{ items: PublicTrashedSusuAccount[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [accounts, total] = await Promise.all([
+    SusuAccountModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SusuAccountModel.countDocuments(filter),
+  ]);
+
+  const names = await customerNamesById(accounts.map((a) => a.customerId));
+  const items = accounts.map((a) => ({
+    ...toPublicTrashedAccount(a),
+    customerName: names.get(a.customerId.toHexString()) ?? '',
+  }));
+  return { items, page: query.page, limit: query.limit, total };
+}
+
 // ---------------------------------------------------------------- daily summary
 
 export interface DailySummary {
@@ -949,7 +1136,7 @@ export async function dailySummary(
   const collectorId =
     actor.role === 'collector' ? new Types.ObjectId(actor.sub) : (query.collectorId ?? null);
 
-  const filter: Record<string, unknown> = { createdAt: { $gte: from, $lt: to } };
+  const filter: Record<string, unknown> = { createdAt: { $gte: from, $lt: to }, ...NOT_TRASHED };
   if (collectorId) filter.collectorId = collectorId;
 
   const deposits = await SusuDepositModel.find(filter).sort({ createdAt: 1 });
@@ -973,5 +1160,359 @@ export async function dailySummary(
       daysCovered: d.daysCovered,
       at: d.createdAt,
     })),
+  };
+}
+
+// ---------------------------------------------------------------- deposit corrections
+
+export interface TrashedDeposit extends PublicDeposit {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedDeposit(d: SusuDeposit): TrashedDeposit {
+  return {
+    ...toPublicDeposit(d),
+    deletedAt: requireDeletedAt(d.deletedAt),
+    ...(d.deletedById ? { deletedById: d.deletedById.toHexString() } : {}),
+    ...(d.deleteReason !== undefined ? { deleteReason: d.deleteReason } : {}),
+  };
+}
+
+/**
+ * Corrections only touch the most recent deposit of an open account — the
+ * cycle is a contiguous 1..31 sequence, so removing or resizing anything
+ * older would renumber every later deposit. Transfer-created deposits are
+ * off-limits (the transfer leg would be orphaned).
+ */
+function assertCorrectable(account: SusuAccount, deposit: SusuDeposit): void {
+  if (account.status !== 'active' && account.status !== 'completed') {
+    throw new AppError(
+      'CANNOT_TRASH',
+      `Account is ${account.status} — closed accounts keep their history`,
+      422,
+    );
+  }
+  if (deposit.channel === 'transfer') {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Deposits created by a transfer cannot be changed on their own',
+      422,
+    );
+  }
+  if (deposit.seqEnd !== account.depositsCount) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'Only the most recent deposit can be changed — correct from the end of the cycle',
+      422,
+      { seqEnd: deposit.seqEnd, depositsCount: account.depositsCount },
+    );
+  }
+}
+
+export async function trashDeposit(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  depositId: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<{ deposit: TrashedDeposit; account: PublicSusuAccount }> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const deposit = await SusuDepositModel.findOne({ _id: depositId, accountId, ...NOT_TRASHED });
+  if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  assertCorrectable(account, deposit);
+
+  const now = new Date();
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await SusuAccountModel.updateOne(
+        {
+          _id: accountId,
+          status: account.status,
+          depositsCount: account.depositsCount,
+          ...NOT_TRASHED,
+        },
+        {
+          $inc: { depositsCount: -deposit.daysCovered, totalDeposited: -deposit.amount },
+          // Un-completing: removing the last deposit reopens the cycle.
+          ...(account.status === 'completed' ? { $set: { status: 'active' } } : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const depositUpd = await SusuDepositModel.updateOne(
+        { _id: depositId, deletedAt: null },
+        {
+          $set: {
+            deletedAt: now,
+            deletedById: new Types.ObjectId(actor.sub),
+            ...(reason !== undefined ? { deleteReason: reason } : {}),
+          },
+        },
+        { session },
+      );
+      if (depositUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Deposit changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.deposit.trash',
+          entityType: 'susu-deposit',
+          entityId: depositId,
+          amountBefore: account.totalDeposited,
+          amountAfter: account.totalDeposited - deposit.amount,
+          before: { amount: deposit.amount, daysCovered: deposit.daysCovered, deletedAt: null },
+          after: {
+            amount: deposit.amount,
+            daysCovered: deposit.daysCovered,
+            deletedAt: now,
+            ...(reason !== undefined ? { reason } : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const [afterDeposit, afterAccount] = await Promise.all([
+    SusuDepositModel.findById(depositId),
+    SusuAccountModel.findById(accountId),
+  ]);
+  if (!afterDeposit || !afterAccount) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  emitAdminEvent('susu.deposit.trashed', {
+    accountId: accountId.toHexString(),
+    depositId: depositId.toHexString(),
+    amount: deposit.amount,
+    depositsCount: afterAccount.depositsCount,
+  });
+  return { deposit: toTrashedDeposit(afterDeposit), account: toPublicAccount(afterAccount) };
+}
+
+export async function restoreDeposit(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  depositId: Types.ObjectId,
+  requestId?: string,
+): Promise<{ deposit: PublicDeposit; account: PublicSusuAccount }> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const deposit = await SusuDepositModel.findOne({ _id: depositId, accountId });
+  if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  if (!deposit.deletedAt) {
+    throw new AppError('NOT_TRASHED', 'Deposit is not in the trash', 409);
+  }
+  if (account.status !== 'active') {
+    throw new AppError('CANNOT_RESTORE', `Account is ${account.status} — cannot restore`, 422);
+  }
+  if (account.depositsCount !== deposit.seqStart - 1) {
+    throw new AppError('CANNOT_RESTORE', 'The deposit’s cycle positions are no longer free', 422, {
+      seqStart: deposit.seqStart,
+      depositsCount: account.depositsCount,
+    });
+  }
+
+  const completes = deposit.seqEnd === SUSU_CYCLE_DEPOSITS;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await SusuAccountModel.updateOne(
+        {
+          _id: accountId,
+          status: 'active',
+          depositsCount: account.depositsCount,
+          ...NOT_TRASHED,
+        },
+        {
+          $inc: { depositsCount: deposit.daysCovered, totalDeposited: deposit.amount },
+          ...(completes ? { $set: { status: 'completed' } } : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const depositUpd = await SusuDepositModel.updateOne(
+        { _id: depositId, deletedAt: { $ne: null } },
+        { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+        { session },
+      );
+      if (depositUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Deposit changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.deposit.restore',
+          entityType: 'susu-deposit',
+          entityId: depositId,
+          amountBefore: account.totalDeposited,
+          amountAfter: account.totalDeposited + deposit.amount,
+          before: { amount: deposit.amount, deletedAt: deposit.deletedAt },
+          after: { amount: deposit.amount, deletedAt: null },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const [afterDeposit, afterAccount] = await Promise.all([
+    SusuDepositModel.findById(depositId),
+    SusuAccountModel.findById(accountId),
+  ]);
+  if (!afterDeposit || !afterAccount) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  emitAdminEvent('susu.deposit.restored', {
+    accountId: accountId.toHexString(),
+    depositId: depositId.toHexString(),
+    amount: deposit.amount,
+    depositsCount: afterAccount.depositsCount,
+  });
+  return { deposit: toPublicDeposit(afterDeposit), account: toPublicAccount(afterAccount) };
+}
+
+export async function listDepositTrash(
+  _actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  query: ListTrashQuery,
+): Promise<{ items: TrashedDeposit[]; page: number; limit: number; total: number }> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const filter = { accountId, deletedAt: { $ne: null } };
+  const [deposits, total] = await Promise.all([
+    SusuDepositModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SusuDepositModel.countDocuments(filter),
+  ]);
+  return { items: deposits.map(toTrashedDeposit), page: query.page, limit: query.limit, total };
+}
+
+/** Correct the amount of the most recent deposit (data-entry fixes). */
+export async function updateDeposit(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  depositId: Types.ObjectId,
+  amount: number,
+  requestId?: string,
+): Promise<DepositResult> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const deposit = await SusuDepositModel.findOne({ _id: depositId, accountId, ...NOT_TRASHED });
+  if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  assertCorrectable(account, deposit);
+
+  if (amount % account.dailyAmount !== 0) {
+    throw new AppError(
+      'AMOUNT_MISMATCH',
+      `Susu deposits must be a multiple of the daily amount (${formatGhs(account.dailyAmount)})`,
+      422,
+      { dailyAmount: account.dailyAmount },
+    );
+  }
+  const newDays = amount / account.dailyAmount;
+  const dayDelta = newDays - deposit.daysCovered;
+  const remaining = remainingDeposits(account.depositsCount);
+  if (dayDelta > remaining) {
+    throw new AppError(
+      'EXCEEDS_REMAINING',
+      `Only ${String(remaining)} deposit day(s) remain in this cycle`,
+      422,
+      { remaining },
+    );
+  }
+  if (dayDelta === 0 && amount === deposit.amount) {
+    return {
+      deposit: toPublicDeposit(deposit),
+      account: toPublicAccount(account),
+      replayed: false,
+    };
+  }
+
+  const newCount = account.depositsCount + dayDelta;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await SusuAccountModel.updateOne(
+        {
+          _id: accountId,
+          status: account.status,
+          depositsCount: account.depositsCount,
+          ...NOT_TRASHED,
+        },
+        {
+          $inc: { depositsCount: dayDelta, totalDeposited: amount - deposit.amount },
+          ...(newCount === SUSU_CYCLE_DEPOSITS && account.status === 'active'
+            ? { $set: { status: 'completed' } }
+            : {}),
+          ...(newCount < SUSU_CYCLE_DEPOSITS && account.status === 'completed'
+            ? { $set: { status: 'active' } }
+            : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const depositUpd = await SusuDepositModel.updateOne(
+        { _id: depositId, ...NOT_TRASHED, amount: deposit.amount },
+        {
+          $set: {
+            amount,
+            daysCovered: newDays,
+            seqEnd: deposit.seqStart + newDays - 1,
+          },
+        },
+        { session },
+      );
+      if (depositUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Deposit changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.deposit.update',
+          entityType: 'susu-deposit',
+          entityId: depositId,
+          amountBefore: deposit.amount,
+          amountAfter: amount,
+          before: { amount: deposit.amount, daysCovered: deposit.daysCovered },
+          after: { amount, daysCovered: newDays },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const [afterDeposit, afterAccount] = await Promise.all([
+    SusuDepositModel.findById(depositId),
+    SusuAccountModel.findById(accountId),
+  ]);
+  if (!afterDeposit || !afterAccount) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  emitAdminEvent('susu.deposit.updated', {
+    accountId: accountId.toHexString(),
+    depositId: depositId.toHexString(),
+    amountBefore: deposit.amount,
+    amountAfter: amount,
+    depositsCount: afterAccount.depositsCount,
+  });
+  return {
+    deposit: toPublicDeposit(afterDeposit),
+    account: toPublicAccount(afterAccount),
+    replayed: false,
   };
 }
