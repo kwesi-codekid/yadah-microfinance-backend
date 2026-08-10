@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   dateRangeFields,
+  exportFormat,
   fromToIssue,
   ghanaPhone,
   objectId,
@@ -39,6 +40,7 @@ export const listUsersQuery = pagination
     status: STATUS.optional(),
     search: z.string().min(1).max(100).optional(),
     ...dateRangeFields,
+    format: exportFormat,
   })
   .check((ctx) => {
     const issue = fromToIssue(ctx.value);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { TXN_MODULES } from '../../domain/transactions.js';
-import { objectId, pagination } from '../../schemas/common.js';
+import { exportFormat, objectId, pagination } from '../../schemas/common.js';
 
 const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -9,7 +9,7 @@ export const rangeQuery = z
   .object({
     from: isoDay.optional(),
     to: isoDay.optional(),
-    format: z.enum(['json', 'csv']).default('json'),
+    format: exportFormat,
   })
   .check((ctx) => {
     if (ctx.value.from && ctx.value.to && ctx.value.from > ctx.value.to) {
@@ -24,7 +24,7 @@ export const rangeQuery = z
 export type RangeQuery = z.infer<typeof rangeQuery>;
 
 export const formatOnlyQuery = z.object({
-  format: z.enum(['json', 'csv']).default('json'),
+  format: exportFormat,
 });
 export type FormatOnlyQuery = z.infer<typeof formatOnlyQuery>;
 
@@ -35,7 +35,7 @@ export const transactionsQuery = pagination
     to: isoDay.optional(),
     module: z.enum(TXN_MODULES).optional(),
     customerId: objectId.optional(),
-    format: z.enum(['json', 'csv']).default('json'),
+    format: exportFormat,
   })
   .check((ctx) => {
     if (ctx.value.from && ctx.value.to && ctx.value.from > ctx.value.to) {

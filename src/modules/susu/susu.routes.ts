@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -47,6 +48,29 @@ susuRouter.post(
 
 susuRouter.get('/accounts', validate({ query: listAccountsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListAccountsQuery }>(req);
+  if (query.format !== 'json') {
+    // Exports skip pagination — capped by EXPORT_MAX_ROWS instead of the zod limit.
+    susuService
+      .listAccounts(getAuth(req), { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'susu-accounts',
+          payload: null,
+          rows: list.items.map(susuService.toSusuAccountExportRow),
+          moneyKeys: [
+            'dailyAmount',
+            'totalDeposited',
+            'commissionAmount',
+            'payoutAmount',
+            'payoutRemaining',
+          ],
+          sheet: 'Susu accounts',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   susuService
     .listAccounts(getAuth(req), query)
     .then((list) => res.json(list))
@@ -82,6 +106,23 @@ susuRouter.get(
     const { params, query } = getValidated<{ params: AccountIdParams; query: ListDepositsQuery }>(
       req,
     );
+    if (query.format !== 'json') {
+      // Exports skip pagination — capped by EXPORT_MAX_ROWS instead of the zod limit.
+      susuService
+        .listAccountDeposits(getAuth(req), params.id, { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+        .then((list) =>
+          sendExport(res, {
+            format: query.format,
+            filename: 'susu-deposits',
+            payload: null,
+            rows: list.items.map(susuService.toSusuDepositExportRow),
+            moneyKeys: ['amount'],
+            sheet: 'Susu deposits',
+          }),
+        )
+        .catch(next);
+      return;
+    }
     susuService
       .listAccountDeposits(getAuth(req), params.id, query)
       .then((list) => res.json(list))

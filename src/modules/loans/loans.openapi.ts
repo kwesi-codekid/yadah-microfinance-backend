@@ -29,6 +29,7 @@ const publicLoan = z
     frozen: z.boolean().describe('True once escalation is exhausted'),
     appliedAt: z.iso.datetime(),
     approvedAt: z.iso.datetime().optional(),
+    disbursedAt: z.iso.datetime().optional(),
     dueDate: z.iso.datetime().optional(),
     escalatedAt: z.iso.datetime().optional(),
     closedAt: z.iso.datetime().optional(),
@@ -126,6 +127,9 @@ export const loanPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Loans'],
       summary: 'List loans',
+      description:
+        'Pass format=csv or format=xlsx to download the filtered list as a ' +
+        'spreadsheet (pagination is ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listLoansQuery },
       responses: {

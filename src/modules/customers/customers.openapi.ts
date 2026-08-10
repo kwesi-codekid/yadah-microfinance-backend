@@ -166,7 +166,9 @@ export const customerPaths: ZodOpenApiPathsObject = {
       summary: 'List customers',
       description:
         'All roles see all customers. `search` is fuzzy (typo-tolerant name, ' +
-        'phone) and returns results in relevance order.',
+        'phone) and returns results in relevance order. Pass format=csv or ' +
+        'format=xlsx to download the listing as a spreadsheet (pagination is ' +
+        'ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listCustomersQuery },
       responses: {

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   dateRangeFields,
   driversLicenceNumber,
+  exportFormat,
   fromToIssue,
   ghanaCardNumber,
   ghanaPhone,
@@ -164,6 +165,7 @@ export const listCustomersQuery = pagination
     search: z.string().min(1).max(100).optional(),
     /** Registration-date range (inclusive Accra days). */
     ...dateRangeFields,
+    format: exportFormat,
   })
   .check((ctx) => {
     const issue = fromToIssue(ctx.value);

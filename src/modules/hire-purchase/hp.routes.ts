@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -53,6 +54,21 @@ hpRouter.post('/items', validate({ body: createItemBody }), (req, res, next) => 
 
 hpRouter.get('/items', validate({ query: listItemsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListItemsQuery }>(req);
+  if (query.format !== 'json') {
+    hp.listItems({ ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'hp-items',
+          payload: null,
+          rows: list.items.map(hp.toHpItemExportRow),
+          moneyKeys: ['costPrice', 'sellingPrice'],
+          sheet: 'HP items',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   hp.listItems(query)
     .then((list) => res.json(list))
     .catch(next);
@@ -141,6 +157,27 @@ hpRouter.post('/agreements', validate({ body: createAgreementBody }), (req, res,
 
 hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListAgreementsQuery }>(req);
+  if (query.format !== 'json') {
+    hp.listAgreements({ ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'hp-agreements',
+          payload: null,
+          rows: list.items.map(hp.toHpAgreementExportRow),
+          moneyKeys: [
+            'depositRequired',
+            'financedAmount',
+            'totalPayable',
+            'totalPaid',
+            'remaining',
+          ],
+          sheet: 'HP agreements',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   hp.listAgreements(query)
     .then((list) => res.json(list))
     .catch(next);

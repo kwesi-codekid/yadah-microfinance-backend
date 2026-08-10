@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   channel,
   dateRangeFields,
+  exportFormat,
   fromToIssue,
   idempotencyKey,
   objectId,
@@ -28,6 +29,7 @@ export const listAccountsQuery = pagination
     /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
     search: z.string().min(1).max(100).optional(),
     ...dateRangeFields,
+    format: exportFormat,
   })
   .check((ctx) => {
     const issue = fromToIssue(ctx.value);
@@ -58,10 +60,12 @@ export const collectAllBody = z.object({
 });
 export type CollectAllBody = z.infer<typeof collectAllBody>;
 
-export const listDepositsQuery = pagination.extend({ ...dateRangeFields }).check((ctx) => {
-  const issue = fromToIssue(ctx.value);
-  if (issue) ctx.issues.push(issue);
-});
+export const listDepositsQuery = pagination
+  .extend({ ...dateRangeFields, format: exportFormat })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
 export type ListDepositsQuery = z.infer<typeof listDepositsQuery>;
 
 export const depositIdParams = z.object({ id: objectId, depositId: objectId });

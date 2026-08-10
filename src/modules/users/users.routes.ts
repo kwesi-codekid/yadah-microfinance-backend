@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireRole } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -38,6 +39,21 @@ usersRouter.get(
   validate({ query: listUsersQuery }),
   (req, res, next) => {
     const { query } = getValidated<{ query: ListUsersQuery }>(req);
+    if (query.format !== 'json') {
+      usersService
+        .listUsers({ ...query, page: 1, limit: EXPORT_MAX_ROWS })
+        .then((list) =>
+          sendExport(res, {
+            format: query.format,
+            filename: 'users',
+            payload: null,
+            rows: list.items.map(usersService.toUserExportRow),
+            sheet: 'Users',
+          }),
+        )
+        .catch(next);
+      return;
+    }
     usersService
       .listUsers(query)
       .then((list) => res.json(list))

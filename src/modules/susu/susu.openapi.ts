@@ -108,7 +108,8 @@ export const susuPaths: ZodOpenApiPathsObject = {
       summary: 'List accounts',
       description:
         'All roles see all accounts. `search` is fuzzy: typo-tolerant customer ' +
-        'name, phone, or account-number prefix.',
+        'name, phone, or account-number prefix. Pass format=csv or format=xlsx ' +
+        'to download a spreadsheet (pagination is ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {
@@ -198,6 +199,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Susu'],
       summary: 'Deposit history (statement)',
+      description:
+        'Pass format=csv or format=xlsx to download a spreadsheet (pagination is ' +
+        'ignored; capped at 10,000 rows).',
       security,
       requestParams: { path: idParam, query: listDepositsQuery },
       responses: {

@@ -86,7 +86,8 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       summary: 'List accounts',
       description:
         'All roles see all accounts. `search` is fuzzy: typo-tolerant customer ' +
-        'name, phone, or account-number prefix.',
+        'name, phone, or account-number prefix. Pass format=csv or format=xlsx ' +
+        'to download a spreadsheet (pagination ignored, capped at 10,000 rows).',
       security,
       requestParams: { query: listAccountsQuery },
       responses: {
@@ -170,6 +171,9 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Savings'],
       summary: 'Transaction history / statement',
+      description:
+        'Pass format=csv or format=xlsx to download a spreadsheet ' +
+        '(pagination ignored, capped at 10,000 rows).',
       security,
       requestParams: { path: idParam, query: listTxnsQuery },
       responses: {

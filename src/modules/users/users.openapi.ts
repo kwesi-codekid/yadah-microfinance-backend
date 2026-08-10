@@ -38,6 +38,9 @@ export const userPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Users'],
       summary: 'List staff (admin, manager)',
+      description:
+        'Pass format=csv or format=xlsx to download the listing as a spreadsheet ' +
+        '(pagination is ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listUsersQuery },
       responses: {

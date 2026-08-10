@@ -17,6 +17,9 @@ export interface ExportArgs {
   sheet?: string;
 }
 
+/** Listing exports skip pagination but are capped — documented in OpenAPI. */
+export const EXPORT_MAX_ROWS = 10_000;
+
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /** One response helper for every endpoint offering json/csv/xlsx downloads. */

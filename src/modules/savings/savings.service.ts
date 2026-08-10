@@ -54,6 +54,21 @@ export function toPublicSavingsAccount(a: SavingsAccount): PublicSavingsAccount 
   };
 }
 
+/** Flat spreadsheet row for account listing exports (csv/xlsx). */
+export function toSavingsAccountExportRow(a: PublicSavingsAccount): Record<string, unknown> {
+  return {
+    id: a.id,
+    accountNumber: a.accountNumber,
+    customerName: a.customerName ?? '',
+    customerId: a.customerId,
+    balance: a.balance,
+    availableToWithdraw: a.availableToWithdraw,
+    status: a.status,
+    openedAt: a.openedAt,
+    closedAt: a.closedAt ?? null,
+  };
+}
+
 export interface PublicSavingsTxn {
   id: string;
   accountId: string;
@@ -80,6 +95,21 @@ function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
     channel: t.channel,
     accraDay: t.accraDay,
     recordedById: t.recordedById.toHexString(),
+    createdAt: t.createdAt,
+  };
+}
+
+/** Flat spreadsheet row for transaction statement exports (csv/xlsx). */
+export function toSavingsTxnExportRow(t: PublicSavingsTxn): Record<string, unknown> {
+  return {
+    id: t.id,
+    type: t.type,
+    amount: t.amount,
+    fee: t.fee ?? null,
+    balanceAfter: t.balanceAfter,
+    channel: t.channel,
+    accraDay: t.accraDay,
+    recordedById: t.recordedById,
     createdAt: t.createdAt,
   };
 }

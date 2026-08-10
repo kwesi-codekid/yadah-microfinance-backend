@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   channel,
   dateRangeFields,
+  exportFormat,
   fromToIssue,
   idempotencyKey,
   objectId,
@@ -61,6 +62,7 @@ export const listItemsQuery = pagination
     status: z.enum(['active', 'discontinued']).optional(),
     search: z.string().min(1).max(100).optional(),
     inStockOnly: z.coerce.boolean().default(false),
+    format: exportFormat,
     ...dateRangeFields,
   })
   .check((ctx) => {
@@ -153,6 +155,7 @@ export const listAgreementsQuery = pagination
       ])
       .optional(),
     search: z.string().min(1).max(100).optional(),
+    format: exportFormat,
     ...dateRangeFields,
   })
   .check((ctx) => {

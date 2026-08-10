@@ -66,6 +66,26 @@ export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
   };
 }
 
+/** Flat spreadsheet row for the accounts listing export (csv/xlsx). */
+export function toSusuAccountExportRow(item: PublicSusuAccount): Record<string, unknown> {
+  return {
+    id: item.id,
+    accountNumber: item.accountNumber,
+    customerName: item.customerName ?? '',
+    customerId: item.customerId,
+    dailyAmount: item.dailyAmount,
+    depositsCount: item.depositsCount,
+    cycleTarget: item.cycleTarget,
+    totalDeposited: item.totalDeposited,
+    status: item.status,
+    commissionAmount: item.commissionAmount ?? null,
+    payoutAmount: item.payoutAmount ?? null,
+    payoutRemaining: item.payoutRemaining,
+    openedAt: item.openedAt,
+    closedAt: item.closedAt ?? null,
+  };
+}
+
 export interface PublicDeposit {
   id: string;
   accountId: string;
@@ -78,6 +98,20 @@ export interface PublicDeposit {
   channel: string;
   collectAllBatchId?: string;
   createdAt: Date;
+}
+
+/** Flat spreadsheet row for the deposit-history (statement) export (csv/xlsx). */
+export function toSusuDepositExportRow(item: PublicDeposit): Record<string, unknown> {
+  return {
+    id: item.id,
+    seqStart: item.seqStart,
+    seqEnd: item.seqEnd,
+    daysCovered: item.daysCovered,
+    amount: item.amount,
+    channel: item.channel,
+    collectorId: item.collectorId,
+    createdAt: item.createdAt,
+  };
 }
 
 function toPublicDeposit(d: SusuDeposit): PublicDeposit {

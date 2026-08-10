@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   channel,
   dateRangeFields,
+  exportFormat,
   fromToIssue,
   idempotencyKey,
   objectId,
@@ -22,6 +23,7 @@ export const listLoansQuery = pagination
     status: z.enum(['pending', 'active', 'repaid', 'rejected', 'arrears']).optional(),
     /** Fuzzy: typo-tolerant customer name or phone. */
     search: z.string().min(1).max(100).optional(),
+    format: exportFormat,
     ...dateRangeFields,
   })
   .check((ctx) => {

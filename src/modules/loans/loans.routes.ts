@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -73,6 +74,22 @@ loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next
 
 loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListLoansQuery }>(req);
+  if (query.format !== 'json') {
+    loansService
+      .listLoans({ ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'loans',
+          payload: null,
+          rows: list.items.map(loansService.toLoanExportRow),
+          moneyKeys: ['principal', 'interestAmount', 'totalDue', 'totalRepaid', 'remaining'],
+          sheet: 'Loans',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   loansService
     .listLoans(query)
     .then((list) => res.json(list))

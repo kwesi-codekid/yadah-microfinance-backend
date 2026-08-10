@@ -14,7 +14,7 @@ import {
   type UpdateCustomerBody,
 } from './customers.schemas.js';
 import * as customersService from './customers.service.js';
-import { toCsv } from '../../lib/csv.js';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { rangeQuery, type RangeQuery } from '../reports/reports.schemas.js';
 import { customerStatement, statementCsvRows } from '../reports/transactions.service.js';
 
@@ -38,6 +38,22 @@ customersRouter.post(
 // All roles list — collectors see only their own assigned customers.
 customersRouter.get('/', validate({ query: listCustomersQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListCustomersQuery }>(req);
+  if (query.format !== 'json') {
+    // Exports ignore client pagination; capped by EXPORT_MAX_ROWS instead.
+    customersService
+      .listCustomers(getAuth(req), { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'customers',
+          payload: null,
+          rows: list.items.map(customersService.toCustomerExportRow),
+          sheet: 'Customers',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   customersService
     .listCustomers(getAuth(req), query)
     .then((list) => res.json(list))
@@ -70,15 +86,19 @@ customersRouter.get(
     const { params, query } = getValidated<{ params: CustomerIdParams; query: RangeQuery }>(req);
     customerStatement(params.id, query.from, query.to)
       .then((statement) => {
-        if (query.format === 'csv') {
+        if (query.format !== 'json') {
           const name = `statement-${statement.customer.id}-${statement.period.from}-to-${statement.period.to}`;
-          res
-            .type('text/csv')
-            .attachment(`${name}.csv`)
-            .send(toCsv(statementCsvRows(statement)));
-        } else {
-          res.json(statement);
+          return sendExport(res, {
+            format: query.format,
+            filename: name,
+            payload: null,
+            rows: statementCsvRows(statement),
+            moneyKeys: ['amount', 'fee', 'balanceAfter'],
+            sheet: 'Statement',
+          });
         }
+        res.json(statement);
+        return undefined;
       })
       .catch(next);
   },

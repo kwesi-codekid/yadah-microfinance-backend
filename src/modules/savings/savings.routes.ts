@@ -23,6 +23,7 @@ import {
   type WithdrawalBody,
 } from './savings.schemas.js';
 import * as savingsService from './savings.service.js';
+import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 
 export const savingsRouter = Router();
 savingsRouter.use(requireAuth);
@@ -49,6 +50,22 @@ savingsRouter.post(
 
 savingsRouter.get('/accounts', validate({ query: listAccountsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListAccountsQuery }>(req);
+  if (query.format !== 'json') {
+    savingsService
+      .listAccounts(getAuth(req), { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+      .then((list) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'savings-accounts',
+          payload: null,
+          rows: list.items.map(savingsService.toSavingsAccountExportRow),
+          moneyKeys: ['balance', 'availableToWithdraw'],
+          sheet: 'Savings accounts',
+        }),
+      )
+      .catch(next);
+    return;
+  }
   savingsService
     .listAccounts(getAuth(req), query)
     .then((list) => res.json(list))
@@ -109,6 +126,22 @@ savingsRouter.get(
   validate({ params: accountIdParams, query: listTxnsQuery }),
   (req, res, next) => {
     const { params, query } = getValidated<{ params: AccountIdParams; query: ListTxnsQuery }>(req);
+    if (query.format !== 'json') {
+      savingsService
+        .listTransactions(getAuth(req), params.id, { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+        .then((list) =>
+          sendExport(res, {
+            format: query.format,
+            filename: 'savings-transactions',
+            payload: null,
+            rows: list.items.map(savingsService.toSavingsTxnExportRow),
+            moneyKeys: ['amount', 'fee', 'balanceAfter'],
+            sheet: 'Savings transactions',
+          }),
+        )
+        .catch(next);
+      return;
+    }
     savingsService
       .listTransactions(getAuth(req), params.id, query)
       .then((list) => res.json(list))

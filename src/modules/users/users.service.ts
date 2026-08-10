@@ -21,6 +21,18 @@ export interface UserList {
   total: number;
 }
 
+/** Flat row for csv/xlsx downloads of the staff listing. */
+export function toUserExportRow(user: PublicUser): Record<string, unknown> {
+  return {
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    phone: user.phone,
+    email: user.email ?? '',
+    role: user.role,
+  };
+}
+
 /** Maps a Mongo duplicate-key error to a friendly 409. */
 function throwIfDuplicate(err: unknown): never {
   if (err instanceof MongoServerError && err.code === 11000) {

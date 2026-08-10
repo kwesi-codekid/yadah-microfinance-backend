@@ -1,5 +1,5 @@
-import { Router, type Response } from 'express';
-import { toCsv } from '../../lib/csv.js';
+import { Router } from 'express';
+import { sendExport } from '../../lib/exports.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -17,28 +17,21 @@ import * as transactionsService from './transactions.service.js';
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireOffice);
 
-function send(
-  res: Response,
-  format: 'json' | 'csv',
-  filename: string,
-  payload: unknown,
-  csvRows: readonly object[],
-): void {
-  if (format === 'csv') {
-    res.type('text/csv').attachment(`${filename}.csv`).send(toCsv(csvRows));
-  } else {
-    res.json(payload);
-  }
-}
-
 reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: TransactionsQuery }>(req);
-  if (query.format === 'csv') {
+  if (query.format !== 'json') {
     transactionsService
       .transactionsCsvRows(query)
-      .then((rows) => {
-        res.type('text/csv').attachment('transactions.csv').send(toCsv(rows));
-      })
+      .then((rows) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'transactions',
+          payload: null,
+          rows,
+          moneyKeys: ['amount', 'fee', 'balanceAfter'],
+          sheet: 'Transactions',
+        }),
+      )
       .catch(next);
     return;
   }
@@ -52,9 +45,16 @@ reportsRouter.get('/collections', validate({ query: rangeQuery }), (req, res, ne
   const { query } = getValidated<{ query: RangeQuery }>(req);
   reportsService
     .collectionsByStaff(query.from, query.to)
-    .then((report) => {
-      send(res, query.format, `collections-${report.from}-to-${report.to}`, report, report.rows);
-    })
+    .then((report) =>
+      sendExport(res, {
+        format: query.format,
+        filename: `collections-${report.from}-to-${report.to}`,
+        payload: report,
+        rows: report.rows,
+        moneyKeys: ['susuAmount', 'savingsAmount', 'totalAmount'],
+        sheet: 'Collections by staff',
+      }),
+    )
     .catch(next);
 });
 
@@ -62,9 +62,16 @@ reportsRouter.get('/loans/outstanding', validate({ query: formatOnlyQuery }), (r
   const { query } = getValidated<{ query: FormatOnlyQuery }>(req);
   reportsService
     .outstandingLoans()
-    .then((report) => {
-      send(res, query.format, 'outstanding-loans', report, report.rows);
-    })
+    .then((report) =>
+      sendExport(res, {
+        format: query.format,
+        filename: 'outstanding-loans',
+        payload: report,
+        rows: report.rows,
+        moneyKeys: ['principal', 'totalDue', 'totalRepaid', 'remaining'],
+        sheet: 'Outstanding loans',
+      }),
+    )
     .catch(next);
 });
 
@@ -72,9 +79,16 @@ reportsRouter.get('/loans/aging', validate({ query: formatOnlyQuery }), (req, re
   const { query } = getValidated<{ query: FormatOnlyQuery }>(req);
   reportsService
     .arrearsAging()
-    .then((report) => {
-      send(res, query.format, 'arrears-aging', report, report.rows);
-    })
+    .then((report) =>
+      sendExport(res, {
+        format: query.format,
+        filename: 'arrears-aging',
+        payload: report,
+        rows: report.rows,
+        moneyKeys: ['principal', 'totalDue', 'totalRepaid', 'remaining'],
+        sheet: 'Arrears aging',
+      }),
+    )
     .catch(next);
 });
 
@@ -82,20 +96,27 @@ reportsRouter.get('/commission', validate({ query: rangeQuery }), (req, res, nex
   const { query } = getValidated<{ query: RangeQuery }>(req);
   reportsService
     .commissionEarned(query.from, query.to)
-    .then((report) => {
-      send(res, query.format, `commission-${report.from}-to-${report.to}`, report, [
-        {
-          source: 'susu-commission',
-          count: report.susuCommission.count,
-          amount: report.susuCommission.amount,
-        },
-        {
-          source: 'savings-fees',
-          count: report.savingsFees.count,
-          amount: report.savingsFees.amount,
-        },
-        { source: 'total', count: '', amount: report.totalRevenue },
-      ]);
-    })
+    .then((report) =>
+      sendExport(res, {
+        format: query.format,
+        filename: `commission-${report.from}-to-${report.to}`,
+        payload: report,
+        rows: [
+          {
+            source: 'susu-commission',
+            count: report.susuCommission.count,
+            amount: report.susuCommission.amount,
+          },
+          {
+            source: 'savings-fees',
+            count: report.savingsFees.count,
+            amount: report.savingsFees.amount,
+          },
+          { source: 'total', count: '', amount: report.totalRevenue },
+        ],
+        moneyKeys: ['amount'],
+        sheet: 'Commission',
+      }),
+    )
     .catch(next);
 });

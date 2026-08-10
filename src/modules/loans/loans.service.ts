@@ -101,6 +101,7 @@ export interface PublicLoan {
   frozen: boolean;
   appliedAt: Date;
   approvedAt?: Date;
+  disbursedAt?: Date;
   dueDate?: Date;
   escalatedAt?: Date;
   closedAt?: Date;
@@ -124,11 +125,33 @@ export function toPublicLoan(l: Loan): PublicLoan {
     frozen: l.frozen,
     appliedAt: l.appliedAt,
     ...(l.approvedAt !== undefined ? { approvedAt: l.approvedAt } : {}),
+    ...(l.disbursedAt !== undefined ? { disbursedAt: l.disbursedAt } : {}),
     ...(l.dueDate !== undefined ? { dueDate: l.dueDate } : {}),
     ...(l.escalatedAt !== undefined ? { escalatedAt: l.escalatedAt } : {}),
     ...(l.closedAt !== undefined ? { closedAt: l.closedAt } : {}),
     ...(l.repaidOnTime !== undefined ? { repaidOnTime: l.repaidOnTime } : {}),
     ...(l.rejectionReason !== undefined ? { rejectionReason: l.rejectionReason } : {}),
+  };
+}
+
+/** Flat spreadsheet row for the loans listing export (csv/xlsx). */
+export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
+  return {
+    id: item.id,
+    customerName: item.customerName ?? '',
+    tier: item.tier,
+    principal: item.principal,
+    durationMonths: item.durationMonths,
+    ratePercent: item.ratePercent,
+    interestAmount: item.interestAmount,
+    totalDue: item.totalDue,
+    totalRepaid: item.totalRepaid,
+    remaining: item.remaining,
+    status: item.status,
+    frozen: item.frozen,
+    appliedAt: item.appliedAt,
+    disbursedAt: item.disbursedAt ?? null,
+    dueDate: item.dueDate ?? null,
   };
 }
 

@@ -56,6 +56,7 @@ export interface PublicHpItem {
   sellingPrice: number;
   condition: 'new' | 'used';
   status: string;
+  createdAt: Date;
 }
 
 function toPublicItem(i: HpItem): PublicHpItem {
@@ -68,6 +69,21 @@ function toPublicItem(i: HpItem): PublicHpItem {
     sellingPrice: i.sellingPrice,
     condition: i.condition,
     status: i.status,
+    createdAt: i.createdAt,
+  };
+}
+
+/** Flat spreadsheet row for inventory exports (format=csv|xlsx). Office-only route, so costPrice is fine here. */
+export function toHpItemExportRow(i: PublicHpItem): Record<string, unknown> {
+  return {
+    id: i.id,
+    name: i.name,
+    quantityInStock: i.quantityInStock,
+    costPrice: i.costPrice,
+    sellingPrice: i.sellingPrice,
+    condition: i.condition,
+    status: i.status,
+    createdAt: i.createdAt,
   };
 }
 
@@ -448,6 +464,24 @@ function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
     ...(a.redemptionDeadline !== undefined ? { redemptionDeadline: a.redemptionDeadline } : {}),
     ...(a.closedAt !== undefined ? { closedAt: a.closedAt } : {}),
     ...(a.rejectionReason !== undefined ? { rejectionReason: a.rejectionReason } : {}),
+    createdAt: a.createdAt,
+  };
+}
+
+/** Flat spreadsheet row for agreement exports (format=csv|xlsx). */
+export function toHpAgreementExportRow(a: PublicHpAgreement): Record<string, unknown> {
+  return {
+    id: a.id,
+    customerName: a.customerName ?? '',
+    itemName: a.item.name,
+    depositRequired: a.depositRequired,
+    financedAmount: a.financedAmount,
+    interestRatePercent: a.interestRatePercent,
+    totalPayable: a.totalPayable ?? null, // null until activation
+    totalPaid: a.totalPaid,
+    remaining: a.remaining,
+    durationMonths: a.durationMonths,
+    status: a.status,
     createdAt: a.createdAt,
   };
 }

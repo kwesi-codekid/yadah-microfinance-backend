@@ -28,6 +28,7 @@ const hpItem = z
     sellingPrice: z.number().int().describe('What the customer pays'),
     condition: z.enum(['new', 'used']).describe('Forfeited repossessions restock as used'),
     status: z.enum(['active', 'discontinued']),
+    createdAt: z.iso.datetime(),
   })
   .meta({ id: 'HpItem' });
 
@@ -114,6 +115,7 @@ export const hpPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Hire Purchase'],
       summary: 'List inventory',
+      description: 'Pass format=csv or format=xlsx to download the listing as a spreadsheet.',
       security,
       requestParams: { query: listItemsQuery },
       responses: {
@@ -250,6 +252,7 @@ export const hpPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Hire Purchase'],
       summary: 'List agreements',
+      description: 'Pass format=csv or format=xlsx to download the listing as a spreadsheet.',
       security,
       requestParams: { query: listAgreementsQuery },
       responses: {

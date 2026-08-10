@@ -97,6 +97,29 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
   return out;
 }
 
+/** Flat spreadsheet row for csv/xlsx listing exports — every key always present. */
+export function toCustomerExportRow(item: PublicCustomer): Record<string, unknown> {
+  return {
+    id: item.id,
+    fullName: item.fullName,
+    phone: item.phone,
+    altPhone: item.altPhone ?? null,
+    email: item.email ?? null,
+    gender: item.gender ?? null,
+    dateOfBirth: item.dateOfBirth ?? null,
+    nationality: item.nationality ?? null,
+    residentialAddress: item.residentialAddress ?? null,
+    ghanaPostGps: item.ghanaPostGps ?? null,
+    occupation: item.occupation ?? null,
+    idType: item.identification?.idType ?? null,
+    idNumber: item.identification?.idNumber ?? null,
+    nextOfKinName: item.nextOfKin?.fullName ?? null,
+    nextOfKinPhone: item.nextOfKin?.phone ?? null,
+    status: item.status,
+    createdAt: item.createdAt,
+  };
+}
+
 function throwIfDuplicate(err: unknown): never {
   if (err instanceof MongoServerError && err.code === 11000) {
     const keys = Object.keys((err.keyPattern as Record<string, unknown> | undefined) ?? {});
