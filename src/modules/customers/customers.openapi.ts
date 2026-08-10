@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { rangeQuery } from '../reports/reports.schemas.js';
+import { txnTotals, unifiedTransaction } from '../reports/reports.openapi.js';
 import { createCustomerBody, listCustomersQuery, updateCustomerBody } from './customers.schemas.js';
 
 const publicCustomer = z
@@ -63,6 +65,70 @@ const customerList = z.object({
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Customer id (24-char hex)') });
 
+const customerStatement = z
+  .object({
+    customer: z.object({
+      id: z.string(),
+      fullName: z.string(),
+      phone: z.string(),
+      email: z.string().nullable(),
+      residentialAddress: z.string().nullable(),
+    }),
+    period: z.object({ from: z.string(), to: z.string() }),
+    generatedAt: z.iso.datetime(),
+    products: z.object({
+      susu: z.array(
+        z.object({
+          accountId: z.string(),
+          accountNumber: z.string(),
+          status: z.string(),
+          dailyAmount: z.number().int(),
+          depositsCount: z.number().int(),
+          totalDeposited: z.number().int(),
+          payoutRemaining: z.number().int(),
+        }),
+      ),
+      savings: z.array(
+        z.object({
+          accountId: z.string(),
+          accountNumber: z.string(),
+          status: z.string(),
+          openingBalance: z.number().int().describe('Balance at the start of the period'),
+          closingBalance: z.number().int().describe('Balance at the end of the period'),
+          currentBalance: z.number().int(),
+        }),
+      ),
+      loans: z.array(
+        z.object({
+          loanId: z.string(),
+          tier: z.string(),
+          status: z.string(),
+          principal: z.number().int(),
+          totalDue: z.number().int(),
+          totalRepaid: z.number().int(),
+          remaining: z.number().int(),
+          dueDate: z.iso.datetime().nullable(),
+        }),
+      ),
+      hirePurchase: z.array(
+        z.object({
+          agreementId: z.string(),
+          itemName: z.string(),
+          status: z.string(),
+          totalPayable: z.number().int().nullable(),
+          totalPaid: z.number().int(),
+          remaining: z.number().int().nullable(),
+        }),
+      ),
+    }),
+    totals: txnTotals,
+    transactions: z
+      .array(unifiedTransaction)
+      .describe('Chronological (oldest first) within the period'),
+    truncated: z.boolean().describe('True when the period held over 5,000 rows — narrow the range'),
+  })
+  .meta({ id: 'CustomerStatement' });
+
 export const customerPaths: ZodOpenApiPathsObject = {
   '/customers': {
     post: {
@@ -104,13 +170,31 @@ export const customerPaths: ZodOpenApiPathsObject = {
     patch: {
       tags: ['Customers'],
       summary: 'Update customer profile (office only)',
+      description: 'Inactive customers cannot be edited — reactivate first.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateCustomerBody),
       responses: {
         '200': jsonResponse('Updated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
+        '409': errorResponse('PHONE_TAKEN, ID_TAKEN, or CUSTOMER_INACTIVE'),
+      },
+    },
+  },
+  '/customers/{id}/statement': {
+    get: {
+      tags: ['Customers'],
+      summary: 'Statement of account (office only)',
+      description:
+        'Every product the customer holds (susu, savings, loans, hire purchase) with ' +
+        'period opening/closing positions, plus the unified transaction history for an ' +
+        'inclusive Accra-day range (defaults to the last 30 days). All amounts are ' +
+        'integer pesewas. Pass format=csv to download the transaction rows as CSV.',
+      security,
+      requestParams: { path: idParam, query: rangeQuery },
+      responses: {
+        '200': jsonResponse('The statement', customerStatement),
+        '404': errorResponse('NOT_FOUND'),
       },
     },
   },

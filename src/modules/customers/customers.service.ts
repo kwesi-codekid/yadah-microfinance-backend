@@ -189,6 +189,13 @@ export async function updateCustomer(
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findById(id);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  if (customer.status === 'inactive') {
+    throw new AppError(
+      'CUSTOMER_INACTIVE',
+      'Inactive customers cannot be edited — reactivate the customer first',
+      409,
+    );
+  }
 
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};

@@ -6,10 +6,13 @@ import { getValidated, validate } from '../../middleware/validate.js';
 import {
   formatOnlyQuery,
   rangeQuery,
+  transactionsQuery,
   type FormatOnlyQuery,
   type RangeQuery,
+  type TransactionsQuery,
 } from './reports.schemas.js';
 import * as reportsService from './reports.service.js';
+import * as transactionsService from './transactions.service.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireOffice);
@@ -27,6 +30,23 @@ function send(
     res.json(payload);
   }
 }
+
+reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: TransactionsQuery }>(req);
+  if (query.format === 'csv') {
+    transactionsService
+      .transactionsCsvRows(query)
+      .then((rows) => {
+        res.type('text/csv').attachment('transactions.csv').send(toCsv(rows));
+      })
+      .catch(next);
+    return;
+  }
+  transactionsService
+    .listTransactions(query)
+    .then((feed) => res.json(feed))
+    .catch(next);
+});
 
 reportsRouter.get('/collections', validate({ query: rangeQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: RangeQuery }>(req);

@@ -13,6 +13,9 @@ import {
   type UpdateCustomerBody,
 } from './customers.schemas.js';
 import * as customersService from './customers.service.js';
+import { toCsv } from '../../lib/csv.js';
+import { rangeQuery, type RangeQuery } from '../reports/reports.schemas.js';
+import { customerStatement, statementCsvRows } from '../reports/transactions.service.js';
 
 export const customersRouter = Router();
 customersRouter.use(requireAuth);
@@ -47,6 +50,29 @@ customersRouter.get('/:id', validate({ params: customerIdParams }), (req, res, n
     .then((customer) => res.json({ customer }))
     .catch(next);
 });
+
+// Statement of account: all products + unified transaction history for a period.
+customersRouter.get(
+  '/:id/statement',
+  requireOffice,
+  validate({ params: customerIdParams, query: rangeQuery }),
+  (req, res, next) => {
+    const { params, query } = getValidated<{ params: CustomerIdParams; query: RangeQuery }>(req);
+    customerStatement(params.id, query.from, query.to)
+      .then((statement) => {
+        if (query.format === 'csv') {
+          const name = `statement-${statement.customer.id}-${statement.period.from}-to-${statement.period.to}`;
+          res
+            .type('text/csv')
+            .attachment(`${name}.csv`)
+            .send(toCsv(statementCsvRows(statement)));
+        } else {
+          res.json(statement);
+        }
+      })
+      .catch(next);
+  },
+);
 
 customersRouter.patch(
   '/:id',
