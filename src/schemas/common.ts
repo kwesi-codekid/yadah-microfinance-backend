@@ -48,6 +48,31 @@ export const pagination = z.object({
 });
 export type Pagination = z.infer<typeof pagination>;
 
+export const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+
+/** Inclusive Accra-day range for list filters — both ends optional. */
+export const dateRangeFields = {
+  from: isoDay.optional(),
+  to: isoDay.optional(),
+};
+
+/** Standard from/to ordering issue for `.check()` blocks, or null when fine. */
+export function fromToIssue(v: { from?: string | undefined; to?: string | undefined }): {
+  code: 'custom';
+  message: string;
+  path: string[];
+  input: unknown;
+} | null {
+  if (v.from && v.to && v.from > v.to) {
+    return { code: 'custom', message: 'from must not be after to', path: ['from'], input: v.from };
+  }
+  return null;
+}
+
+/** Listing/report download format. */
+export const exportFormat = z.enum(['json', 'csv', 'xlsx']).default('json');
+export type ExportFormat = z.infer<typeof exportFormat>;
+
 /** Future-proofing only — Phase 1 records cash; no online-payment flows. */
 export const channel = z.enum(['cash', 'paystack', 'momo']).default('cash');
 
