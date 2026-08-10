@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { SusuAccountModel, SusuDepositModel } from '../../src/models/index.js';
+import { Types } from 'mongoose';
+import { SusuAccountModel, SusuDepositModel, SusuPayoutModel } from '../../src/models/index.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
 
@@ -76,5 +77,34 @@ describe('susu transactions (WBS 7.2)', () => {
     expect(second.deposit.id).toBe(first.deposit.id);
     const after = await SusuAccountModel.findById(accountId);
     expect(after?.depositsCount).toBe(2);
+  });
+});
+
+describe('susu closure', () => {
+  it('refuses to close an account whose deposits cannot cover the commission', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+
+    await expect(susu.closeAccount(officer, accountId)).rejects.toMatchObject({
+      code: 'COMMISSION_NOT_COVERED',
+    });
+    const after = await SusuAccountModel.findById(accountId);
+    expect(after?.status).toBe('active');
+  });
+
+  it('close records the cash disbursement as a payout row', async () => {
+    const customerId = await makeCustomer();
+    const account = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+    await susu.recordDeposit(officer, accountId, 3, randomUUID(), 'cash');
+
+    const result = await susu.closeAccount(officer, accountId);
+    expect(result.commission).toBe(1_000);
+    expect(result.payout).toBe(2_000);
+
+    const payoutRows = await SusuPayoutModel.find({ accountId });
+    expect(payoutRows).toHaveLength(1);
+    expect(payoutRows[0]).toMatchObject({ amount: 2_000, destination: 'cash' });
   });
 });

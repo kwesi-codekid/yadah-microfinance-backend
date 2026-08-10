@@ -553,6 +553,14 @@ export async function closeAccount(
   if (pre.status === 'closed') {
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
   }
+  if (pre.totalDeposited < pre.dailyAmount) {
+    throw new AppError(
+      'COMMISSION_NOT_COVERED',
+      'Deposits do not cover the one-day commission — use terminate to refund the balance',
+      422,
+      { totalDeposited: pre.totalDeposited, dailyAmount: pre.dailyAmount },
+    );
+  }
   const customer = await CustomerModel.findById(pre.customerId);
 
   const session = await mongoose.startSession();
@@ -564,6 +572,14 @@ export async function closeAccount(
         status: { $in: ['active', 'completed'] },
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
+      if (account.totalDeposited < account.dailyAmount) {
+        throw new AppError(
+          'COMMISSION_NOT_COVERED',
+          'Deposits do not cover the one-day commission — use terminate to refund the balance',
+          422,
+          { totalDeposited: account.totalDeposited, dailyAmount: account.dailyAmount },
+        );
+      }
 
       const { commission, payout, flagged } = computeClosure(
         account.totalDeposited,
@@ -585,6 +601,24 @@ export async function closeAccount(
       );
       if (upd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+
+      // The cash disbursement itself — without this row an office closure
+      // would be invisible in the unified transactions feed.
+      if (payout > 0) {
+        await SusuPayoutModel.create(
+          [
+            {
+              accountId: account._id,
+              customerId: account.customerId,
+              amount: payout,
+              destination: 'cash',
+              recordedById: new Types.ObjectId(actor.sub),
+              idempotencyKey: `close:${account._id.toHexString()}`,
+            },
+          ],
+          { session },
+        );
       }
 
       await audit(

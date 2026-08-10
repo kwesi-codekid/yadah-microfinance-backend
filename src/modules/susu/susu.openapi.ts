@@ -189,8 +189,10 @@ export const susuPaths: ZodOpenApiPathsObject = {
       summary: 'Close account = withdrawal (office only)',
       description:
         'Payout = total deposits − exactly 1 day’s commission, regardless of exit ' +
-        'day. Never negative; `flagged` is true when deposits did not cover the ' +
-        'commission. Sends the withdrawal SMS.',
+        'day. Deposits must cover the commission — otherwise the request is ' +
+        'refused (COMMISSION_NOT_COVERED) and the account can only be terminated. ' +
+        'The cash disbursement is recorded and appears in the transactions feed. ' +
+        'Sends the withdrawal SMS.',
       security,
       requestParams: { path: idParam },
       responses: {
@@ -205,6 +207,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
         ),
         '403': errorResponse('FORBIDDEN — office only'),
         '409': errorResponse('ALREADY_CLOSED'),
+        '422': errorResponse(
+          'COMMISSION_NOT_COVERED (details.totalDeposited, details.dailyAmount)',
+        ),
       },
     },
   },
