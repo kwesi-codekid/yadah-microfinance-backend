@@ -6,6 +6,7 @@ import { audit } from './audit.js';
 import { emitAdminEvent } from './realtime.js';
 import { enqueueSms } from './sms.js';
 import { logger } from './logger.js';
+import { recordWorkerRun, recordWorkerStart } from './worker-status.js';
 
 /**
  * Automatic HP arrears (user-confirmed rule): an instalment unpaid ONE
@@ -70,10 +71,16 @@ let timer: NodeJS.Timeout | null = null;
 
 export function startHpArrearsWorker(intervalMs = 60 * 60 * 1000): void {
   if (timer) return;
+  recordWorkerStart('hp-arrears');
   const run = (): void => {
-    runHpArrearsPass().catch((err: unknown) => {
-      logger.warn({ err }, 'hp arrears pass errored');
-    });
+    runHpArrearsPass()
+      .then((changes) => {
+        recordWorkerRun('hp-arrears', { ok: true, changes });
+      })
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'hp arrears pass errored');
+        recordWorkerRun('hp-arrears', { ok: false, error: String(err) });
+      });
   };
   run();
   timer = setInterval(run, intervalMs);

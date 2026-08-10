@@ -14,6 +14,7 @@ import { transfer } from '../modules/transfers/transfers.service.js';
 import { accraDay } from './time.js';
 import { AppError } from './errors.js';
 import { logger } from './logger.js';
+import { recordWorkerRun, recordWorkerStart } from './worker-status.js';
 import type { AccessTokenPayload } from '../modules/auth/auth.service.js';
 
 /**
@@ -172,10 +173,16 @@ let timer: NodeJS.Timeout | null = null;
 
 export function startDebtRecoveryWorker(intervalMs = 60 * 60 * 1000): void {
   if (timer) return;
+  recordWorkerStart('debt-recovery');
   const run = (): void => {
-    runDebtRecoveryPass().catch((err: unknown) => {
-      logger.warn({ err }, 'debt recovery pass errored');
-    });
+    runDebtRecoveryPass()
+      .then((changes) => {
+        recordWorkerRun('debt-recovery', { ok: true, changes });
+      })
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'debt recovery pass errored');
+        recordWorkerRun('debt-recovery', { ok: false, error: String(err) });
+      });
   };
   run();
   timer = setInterval(run, intervalMs);

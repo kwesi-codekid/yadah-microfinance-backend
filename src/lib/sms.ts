@@ -3,6 +3,7 @@ import { env } from '../config/env.js';
 import { SmsLogModel, type SmsLog } from '../models/index.js';
 import { accraMonthKey } from './time.js';
 import { logger } from './logger.js';
+import { recordWorkerRun, recordWorkerStart } from './worker-status.js';
 
 const MAX_ATTEMPTS = 5;
 /** A login OTP older than this must never be delivered late. */
@@ -101,10 +102,16 @@ let workerTimer: NodeJS.Timeout | null = null;
 
 export function startSmsWorker(intervalMs = 60_000): void {
   if (workerTimer) return;
+  recordWorkerStart('sms');
   workerTimer = setInterval(() => {
-    drainSmsQueue().catch((err: unknown) => {
-      logger.warn({ err }, 'sms worker pass errored');
-    });
+    drainSmsQueue()
+      .then(() => {
+        recordWorkerRun('sms', { ok: true });
+      })
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'sms worker pass errored');
+        recordWorkerRun('sms', { ok: false, error: String(err) });
+      });
   }, intervalMs);
   workerTimer.unref();
 }

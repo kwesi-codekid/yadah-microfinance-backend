@@ -5,6 +5,7 @@ import { computeInterest, escalationActionFor, type LoanRates } from '../domain/
 import { audit } from './audit.js';
 import { emitAdminEvent } from './realtime.js';
 import { logger } from './logger.js';
+import { recordWorkerRun, recordWorkerStart } from './worker-status.js';
 
 /**
  * Overdue engine (WBS 5.7). State-based, so any number of runs per day
@@ -110,10 +111,16 @@ let timer: NodeJS.Timeout | null = null;
 
 export function startLoanEscalationWorker(intervalMs = 60 * 60 * 1000): void {
   if (timer) return;
+  recordWorkerStart('loan-escalation');
   const run = (): void => {
-    runEscalationPass().catch((err: unknown) => {
-      logger.warn({ err }, 'loan escalation pass errored');
-    });
+    runEscalationPass()
+      .then((changes) => {
+        recordWorkerRun('loan-escalation', { ok: true, changes });
+      })
+      .catch((err: unknown) => {
+        logger.warn({ err }, 'loan escalation pass errored');
+        recordWorkerRun('loan-escalation', { ok: false, error: String(err) });
+      });
   };
   run(); // once at startup, then hourly — idempotent by design
   timer = setInterval(run, intervalMs);
