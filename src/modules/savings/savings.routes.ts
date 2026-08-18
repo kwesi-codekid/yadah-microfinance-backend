@@ -41,6 +41,7 @@ savingsRouter.post(
         body.initialDeposit,
         body.idempotencyKey,
         body.channel,
+        body.accountType,
         req.id as string,
       )
       .then((result) => res.status(201).json(result))

@@ -371,6 +371,49 @@ function totalsFromGroups(groups: SummaryGroup[]): TxnTotals {
   return totals;
 }
 
+// ---------------------------------------------------------------- grouped totals
+
+/** Per-type totals over a window — powers the dashboard's cash figures. */
+export interface TxnGroupSummary {
+  from: string;
+  to: string;
+  totals: TxnTotals;
+  groups: {
+    type: TxnType;
+    direction: TxnDirection;
+    count: number;
+    amount: number;
+    fee: number;
+  }[];
+}
+
+export async function transactionGroups(from?: string, to?: string): Promise<TxnGroupSummary> {
+  const window = rangeToWindow(from, to);
+  const groups = await SusuDepositModel.aggregate<SummaryGroup>([
+    ...unionStages(buildBranches(window)),
+    {
+      $group: {
+        _id: { type: '$type', channel: '$channel', detail: '$detail' },
+        count: { $sum: 1 },
+        amount: { $sum: '$amount' },
+        fee: { $sum: '$fee' },
+      },
+    },
+  ]);
+  return {
+    from: window.from,
+    to: window.to,
+    totals: totalsFromGroups(groups),
+    groups: groups.map((g) => ({
+      type: g._id.type,
+      direction: directionOf(g._id.type, g._id.channel, g._id.detail),
+      count: g.count,
+      amount: g.amount,
+      fee: g.fee,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------- feed
 
 export interface TransactionsFeed {
@@ -487,6 +530,7 @@ export interface CustomerStatement {
     savings: {
       accountId: string;
       accountNumber: string;
+      accountType: string;
       status: string;
       openingBalance: number;
       closingBalance: number;
@@ -569,6 +613,7 @@ export async function customerStatement(
     savingsAccounts.map(async (a) => ({
       accountId: a._id.toHexString(),
       accountNumber: a.accountNumber,
+      accountType: a.accountType,
       status: a.status,
       openingBalance: await balanceAsOf(a._id, window.start),
       closingBalance: await balanceAsOf(a._id, window.end),

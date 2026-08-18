@@ -58,7 +58,77 @@ const transactionsFeed = z.object({
   totals: txnTotals.describe('Totals over the WHOLE filtered range, not just this page'),
 });
 
+const countAmount = z.object({ count: z.number().int(), amount: z.number().int() });
+
+const dashboardMetrics = z
+  .object({
+    today: z.object({
+      day: z.string().describe('Accra calendar day, YYYY-MM-DD'),
+      cashIn: countAmount,
+      cashOut: countAmount,
+      internalMoves: countAmount.describe('Transfer legs — excluded from cash totals'),
+      in: z.object({
+        susuDeposits: countAmount,
+        savingsDeposits: countAmount,
+        loanRepayments: countAmount,
+        hpPayments: countAmount,
+      }),
+      out: z.object({
+        susuPayouts: countAmount,
+        savingsWithdrawals: countAmount,
+        loanDisbursements: countAmount,
+      }),
+    }),
+    monthToDate: z.object({
+      from: z.string(),
+      to: z.string(),
+      susuCommission: countAmount,
+      savingsFees: countAmount,
+      totalRevenue: z.number().int(),
+    }),
+    portfolio: z.object({
+      customersActive: z.number().int(),
+      susu: z.object({
+        activeAccounts: z.number().int(),
+        completedAwaitingClosure: z.number().int(),
+        valueHeld: z.number().int(),
+        pendingPayout: countAmount,
+      }),
+      savings: z.object({
+        activeAccounts: z.number().int(),
+        totalBalance: z.number().int(),
+        byType: z.object({ standard: countAmount, student: countAmount }),
+      }),
+      loans: z.object({
+        active: z.number().int(),
+        arrears: z.number().int(),
+        outstanding: z.number().int(),
+      }),
+      hirePurchase: z.object({
+        active: z.number().int(),
+        inArrears: z.number().int(),
+        outstanding: z.number().int(),
+      }),
+    }),
+    generatedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'DashboardMetrics' });
+
 export const reportPaths: ZodOpenApiPathsObject = {
+  '/reports/dashboard': {
+    get: {
+      tags: ['Reports'],
+      summary: 'Live dashboard metrics: today’s cash, month revenue, portfolio position',
+      description:
+        "Today's cash in/out by source (internal transfers excluded), month-to-date " +
+        'revenue (susu commission + savings fees), and the live portfolio position ' +
+        '(accounts, balances, outstanding loans/HP). All amounts are integer pesewas. ' +
+        'Socket.io money events to the admin room signal WHEN to refetch — this ' +
+        'endpoint is always the source of truth. JSON only.',
+      security,
+      responses: { '200': jsonResponse('Dashboard metrics', dashboardMetrics) },
+    },
+  },
   '/reports/transactions': {
     get: {
       tags: ['Reports'],

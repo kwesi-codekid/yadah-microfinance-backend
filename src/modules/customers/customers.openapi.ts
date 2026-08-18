@@ -105,6 +105,7 @@ const customerStatement = z
         z.object({
           accountId: z.string(),
           accountNumber: z.string(),
+          accountType: z.enum(['standard', 'student']),
           status: z.string(),
           openingBalance: z.number().int().describe('Balance at the start of the period'),
           closingBalance: z.number().int().describe('Balance at the end of the period'),

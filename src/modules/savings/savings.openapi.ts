@@ -17,6 +17,13 @@ const savingsAccount = z
     accountNumber: z.string().describe('10-digit randomized, unique'),
     customerId: z.string(),
     customerName: z.string().optional().describe('On list responses, for display'),
+    accountType: z
+      .enum(['standard', 'student'])
+      .describe(
+        'Label only — money rules are identical. Student accounts: the customer record ' +
+          "is the minor; the guardian's ID goes in the customer identification fields " +
+          'and the guardian is recorded as next of kin (office procedure).',
+      ),
     balance: z.number().int().describe('Pesewas'),
     availableToWithdraw: z
       .number()

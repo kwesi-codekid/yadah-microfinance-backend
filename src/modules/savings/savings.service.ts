@@ -14,6 +14,7 @@ import {
   SavingsTxnModel,
   type Customer,
   type SavingsAccount,
+  type SavingsAccountType,
   type SavingsTxn,
 } from '../../models/index.js';
 import {
@@ -33,6 +34,8 @@ export interface PublicSavingsAccount {
   customerId: string;
   /** Present on list responses for display; joined from the customer. */
   customerName?: string;
+  /** Label only — student accounts follow identical money rules. */
+  accountType: SavingsAccountType;
   balance: number;
   /** balance − 50 − 10, never negative (rule 4 — always exposed). */
   availableToWithdraw: number;
@@ -46,6 +49,7 @@ export function toPublicSavingsAccount(a: SavingsAccount): PublicSavingsAccount 
     id: a._id.toHexString(),
     accountNumber: a.accountNumber,
     customerId: a.customerId.toHexString(),
+    accountType: a.accountType,
     balance: a.balance,
     availableToWithdraw: a.status === 'active' ? availableToWithdraw(a.balance) : 0,
     status: a.status,
@@ -61,6 +65,7 @@ export function toSavingsAccountExportRow(a: PublicSavingsAccount): Record<strin
     accountNumber: a.accountNumber,
     customerName: a.customerName ?? '',
     customerId: a.customerId,
+    accountType: a.accountType,
     balance: a.balance,
     availableToWithdraw: a.availableToWithdraw,
     status: a.status,
@@ -144,6 +149,7 @@ export async function openAccount(
   initialDeposit: number | undefined,
   idempotencyKey: string | undefined,
   channel: Channel,
+  accountType: SavingsAccountType = 'standard',
   requestId?: string,
 ): Promise<{ account: PublicSavingsAccount; initialTxn?: PublicSavingsTxn }> {
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
@@ -165,6 +171,7 @@ export async function openAccount(
               {
                 accountNumber: generateAccountNumber(SAVINGS_ACCOUNT_DIGITS),
                 customerId,
+                accountType,
                 balance: initialDeposit ?? 0,
                 openedById: new Types.ObjectId(actor.sub),
               },
@@ -234,6 +241,7 @@ export async function listAccounts(
 ): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
+  if (query.accountType) filter.accountType = query.accountType;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
   const dateFilter = createdAtFilter(query.from, query.to);

@@ -9,7 +9,12 @@ export { SusuAccountModel, type SusuAccount } from './susu-account.model.js';
 export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
 export { SusuPayoutModel, type SusuPayout } from './susu-payout.model.js';
 export { TransferModel, type Transfer } from './transfer.model.js';
-export { SavingsAccountModel, type SavingsAccount } from './savings-account.model.js';
+export {
+  SavingsAccountModel,
+  SAVINGS_ACCOUNT_TYPES,
+  type SavingsAccount,
+  type SavingsAccountType,
+} from './savings-account.model.js';
 export { SavingsTxnModel, type SavingsTxn } from './savings-txn.model.js';
 export { LoanModel, type Loan } from './loan.model.js';
 export { LoanConfigModel, type LoanConfig } from './loan-config.model.js';

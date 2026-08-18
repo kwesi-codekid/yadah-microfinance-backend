@@ -12,6 +12,7 @@ import {
   type RangeQuery,
   type TransactionsQuery,
 } from './reports.schemas.js';
+import * as dashboardService from './dashboard.service.js';
 import * as reportsService from './reports.service.js';
 import * as transactionsService from './transactions.service.js';
 
@@ -22,6 +23,14 @@ reportsRouter.use(requireAuth, requireOffice);
 // resets on restart — every worker also runs immediately at startup).
 reportsRouter.get('/workers', requireRole('admin'), (_req, res) => {
   res.json({ workers: workerStatuses() });
+});
+
+// JSON only — the nested payload doesn't flatten to a meaningful CSV.
+reportsRouter.get('/dashboard', (_req, res, next) => {
+  dashboardService
+    .dashboardMetrics()
+    .then((metrics) => res.json(metrics))
+    .catch(next);
 });
 
 reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req, res, next) => {

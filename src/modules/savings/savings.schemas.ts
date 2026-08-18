@@ -10,10 +10,13 @@ import {
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
 import { MIN_DEPOSIT } from '../../domain/savings.js';
+import { SAVINGS_ACCOUNT_TYPES } from '../../models/savings-account.model.js';
 
 export const openAccountBody = z
   .object({
     customerId: objectId,
+    /** Label only — student accounts follow identical money rules. */
+    accountType: z.enum(SAVINGS_ACCOUNT_TYPES).default('standard'),
     /** Optional opening deposit — subject to the GHS 10 minimum. */
     initialDeposit: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 10').optional(),
     idempotencyKey: idempotencyKey.optional(),
@@ -28,6 +31,7 @@ export type OpenAccountBody = z.infer<typeof openAccountBody>;
 export const listAccountsQuery = pagination
   .extend({
     customerId: objectId.optional(),
+    accountType: z.enum(SAVINGS_ACCOUNT_TYPES).optional(),
     status: z.enum(['active', 'closed']).optional(),
     accountNumber: z
       .string()
