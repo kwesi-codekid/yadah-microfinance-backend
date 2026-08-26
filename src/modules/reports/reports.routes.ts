@@ -128,6 +128,11 @@ reportsRouter.get('/commission', validate({ query: rangeQuery }), (req, res, nex
             count: report.savingsFees.count,
             amount: report.savingsFees.amount,
           },
+          {
+            source: 'outright-sales-margin',
+            count: report.outrightSalesProfit.count,
+            amount: report.outrightSalesProfit.amount,
+          },
           { source: 'total', count: '', amount: report.totalRevenue },
         ],
         moneyKeys: ['amount'],

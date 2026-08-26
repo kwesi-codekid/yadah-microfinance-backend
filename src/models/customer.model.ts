@@ -57,6 +57,12 @@ export interface Customer extends TrashFields {
   idDocumentFrontUrl?: string;
   idDocumentBackUrl?: string;
   // Administration
+  /**
+   * The collector who owns this customer's round. Collectors may only see and
+   * collect from their own customers (client decision 2026-08-21), so an
+   * unassigned customer is invisible in the field until an admin assigns one.
+   */
+  assignedCollectorId?: Types.ObjectId;
   registeredById: Types.ObjectId;
   status: 'active' | 'inactive';
   createdAt: Date;
@@ -111,6 +117,7 @@ const customerSchema = new Schema<Customer>(
     idDocumentFrontUrl: { type: String },
     idDocumentBackUrl: { type: String },
 
+    assignedCollectorId: { type: Schema.Types.ObjectId, ref: 'User' },
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     ...trashFields,
@@ -120,6 +127,8 @@ const customerSchema = new Schema<Customer>(
 
 customerSchema.index({ fullName: 'text' });
 customerSchema.index({ status: 1 });
+// Every collector-scoped read filters on this.
+customerSchema.index({ assignedCollectorId: 1, status: 1 });
 // No two customers may share the same ID document (when one is recorded).
 customerSchema.index(
   { 'identification.idType': 1, 'identification.idNumber': 1 },

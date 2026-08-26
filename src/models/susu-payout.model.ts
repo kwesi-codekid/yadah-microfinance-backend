@@ -10,6 +10,11 @@ export interface SusuPayout {
   accountId: Types.ObjectId;
   customerId: Types.ObjectId;
   amount: number; // pesewas
+  /**
+   * 'payout' ends the account's life (closure or staged disbursement);
+   * 'partial-withdrawal' takes money from an account that stays open.
+   */
+  kind: 'payout' | 'partial-withdrawal';
   destination: 'cash' | 'savings' | 'loan' | 'hire-purchase';
   /** The credited record on the other side, when internal. */
   destinationId?: Types.ObjectId;
@@ -24,6 +29,7 @@ const susuPayoutSchema = new Schema<SusuPayout>(
     accountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount', required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     amount: moneyField,
+    kind: { type: String, enum: ['payout', 'partial-withdrawal'], default: 'payout' },
     destination: {
       type: String,
       enum: ['cash', 'savings', 'loan', 'hire-purchase'],

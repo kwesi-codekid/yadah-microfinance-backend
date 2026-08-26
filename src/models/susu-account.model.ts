@@ -13,7 +13,15 @@ export interface SusuAccount extends TrashFields {
   customerId: Types.ObjectId;
   dailyAmount: number; // pesewas, immutable
   depositsCount: number; // 0..31, denormalized from susu-deposits
+  /** Running total paid IN over the cycle. Never decreases — not the balance. */
   totalDeposited: number; // pesewas, denormalized
+  /**
+   * Total taken out by partial withdrawals while the account stayed open
+   * (client decision 2026-08-21 — a withdrawal no longer forces closure).
+   * balance = totalDeposited − withdrawnAmount; the cycle is unaffected,
+   * since days already paid stay paid.
+   */
+  withdrawnAmount: number; // pesewas
   /**
    * pending-payout: stopped, commission taken, value awaiting disbursement.
    * terminated: refunded in full with no commission — only reachable while
@@ -39,6 +47,7 @@ const susuAccountSchema = new Schema<SusuAccount>(
     dailyAmount: { ...moneyField, immutable: true },
     depositsCount: { type: Number, default: 0, min: 0, max: 31 },
     totalDeposited: { ...moneyField, default: 0 },
+    withdrawnAmount: { ...moneyField, default: 0 },
     status: {
       type: String,
       enum: ['active', 'completed', 'pending-payout', 'closed', 'terminated'],

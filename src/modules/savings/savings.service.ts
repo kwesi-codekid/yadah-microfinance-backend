@@ -8,15 +8,18 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
+import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
 import {
   CustomerModel,
   SavingsAccountModel,
   SavingsTxnModel,
+  UserModel,
   type Customer,
   type SavingsAccount,
   type SavingsAccountType,
   type SavingsTxn,
 } from '../../models/index.js';
+import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
   availableToWithdraw,
   computeSavingsClosure,
@@ -236,7 +239,7 @@ export async function openAccount(
 }
 
 export async function listAccounts(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
@@ -257,12 +260,16 @@ export async function listAccounts(
     filter.$or = or;
   }
 
+  // Top-level customerId condition — ANDed with the search $or by Mongo, so an
+  // account-number search cannot reach outside the collector's round.
+  const scoped = await withCustomerScope(actor, filter);
+
   const [accounts, total] = await Promise.all([
-    SavingsAccountModel.find(filter)
+    SavingsAccountModel.find(scoped)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
-    SavingsAccountModel.countDocuments(filter),
+    SavingsAccountModel.countDocuments(scoped),
   ]);
 
   const unique = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
@@ -280,21 +287,23 @@ export async function listAccounts(
 }
 
 export async function getAccount(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSavingsAccount> {
   const account = await SavingsAccountModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
   return toPublicSavingsAccount(account);
 }
 
 export async function listTransactions(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   accountId: Types.ObjectId,
   query: ListTxnsQuery,
 ): Promise<{ items: PublicSavingsTxn[]; page: number; limit: number; total: number }> {
   const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
 
   const txnFilter: Record<string, unknown> = { accountId, ...NOT_TRASHED };
   const txnDateFilter = createdAtFilter(query.from, query.to);
@@ -341,6 +350,7 @@ export async function deposit(
 
   const pre = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, pre.customerId);
   await loadCustomer(pre.customerId);
 
   const session = await mongoose.startSession();
@@ -1060,4 +1070,73 @@ export async function listSavingsTxnTrash(
     SavingsTxnModel.countDocuments(filter),
   ]);
   return { items: txns.map(toTrashedTxn), page: query.page, limit: query.limit, total };
+}
+
+// ---------------------------------------------------------------- receipts
+
+export interface ReceiptFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+const TXN_TITLES: Record<SavingsTxn['type'], string> = {
+  deposit: 'Savings Deposit',
+  withdrawal: 'Savings Withdrawal',
+  closure: 'Savings Account Closure',
+};
+
+/**
+ * Receipt for one savings movement. balanceAfter is read straight off the
+ * stored transaction, so a receipt reprinted later still shows the balance as
+ * it stood that day.
+ */
+export async function txnReceipt(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  txnId: Types.ObjectId,
+): Promise<ReceiptFile> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
+
+  const txn = await SavingsTxnModel.findOne({ _id: txnId, accountId, ...NOT_TRASHED });
+  if (!txn) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+  const customer = await CustomerModel.findById(account.customerId);
+  const staff = await UserModel.findById(txn.recordedById).select('name');
+
+  const lines: ReceiptLine[] = [];
+  if (txn.fee !== undefined && txn.fee > 0) {
+    lines.push({ label: 'Withdrawal fee', value: formatGhs(txn.fee) });
+    lines.push({ label: 'Total debited', value: formatGhs(txn.amount + txn.fee) });
+  }
+  lines.push({ label: 'Balance after', value: formatGhs(txn.balanceAfter), emphasis: true });
+  if (txn.type === 'deposit') {
+    lines.push({ label: 'Payment method', value: txn.channel });
+  }
+  if (txn.type === 'closure') {
+    lines.push({ label: 'Account status', value: 'Closed' });
+  } else {
+    // The GHS 50 minimum only comes out on closure, so it is worth stating.
+    lines.push({
+      label: 'Withdrawable now',
+      value: formatGhs(availableToWithdraw(txn.balanceAfter)),
+    });
+  }
+  lines.push({ label: 'Account type', value: account.accountType });
+
+  const prefix = txn.type === 'deposit' ? 'VD' : 'VW';
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber(prefix, txn._id),
+    kind: txn.type === 'deposit' ? 'deposit' : 'withdrawal',
+    title: TXN_TITLES[txn.type],
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: account.accountNumber,
+    amount: txn.amount,
+    lines,
+    recordedByName: staff?.name ?? 'Yadah staff',
+    at: txn.createdAt,
+    reference: txn._id.toHexString(),
+  });
+  return { buffer, filename: `savings-${txn.type}-${receiptNumber(prefix, txn._id)}.pdf` };
 }

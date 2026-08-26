@@ -3,6 +3,11 @@ import type { Types } from 'mongoose';
 import { CustomerModel } from '../models/index.js';
 import { NOT_TRASHED } from '../models/shared.js';
 
+/** Escapes user input used inside a Mongo $regex, so a '.' stays a dot. */
+export function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 interface CustomerSearchDoc {
   _id: Types.ObjectId;
   fullName: string;

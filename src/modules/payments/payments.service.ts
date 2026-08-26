@@ -129,7 +129,7 @@ async function resolveTarget(
       }
       const amount = body.amount ?? 0;
       if (amount < MIN_DEPOSIT) {
-        throw new AppError('AMOUNT_TOO_SMALL', 'Minimum deposit is GHS 10', 422);
+        throw new AppError('AMOUNT_TOO_SMALL', `Minimum deposit is ${formatGhs(MIN_DEPOSIT)}`, 422);
       }
       return { customerId: account.customerId, amount };
     }

@@ -4,6 +4,7 @@ import {
   dateRangeFields,
   exportFormat,
   fromToIssue,
+  ghanaPhone,
   idempotencyKey,
   objectId,
   pagination,
@@ -163,6 +164,81 @@ export const listAgreementsQuery = pagination
     if (issue) ctx.issues.push(issue);
   });
 export type ListAgreementsQuery = z.infer<typeof listAgreementsQuery>;
+
+// ---- outright sales (counter / POS)
+
+/**
+ * One basket line. `unitPrice` is optional and defaults to the item's current
+ * selling price — pass it only to record a haggled or discounted price, which
+ * is then visible against the list price on the sale.
+ */
+const saleLineBody = z.object({
+  itemId: objectId,
+  quantity: z.number().int().min(1).max(1000),
+  unitPrice: positiveMoneyPesewas.optional(),
+});
+
+export const recordSaleBody = z
+  .object({
+    /** Set when the buyer is a registered customer. Walk-ins leave it out. */
+    customerId: objectId.optional(),
+    /** Required for a walk-in; ignored when customerId is given (the customer
+     *  record is the source of truth for their name). */
+    buyerName: z.string().min(2).max(120).trim().optional(),
+    buyerPhone: ghanaPhone.optional(),
+    lines: z.array(saleLineBody).min(1).max(50),
+    idempotencyKey,
+    channel,
+  })
+  .check((ctx) => {
+    if (ctx.value.customerId === undefined && ctx.value.buyerName === undefined) {
+      ctx.issues.push({
+        code: 'custom',
+        message: 'Give either a customerId or a buyerName for a walk-in',
+        path: ['buyerName'],
+        input: ctx.value.buyerName,
+      });
+    }
+    const seen = new Set<string>();
+    for (const [index, line] of ctx.value.lines.entries()) {
+      const key = line.itemId.toHexString();
+      if (seen.has(key)) {
+        ctx.issues.push({
+          code: 'custom',
+          message: 'The same item appears twice — combine it into one line with a quantity',
+          path: ['lines', String(index), 'itemId'],
+          input: line.itemId,
+        });
+      }
+      seen.add(key);
+    }
+  });
+export type RecordSaleBody = z.infer<typeof recordSaleBody>;
+
+export const voidSaleBody = z.object({
+  reason: z.string().min(2).max(300).trim(),
+});
+export type VoidSaleBody = z.infer<typeof voidSaleBody>;
+
+export const listSalesQuery = pagination
+  .extend({
+    customerId: objectId.optional(),
+    status: z.enum(['completed', 'voided']).optional(),
+    /** Fuzzy-free: matches the buyer name recorded on the sale. */
+    search: z.string().min(1).max(100).optional(),
+    /** Walk-in sales only (no registered customer behind them). */
+    walkInOnly: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+    format: exportFormat,
+    ...dateRangeFields,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
+export type ListSalesQuery = z.infer<typeof listSalesQuery>;
 
 // ---- trash
 

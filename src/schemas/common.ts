@@ -19,10 +19,40 @@ export const objectId = z
   .refine((v) => Types.ObjectId.isValid(v), 'Invalid id')
   .transform((v) => new Types.ObjectId(v));
 
-/** Ghanaian mobile number in local format, e.g. 0241234567. */
+/**
+ * Reduces the ways people actually type a Ghanaian number to the one local
+ * form we store: spacing and punctuation dropped, `+233`/`233` country code
+ * swapped for the leading `0`. `+233 24 123 4567` and `0241234567` are the
+ * same number and must not be two different records.
+ */
+export function normalizeGhanaPhone(raw: string): string {
+  const compact = raw.replace(/[\s().-]/g, '');
+  // Anchored, so a local 023x number is never mistaken for a country code.
+  const local = compact.replace(/^(?:\+233|233)/, '');
+  return local.startsWith('0') ? local : `0${local}`;
+}
+
+/**
+ * Ghanaian mobile number, stored as 0241234567 whatever format it arrived in.
+ * Mobile prefixes only (02x/05x) — landlines (03x) are rejected on purpose:
+ * this field is what SMS is sent to.
+ */
 export const ghanaPhone = z
   .string()
-  .regex(/^0[25]\d{8}$/, 'Expected a Ghanaian mobile number like 0241234567');
+  .transform(normalizeGhanaPhone)
+  .refine(
+    (v) => /^0[25]\d{8}$/.test(v),
+    'Expected a Ghanaian mobile number like 0241234567 or +233241234567',
+  );
+
+/**
+ * An optional field that an edit form can also CLEAR. A blank string or an
+ * explicit null both parse to `null`, meaning "unset this field" — kept
+ * distinct from `undefined`, which means "leave it as it is".
+ */
+export function clearable<T extends z.ZodType>(schema: T): z.ZodType<z.output<T> | null> {
+  return z.preprocess((v) => (v === '' || v === null ? null : v), z.union([z.null(), schema]));
+}
 
 /** Ghana Card personal ID number, e.g. GHA-123456789-0. */
 export const ghanaCardNumber = z

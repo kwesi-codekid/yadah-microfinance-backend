@@ -9,13 +9,16 @@ import {
   forfeitBody,
   listAgreementsQuery,
   listItemsQuery,
+  listSalesQuery,
   paymentBody,
   putConfigBody,
   reasonBody,
+  recordSaleBody,
   redeemBody,
   trashBody,
   trashListQuery,
   updateItemBody,
+  voidSaleBody,
 } from './hp.schemas.js';
 
 const hpItem = z
@@ -96,12 +99,150 @@ const trashedHpAgreement = hpAgreement.extend({
 });
 
 const agreementResult = z.object({ agreement: hpAgreement });
+const hpSale = z
+  .object({
+    id: z.string(),
+    receiptNo: z.string().describe('Quotable reference, e.g. SALE-1A2B3C4D'),
+    customerId: z.string().nullable().describe('null for a walk-in buyer'),
+    buyerName: z.string(),
+    buyerPhone: z.string().optional(),
+    lines: z.array(
+      z.object({
+        itemId: z.string(),
+        name: z.string().describe('Snapshotted at the sale'),
+        quantity: z.number().int(),
+        unitPrice: z.number().int().describe('What was actually charged per unit'),
+        listPrice: z.number().int().describe('The listed price then — makes a discount visible'),
+        lineTotal: z.number().int(),
+      }),
+    ),
+    subtotal: z.number().int().describe('What the basket would have cost at list'),
+    discount: z.number().int(),
+    total: z.number().int().describe('What the buyer paid'),
+    channel: z.string(),
+    soldById: z.string(),
+    status: z.enum(['completed', 'voided']),
+    voidedAt: z.iso.datetime().optional(),
+    voidReason: z.string().optional(),
+    createdAt: z.iso.datetime(),
+  })
+  .describe('Cost price and profit are internal and never appear here')
+  .meta({ id: 'HpSale' });
+
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string() });
 const stageB =
   ' Installment schedules and payments arrive in Stage B once the client confirms the interest method.';
 
 export const hpPaths: ZodOpenApiPathsObject = {
+  '/hire-purchase/sales': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Record an outright counter sale (office only)',
+      description:
+        'The counter/POS case: stock out, money in, no agreement, no deposit, no ' +
+        'instalments. Two things differ from an HP agreement. First, the buyer need NOT ' +
+        'be a registered customer — pass buyerName for a walk-in instead of customerId, ' +
+        'since requiring a photo and both sides of an ID to sell a kettle is absurd. ' +
+        'Second, it is a basket: several items in one sale. Every price is snapshotted, ' +
+        'so later inventory edits never rewrite what a buyer was charged. Per-line ' +
+        'unitPrice is optional and defaults to the item’s selling price — pass it only to ' +
+        'record a haggled price, which then shows against the list price. Stock is ' +
+        'decremented inside the transaction under a guard, so two tills cannot sell the ' +
+        'same unit. Idempotent on idempotencyKey.',
+      security,
+      requestBody: jsonBody(recordSaleBody),
+      responses: {
+        '201': jsonResponse('Sale recorded', z.object({ sale: hpSale, replayed: z.boolean() })),
+        '200': jsonResponse('Replay of an earlier identical request', z.object({})),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND (customer) or ITEM_NOT_FOUND (details.itemId)'),
+        '409': errorResponse('INSUFFICIENT_STOCK — sold out while ringing up'),
+        '422': errorResponse(
+          'ITEM_DISCONTINUED, or INSUFFICIENT_STOCK ' +
+            '(details.requested, details.quantityInStock)',
+        ),
+      },
+    },
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'List outright sales (office only)',
+      description:
+        'Newest first. `totals` covers the whole filter rather than the page, and always ' +
+        'excludes voided sales. Filter with walkInOnly=true for sales with no registered ' +
+        'customer behind them. Pass format=csv or format=xlsx to download — the ' +
+        'spreadsheet includes cost and profit per sale, which the JSON deliberately ' +
+        'never exposes.',
+      security,
+      requestParams: { query: listSalesQuery },
+      responses: {
+        '200': jsonResponse(
+          'Paginated sales',
+          z.object({
+            items: z.array(hpSale),
+            page: z.number().int(),
+            limit: z.number().int(),
+            total: z.number().int(),
+            totals: z.object({
+              salesCount: z.number().int(),
+              revenue: z.number().int(),
+              profit: z.number().int(),
+            }),
+          }),
+        ),
+      },
+    },
+  },
+  '/hire-purchase/sales/{id}': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'Get one outright sale (office only)',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('The sale', z.object({ sale: hpSale })),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/hire-purchase/sales/{id}/receipt': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'Printable sales receipt (office only)',
+      description:
+        'A4 receipt with one line per basket item, then the totals. A discounted line ' +
+        'shows the list price alongside what was charged. A voided sale still prints, ' +
+        'stamped VOIDED with its reason. Binary response (application/pdf).',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/hire-purchase/sales/{id}/void': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Void a sale rung up in error (office only)',
+      description:
+        'Returns the stock and stops the sale counting toward revenue, but keeps the row ' +
+        'and records who voided it and why — a ledger never forgets, it annotates. ' +
+        'Voided sales drop out of the transactions feed and the revenue report.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(voidSaleBody),
+      responses: {
+        '200': jsonResponse('Voided', z.object({ sale: hpSale })),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('ALREADY_VOIDED'),
+      },
+    },
+  },
+
   '/hire-purchase/items': {
     post: {
       tags: ['Hire Purchase'],

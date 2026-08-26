@@ -191,6 +191,22 @@ savingsRouter.post(
   },
 );
 
+// Printable receipt for any recorded movement. Not office-only: a collector
+// who took the cash in the field must be able to hand over a receipt for it.
+savingsRouter.get(
+  '/accounts/:id/txns/:txnId/receipt',
+  validate({ params: txnIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: TxnIdParams }>(req);
+    savingsService
+      .txnReceipt(getAuth(req), params.id, params.txnId)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
+      .catch(next);
+  },
+);
+
 // Any collector or office staff records deposits.
 savingsRouter.post(
   '/accounts/:id/deposits',

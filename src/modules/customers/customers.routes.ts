@@ -1,16 +1,20 @@
 import { Router } from 'express';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireAdmin, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { pagination, trashBody, type Pagination, type TrashBody } from '../../schemas/common.js';
 import {
+  bulkReassignBody,
   createCustomerBody,
   customerIdParams,
   listCustomersQuery,
+  reassignCollectorBody,
   updateCustomerBody,
+  type BulkReassignBody,
   type CreateCustomerBody,
   type CustomerIdParams,
   type ListCustomersQuery,
+  type ReassignCollectorBody,
   type UpdateCustomerBody,
 } from './customers.schemas.js';
 import * as customersService from './customers.service.js';
@@ -59,6 +63,21 @@ customersRouter.get('/', validate({ query: listCustomersQuery }), (req, res, nex
     .then((list) => res.json(list))
     .catch(next);
 });
+
+// Hand a whole round from one collector to another (admin only). Registered
+// BEFORE /:id so 'reassign-collector' is never captured as an id.
+customersRouter.post(
+  '/reassign-collector',
+  requireAdmin,
+  validate({ body: bulkReassignBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: BulkReassignBody }>(req);
+    customersService
+      .bulkReassignCollector(getAuth(req), body, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
 
 // Trash listing — registered BEFORE /:id so 'trash' is never captured as an id.
 customersRouter.get('/trash', requireOffice, validate({ query: pagination }), (req, res, next) => {
@@ -130,6 +149,24 @@ customersRouter.patch(
     );
     customersService
       .updateCustomer(getAuth(req), params.id, body, req.id as string)
+      .then((customer) => res.json({ customer }))
+      .catch(next);
+  },
+);
+
+// Move one customer to another collector — admin only: a manager may edit a
+// customer but must not silently move collection responsibility.
+customersRouter.patch(
+  '/:id/collector',
+  requireAdmin,
+  validate({ params: customerIdParams, body: reassignCollectorBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: CustomerIdParams;
+      body: ReassignCollectorBody;
+    }>(req);
+    customersService
+      .reassignCollector(getAuth(req), params.id, body, req.id as string)
       .then((customer) => res.json({ customer }))
       .catch(next);
   },

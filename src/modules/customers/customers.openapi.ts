@@ -4,7 +4,13 @@ import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { pagination, trashBody } from '../../schemas/common.js';
 import { rangeQuery } from '../reports/reports.schemas.js';
 import { txnTotals, unifiedTransaction } from '../reports/reports.openapi.js';
-import { createCustomerBody, listCustomersQuery, updateCustomerBody } from './customers.schemas.js';
+import {
+  bulkReassignBody,
+  createCustomerBody,
+  listCustomersQuery,
+  reassignCollectorBody,
+  updateCustomerBody,
+} from './customers.schemas.js';
 
 const publicCustomer = z
   .object({
@@ -33,6 +39,10 @@ const publicCustomer = z
     occupation: z.string().optional(),
     employerOrBusiness: z.string().optional(),
     purposeOfAccount: z.string().optional(),
+    assignedCollectorId: z
+      .string()
+      .optional()
+      .describe('Collector who owns this customer; only they may collect from them'),
     nextOfKin: z
       .object({
         fullName: z.string(),
@@ -151,7 +161,11 @@ export const customerPaths: ZodOpenApiPathsObject = {
       description:
         'Account creation happens at the office — collectors cannot create customers. ' +
         'The customer photo and both ID document images (front and back) are required — ' +
-        'upload them via POST /uploads/images first. Phone, alternate phone and ' +
+        'upload them via POST /uploads/images first. Phone numbers are accepted as ' +
+        '0241234567, +233241234567 or 233241234567 (spaces, dashes and brackets are ' +
+        'ignored) and always stored as the local 0-prefixed form; mobile prefixes only. ' +
+        'Optional fields may be submitted blank ("" or null) and are simply omitted. ' +
+        'Phone, alternate phone and ' +
         'next-of-kin phone must all be different numbers. ID numbers are format-checked ' +
         'per type (Ghana Card GHA-123456789-0, voter ID 8 digits, passport G12345678, ' +
         "driver's licence 10-20 alphanumerics). Customers must be at least 10 years old.",
@@ -160,13 +174,17 @@ export const customerPaths: ZodOpenApiPathsObject = {
       responses: {
         '201': jsonResponse('Created', customerResult),
         '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
+        '422': errorResponse('INVALID_COLLECTOR — assignedCollectorId is not an active collector'),
       },
     },
     get: {
       tags: ['Customers'],
       summary: 'List customers',
       description:
-        'All roles see all customers. `search` is fuzzy (typo-tolerant name, ' +
+        'Collectors see ONLY the customers assigned to them; office roles see ' +
+        'all and may narrow with assignedCollectorId, or find gaps with ' +
+        'unassigned=true (both ignored for collectors, who are always pinned ' +
+        'to their own round). `search` is fuzzy (typo-tolerant name, ' +
         'phone) and returns results in relevance order. Pass format=csv or ' +
         'format=xlsx to download the listing as a spreadsheet (pagination is ' +
         'ignored; capped at 10,000 rows).',
@@ -189,6 +207,50 @@ export const customerPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/customers/reassign-collector': {
+    post: {
+      tags: ['Customers'],
+      summary: "Hand a collector's whole round to another collector (admin only)",
+      description:
+        'Bulk reassignment for when a collector leaves or swaps zones. Transactional: ' +
+        'either every customer moves or none does. Writes one audit entry per customer, ' +
+        'so the ledger can still answer "who owned this customer on that day?".',
+      security,
+      requestBody: jsonBody(bulkReassignBody),
+      responses: {
+        '200': jsonResponse(
+          'How many moved',
+          z.object({
+            fromCollectorId: z.string(),
+            toCollectorId: z.string(),
+            reassigned: z.number().int(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — admin only'),
+        '422': errorResponse('INVALID_COLLECTOR — toCollectorId is not an active collector'),
+      },
+    },
+  },
+  '/customers/{id}/collector': {
+    patch: {
+      tags: ['Customers'],
+      summary: 'Reassign one customer to another collector (admin only)',
+      description:
+        'Admin only: a manager may edit a customer but must not silently move ' +
+        'collection responsibility. Idempotent when the customer is already on that ' +
+        'collector. This is the ONLY way to change assignedCollectorId — PATCH ' +
+        '/customers/{id} ignores the field.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(reassignCollectorBody),
+      responses: {
+        '200': jsonResponse('Updated customer', customerResult),
+        '403': errorResponse('FORBIDDEN — admin only'),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('INVALID_COLLECTOR — not an active collector account'),
+      },
+    },
+  },
   '/customers/{id}': {
     get: {
       tags: ['Customers'],
@@ -197,7 +259,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('The customer', customerResult),
-
+        '403': errorResponse('CUSTOMER_NOT_ASSIGNED — collector reaching outside their round'),
         '404': errorResponse('NOT_FOUND'),
       },
     },
@@ -222,7 +284,10 @@ export const customerPaths: ZodOpenApiPathsObject = {
     patch: {
       tags: ['Customers'],
       summary: 'Update customer profile (office only)',
-      description: 'Inactive customers cannot be edited — reactivate first.',
+      description:
+        'Inactive customers cannot be edited — reactivate first. Optional fields accept ' +
+        '"" or null to CLEAR them; omit a field to leave it unchanged. assignedCollectorId ' +
+        'is ignored here — use PATCH /customers/{id}/collector (admin only).',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateCustomerBody),

@@ -78,7 +78,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     post: {
       tags: ['Savings'],
       summary: 'Open a savings account (office only)',
-      description: 'Optional initialDeposit (min GHS 10) is recorded atomically with the opening.',
+      description: 'Optional initialDeposit (min GHS 5) is recorded atomically with the opening.',
       security,
       requestBody: jsonBody(openAccountBody),
       responses: {
@@ -261,10 +261,40 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/savings/accounts/{id}/txns/{txnId}/receipt': {
+    get: {
+      tags: ['Savings'],
+      summary: 'Printable receipt for a deposit, withdrawal or closure',
+      description:
+        'A4 receipt laid out to stay readable printed in black and white on office paper: ' +
+        'receipt number, customer, account, the amount in a boxed headline, the ' +
+        'product-specific detail rows, who recorded it, and signature lines. Reprints are ' +
+        'identical: the receipt number is derived from the transaction id, and historical ' +
+        'balances are rebuilt from the ledger rather than read off the current account. ' +
+        'Binary response (application/pdf).' +
+        ' balanceAfter is read straight off the stored transaction, so a reprint months ' +
+        'later still shows the balance as it stood that day.',
+      security,
+      requestParams: {
+        path: z.object({
+          id: z.string().describe('Savings account id'),
+          txnId: z.string(),
+        }),
+      },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '403': errorResponse('CUSTOMER_NOT_ASSIGNED — collector reaching outside their round'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
   '/savings/accounts/{id}/deposits': {
     post: {
       tags: ['Savings'],
-      summary: 'Record a deposit (min GHS 10)',
+      summary: 'Record a deposit (min GHS 5)',
       description:
         'Any collector or office staff. Idempotency key required — a ' +
         'retried request returns the original transaction.',

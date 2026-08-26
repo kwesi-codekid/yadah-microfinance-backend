@@ -17,7 +17,10 @@ export function requireRole(...roles: Role[]): RequestHandler {
 
 /**
  * Office staff only (customer creation, account opening/closure, withdrawals).
- * Collectors are NOT customer-scoped — any collector may view and collect
- * from any customer; access control is purely role-based.
+ * Role is only half the story for collectors: they are additionally scoped to
+ * their own assigned customers — see src/lib/customer-scope.ts.
  */
 export const requireOffice = requireRole('admin', 'manager');
+
+/** Admin only — reassigning a customer's collector, and user management. */
+export const requireAdmin = requireRole('admin');

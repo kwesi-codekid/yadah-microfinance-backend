@@ -7,8 +7,11 @@ import { verifyAccessToken } from '../modules/auth/auth.service.js';
 let io: Server | null = null;
 
 /**
- * Live feed for the office dashboard. Handshake requires a valid access
- * token with an office role (admin/manager); collectors are refused.
+ * Live feed. Every authenticated staff member connects — collectors included,
+ * since they now receive their own notifications — and each socket joins a
+ * private `user:<id>` room. Office roles additionally join `admin`, which
+ * carries the whole-business dashboard feed.
+ *
  * Events are notifications only — never sources of truth.
  */
 export function initRealtime(server: HttpServer): void {
@@ -23,10 +26,6 @@ export function initRealtime(server: HttpServer): void {
       const token = (socket.handshake.auth as Record<string, unknown>).token;
       if (typeof token !== 'string') throw new Error('missing token');
       const payload = verifyAccessToken(token);
-      if (payload.role !== 'admin' && payload.role !== 'manager') {
-        next(new Error('FORBIDDEN'));
-        return;
-      }
       (socket.data as { auth?: unknown }).auth = payload;
       next();
     } catch {
@@ -35,18 +34,37 @@ export function initRealtime(server: HttpServer): void {
   });
 
   io.on('connection', (socket) => {
-    void socket.join('admin');
+    const auth = (socket.data as { auth?: { sub: string; role: string } }).auth;
+    if (!auth) return;
+    void socket.join(userRoom(auth.sub));
+    // The dashboard feed stays office-only: a collector must not see the
+    // whole business, only what concerns them.
+    if (auth.role === 'admin' || auth.role === 'manager') void socket.join('admin');
   });
 }
 
+function userRoom(userId: string): string {
+  return `user:${userId}`;
+}
+
 /**
- * Fire-and-forget notify to the admin room. Never throws — a socket
- * problem must not affect the request that triggered the event. Call
- * AFTER a transaction commits, never inside one.
+ * Fire-and-forget notify to the admin room. Never throws — a socket problem
+ * must not affect the request that triggered the event. Call AFTER a
+ * transaction commits, never inside one.
  */
 export function emitAdminEvent(event: string, payload: unknown): void {
   try {
     io?.to('admin').emit(event, payload);
+  } catch (err) {
+    logger.warn({ err, event }, 'socket emit failed');
+  }
+}
+
+/** Same contract as emitAdminEvent, but addressed to specific staff members. */
+export function emitToUsers(userIds: string[], event: string, payload: unknown): void {
+  if (userIds.length === 0) return;
+  try {
+    io?.to(userIds.map(userRoom)).emit(event, payload);
   } catch (err) {
     logger.warn({ err, event }, 'socket emit failed');
   }

@@ -7,6 +7,7 @@ import { enqueueSms } from '../../lib/sms.js';
 import { accraDay } from '../../lib/time.js';
 import {
   computeClosure,
+  susuBalance,
   computeDepositAmount,
   remainingDeposits,
   SUSU_CYCLE_DEPOSITS,
@@ -221,8 +222,10 @@ export async function transfer(
               422,
             );
           }
+          // Balance, not the running deposit total — partial withdrawals have
+          // already taken their share out of the account.
           const { commission, payout } = computeClosure(
-            account.totalDeposited,
+            susuBalance(account.totalDeposited, account.withdrawnAmount),
             account.dailyAmount,
           );
           if (payout < 1)
@@ -427,7 +430,7 @@ export async function transfer(
               action: 'susu.account.close',
               entityType: 'susu-account',
               entityId: account._id,
-              amountBefore: account.totalDeposited,
+              amountBefore: susuBalance(account.totalDeposited, account.withdrawnAmount),
               amountAfter: susuSourceStopping.payout,
               after: { via: 'transfer', to: body.to.type, credited, excess },
               ...(requestId !== undefined ? { requestId } : {}),

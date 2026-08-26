@@ -34,7 +34,7 @@ import {
   type LoanRates,
   type TierLimits,
 } from '../../domain/loans.js';
-import { computeClosure } from '../../domain/susu.js';
+import { computeClosure, susuBalance } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type { ListLoansQuery, LoanTrashQuery, PutConfigBody } from './loans.schemas.js';
@@ -798,7 +798,10 @@ export async function repayViaSusuClosure(
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Susu account is already stopped', 409);
 
-      const { commission, payout } = computeClosure(account.totalDeposited, account.dailyAmount);
+      // Balance, not the running deposit total — partial withdrawals have
+      // already taken their share out of the account.
+      const balance = susuBalance(account.totalDeposited, account.withdrawnAmount);
+      const { commission, payout } = computeClosure(balance, account.dailyAmount);
       if (payout < 1) {
         throw new AppError('NO_PAYOUT', 'Susu closure yields no payout to apply', 422);
       }
@@ -822,7 +825,12 @@ export async function repayViaSusuClosure(
       const now = new Date();
       const keepsPending = excess > 0 && excessTo === 'pending-withdrawal';
       const upd = await SusuAccountModel.updateOne(
-        { _id: account._id, status: account.status, totalDeposited: account.totalDeposited },
+        {
+          _id: account._id,
+          status: account.status,
+          totalDeposited: account.totalDeposited,
+          withdrawnAmount: account.withdrawnAmount,
+        },
         {
           $set: {
             status: keepsPending ? 'pending-payout' : 'closed',

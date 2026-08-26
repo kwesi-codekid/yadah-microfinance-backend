@@ -1,11 +1,13 @@
 import { MongoServerError } from 'mongodb';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
+import { notifyInBackground } from '../../lib/notifications.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import {
+  AuditLogModel,
   CustomerModel,
   HpAgreementModel,
   LoanModel,
@@ -17,14 +19,17 @@ import {
   type NextOfKin,
 } from '../../models/index.js';
 import { buildRegistrationFormPdf } from './registration-pdf.js';
+import { assertCanActOnCustomer, customerScopeFilter, isScoped } from '../../lib/customer-scope.js';
 import { NOT_TRASHED, requireDeletedAt } from '../../models/shared.js';
 import type { Pagination } from '../../schemas/common.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import {
   PHONES_DISTINCT_MESSAGE,
   phoneClashes,
+  type BulkReassignBody,
   type CreateCustomerBody,
   type ListCustomersQuery,
+  type ReassignCollectorBody,
   type UpdateCustomerBody,
 } from './customers.schemas.js';
 
@@ -74,6 +79,7 @@ export interface PublicCustomer {
   photoUrl?: string;
   idDocumentFrontUrl?: string;
   idDocumentBackUrl?: string;
+  assignedCollectorId?: string;
   registeredById: string;
   status: 'active' | 'inactive';
   createdAt: Date;
@@ -96,6 +102,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
   }
   if (c.identification) out.identification = c.identification;
   if (c.nextOfKin) out.nextOfKin = c.nextOfKin;
+  if (c.assignedCollectorId) out.assignedCollectorId = c.assignedCollectorId.toHexString();
   return out;
 }
 
@@ -117,6 +124,7 @@ export function toCustomerExportRow(item: PublicCustomer): Record<string, unknow
     idNumber: item.identification?.idNumber ?? null,
     nextOfKinName: item.nextOfKin?.fullName ?? null,
     nextOfKinPhone: item.nextOfKin?.phone ?? null,
+    assignedCollectorId: item.assignedCollectorId ?? null,
     status: item.status,
     createdAt: item.createdAt,
   };
@@ -135,17 +143,32 @@ function throwIfDuplicate(err: unknown): never {
   throw err as Error;
 }
 
+/** A customer's round may only be owned by a real, active collector account. */
+async function assertActiveCollector(collectorId: Types.ObjectId): Promise<void> {
+  const user = await UserModel.findById(collectorId).select('role status');
+  if (user?.role !== 'collector' || user.status !== 'active') {
+    throw new AppError(
+      'INVALID_COLLECTOR',
+      'Assigned collector must be an active collector account',
+      422,
+    );
+  }
+}
+
 export async function createCustomer(
   actor: AccessTokenPayload,
   body: CreateCustomerBody,
   requestId?: string,
 ): Promise<PublicCustomer> {
+  await assertActiveCollector(body.assignedCollectorId);
   const doc: Record<string, unknown> = {
     registeredById: new Types.ObjectId(actor.sub),
+    assignedCollectorId: body.assignedCollectorId,
     status: 'active',
   };
   for (const key of [...SCALAR_FIELDS, ...SUBDOC_FIELDS]) {
-    if (body[key] !== undefined) doc[key] = body[key];
+    // null means "cleared" on an edit form; on a new record it is just absent.
+    if (body[key] !== undefined && body[key] !== null) doc[key] = body[key];
   }
 
   const customer = await CustomerModel.create(doc).catch(throwIfDuplicate);
@@ -155,7 +178,11 @@ export async function createCustomer(
     action: 'customer.create',
     entityType: 'customer',
     entityId: customer._id,
-    after: { fullName: customer.fullName, phone: customer.phone },
+    after: {
+      fullName: customer.fullName,
+      phone: customer.phone,
+      assignedCollectorId: customer.assignedCollectorId?.toHexString() ?? null,
+    },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   const created = toPublicCustomer(customer);
@@ -171,10 +198,17 @@ export interface CustomerList {
 }
 
 export async function listCustomers(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   query: ListCustomersQuery,
 ): Promise<CustomerList> {
-  const filter: Record<string, unknown> = { ...NOT_TRASHED };
+  // A collector is pinned to their own round; the office filters may narrow
+  // the list but can never widen a collector's view.
+  const filter: Record<string, unknown> = { ...NOT_TRASHED, ...customerScopeFilter(actor) };
+  if (!isScoped(actor)) {
+    if (query.assignedCollectorId) filter.assignedCollectorId = query.assignedCollectorId;
+    // `null` matches both an explicit null and a missing field.
+    if (query.unassigned === true) filter.assignedCollectorId = null;
+  }
   if (query.status) filter.status = query.status;
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
@@ -209,11 +243,12 @@ export async function listCustomers(
 }
 
 export async function getCustomer(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  await assertCanActOnCustomer(actor, id);
   return toPublicCustomer(customer);
 }
 
@@ -248,19 +283,36 @@ export async function updateCustomer(
   const after: Record<string, unknown> = {};
   for (const key of SCALAR_FIELDS) {
     const next = patch[key];
-    if (next !== undefined && String(next) !== String(customer[key] ?? '')) {
-      before[key] = customer[key] ?? null;
-      after[key] = next;
-      (customer as Record<typeof key, unknown>)[key] = next;
+    if (next === undefined) continue; // absent from the patch — leave as is
+    const current = customer[key];
+    if (next === null) {
+      // Explicitly cleared: unset the path rather than storing a null.
+      if (current === undefined) continue; // already empty — not an edit
+      before[key] = current;
+      after[key] = null;
+      customer.set(key, undefined);
+      continue;
     }
+    if (String(next) === String(current ?? '')) continue;
+    before[key] = current ?? null;
+    after[key] = next;
+    (customer as Record<typeof key, unknown>)[key] = next;
   }
   for (const key of SUBDOC_FIELDS) {
     const next = patch[key];
-    if (next !== undefined && JSON.stringify(next) !== JSON.stringify(customer[key] ?? null)) {
-      before[key] = customer[key] ?? null;
-      after[key] = next;
-      customer.set(key, next);
+    if (next === undefined) continue;
+    const current = customer[key];
+    if (next === null) {
+      if (current === undefined) continue; // already empty — not an edit
+      before[key] = current;
+      after[key] = null;
+      customer.set(key, undefined);
+      continue;
     }
+    if (JSON.stringify(next) === JSON.stringify(current ?? null)) continue;
+    before[key] = current ?? null;
+    after[key] = next;
+    customer.set(key, next);
   }
   await customer.save().catch(throwIfDuplicate);
 
@@ -276,6 +328,142 @@ export async function updateCustomer(
     });
   }
   return toPublicCustomer(customer);
+}
+
+// ---------------------------------------------------------------- collector assignment
+
+/**
+ * Move one customer to a different collector. Admin only — a manager can edit
+ * a customer but must not silently move money-collection responsibility.
+ */
+export async function reassignCollector(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  body: ReassignCollectorBody,
+  requestId?: string,
+): Promise<PublicCustomer> {
+  const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  await assertActiveCollector(body.collectorId);
+
+  const before = customer.assignedCollectorId ?? null;
+  if (before?.equals(body.collectorId)) return toPublicCustomer(customer); // idempotent
+
+  customer.assignedCollectorId = body.collectorId;
+  await customer.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'customer.collector.reassign',
+    entityType: 'customer',
+    entityId: customer._id,
+    before: { assignedCollectorId: before ? before.toHexString() : null },
+    after: {
+      assignedCollectorId: body.collectorId.toHexString(),
+      ...(body.reason !== undefined ? { reason: body.reason } : {}),
+    },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+
+  emitAdminEvent('customer.collector.reassigned', {
+    id: customer._id.toHexString(),
+    fullName: customer.fullName,
+    fromCollectorId: before ? before.toHexString() : null,
+    toCollectorId: body.collectorId.toHexString(),
+  });
+  // Separate messages: "gained" and "lost" are not the same news.
+  const reassignData = { customerId: customer._id.toHexString(), entity: 'customer' };
+  notifyInBackground({
+    userIds: [body.collectorId],
+    type: 'customer.reassigned',
+    title: 'Customer added to your round',
+    body: `${customer.fullName} is now yours to collect from.`,
+    data: reassignData,
+  });
+  if (before) {
+    notifyInBackground({
+      userIds: [before],
+      type: 'customer.reassigned',
+      title: 'Customer moved off your round',
+      body: `${customer.fullName} has been reassigned to another collector.`,
+      data: reassignData,
+    });
+  }
+  return toPublicCustomer(customer);
+}
+
+export interface BulkReassignResult {
+  fromCollectorId: string;
+  toCollectorId: string;
+  reassigned: number;
+}
+
+/**
+ * Hand a whole round over — the realistic case being a collector who leaves.
+ * Transactional: either every customer moves or none does, so a half-moved
+ * round can never leave customers stranded between two collectors.
+ */
+export async function bulkReassignCollector(
+  actor: AccessTokenPayload,
+  body: BulkReassignBody,
+  requestId?: string,
+): Promise<BulkReassignResult> {
+  await assertActiveCollector(body.toCollectorId);
+
+  const result: BulkReassignResult = {
+    fromCollectorId: body.fromCollectorId.toHexString(),
+    toCollectorId: body.toCollectorId.toHexString(),
+    reassigned: 0,
+  };
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const filter = { assignedCollectorId: body.fromCollectorId, ...NOT_TRASHED };
+      const affected = await CustomerModel.find(filter, { _id: 1 }).session(session).lean();
+      if (affected.length === 0) return;
+
+      await CustomerModel.updateMany(
+        filter,
+        { $set: { assignedCollectorId: body.toCollectorId } },
+        { session },
+      );
+
+      // One entry per customer, not one for the batch — the ledger has to be
+      // able to answer "who owned this customer on that day?".
+      await AuditLogModel.insertMany(
+        affected.map((c) => ({
+          actorId: new Types.ObjectId(actor.sub),
+          action: 'customer.collector.reassign',
+          entityType: 'customer',
+          entityId: c._id,
+          before: { assignedCollectorId: result.fromCollectorId },
+          after: {
+            assignedCollectorId: result.toCollectorId,
+            bulk: true,
+            ...(body.reason !== undefined ? { reason: body.reason } : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        })),
+        { session },
+      );
+      result.reassigned = affected.length;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  if (result.reassigned > 0) {
+    emitAdminEvent('customer.collector.bulkReassigned', result);
+    notifyInBackground({
+      userIds: [body.fromCollectorId, body.toCollectorId],
+      type: 'customer.reassigned',
+      title: 'Round reassigned',
+      body: `${String(result.reassigned)} customers moved between collectors.`,
+      data: { ...result, entity: 'customer' },
+    });
+  }
+  return result;
 }
 
 export async function setCustomerStatus(

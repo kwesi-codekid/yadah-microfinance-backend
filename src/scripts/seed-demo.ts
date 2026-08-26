@@ -137,6 +137,7 @@ async function seed(): Promise<void> {
     residentialAddress: 'Esiama Main Market',
     ghanaPostGps: 'WR-123-4567',
     identification: { idType: 'ghana-card', idNumber: 'GHA-100000001-1' },
+    assignedCollectorId: col1!._id,
     registeredById: manager!._id,
     status: 'active',
   });
@@ -155,6 +156,9 @@ async function seed(): Promise<void> {
           },
         }
       : {}),
+    // Rounds are split between the two collectors — the lock is only visible
+    // in a demo if each collector actually owns a different slice.
+    assignedCollectorId: pick(collectors, i),
     registeredById: manager!._id,
     status: 'active',
   }));

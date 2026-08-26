@@ -13,6 +13,8 @@ import { loansRouter } from './modules/loans/loans.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
 import { hpRouter } from './modules/hire-purchase/hp.routes.js';
 import { transfersRouter } from './modules/transfers/transfers.routes.js';
+import { reconciliationRouter } from './modules/reconciliation/reconciliation.routes.js';
+import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { paymentsRouter, paystackWebhookHandler } from './modules/payments/payments.routes.js';
 
 export function createApp(): express.Express {
@@ -48,6 +50,8 @@ export function createApp(): express.Express {
   app.use('/api/v1/reports', reportsRouter);
   app.use('/api/v1/hire-purchase', hpRouter);
   app.use('/api/v1/transfers', transfersRouter);
+  app.use('/api/v1/reconciliation', reconciliationRouter);
+  app.use('/api/v1/notifications', notificationsRouter);
   app.use('/api/v1/payments', paymentsRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 

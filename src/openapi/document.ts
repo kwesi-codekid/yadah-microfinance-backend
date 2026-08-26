@@ -10,6 +10,8 @@ import { reportPaths } from '../modules/reports/reports.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
+import { reconciliationPaths } from '../modules/reconciliation/reconciliation.openapi.js';
+import { notificationPaths } from '../modules/notifications/notifications.openapi.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
@@ -37,7 +39,16 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       {
         name: 'Savings',
         description:
-          'Min GHS 10 deposits, 1 withdrawal/day with flat GHS 10 fee, GHS 50 min balance',
+          'Min GHS 5 deposits, 1 withdrawal/day with flat GHS 10 fee, GHS 50 min balance',
+      },
+      {
+        name: 'Notifications',
+        description: 'In-app notifications and Web Push subscriptions (all staff roles)',
+      },
+      {
+        name: 'Reconciliation',
+        description:
+          'End-of-day cash handover: collector declares, office confirms, variance recorded',
       },
       {
         name: 'Uploads',
@@ -75,6 +86,8 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,
+      ...reconciliationPaths,
+      ...notificationPaths,
     },
     components: {
       securitySchemes: {

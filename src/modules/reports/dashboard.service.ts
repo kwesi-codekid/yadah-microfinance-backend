@@ -49,6 +49,8 @@ export interface DashboardMetrics {
     to: string;
     susuCommission: CountAmount;
     savingsFees: CountAmount;
+    /** Margin on outright counter sales, voided ones excluded. */
+    outrightSalesProfit: CountAmount;
     totalRevenue: number;
   };
   /** Live position — computed from account state, not from the feed. */
@@ -57,7 +59,8 @@ export interface DashboardMetrics {
     susu: {
       activeAccounts: number;
       completedAwaitingClosure: number;
-      /** Sum of totalDeposited on active + completed cycles. */
+      /** Sum of BALANCES on active + completed cycles — deposits less anything
+       *  already taken by partial withdrawals. */
       valueHeld: number;
       pendingPayout: CountAmount;
     };
@@ -112,7 +115,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       SusuAccountModel.aggregate<{
         _id: string;
         count: number;
-        totalDeposited: number;
+        balance: number;
         payoutRemaining: number;
       }>([
         { $match: { ...NOT_TRASHED } },
@@ -120,7 +123,11 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
           $group: {
             _id: '$status',
             count: { $sum: 1 },
-            totalDeposited: { $sum: '$totalDeposited' },
+            // Money actually held, not the running deposit total: partial
+            // withdrawals have already left the drawer.
+            balance: {
+              $sum: { $subtract: ['$totalDeposited', { $ifNull: ['$withdrawnAmount', 0] }] },
+            },
             payoutRemaining: { $sum: '$payoutRemaining' },
           },
         },
@@ -191,6 +198,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       to: revenue.to,
       susuCommission: revenue.susuCommission,
       savingsFees: revenue.savingsFees,
+      outrightSalesProfit: revenue.outrightSalesProfit,
       totalRevenue: revenue.totalRevenue,
     },
     portfolio: {
@@ -198,7 +206,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       susu: {
         activeAccounts: active?.count ?? 0,
         completedAwaitingClosure: completed?.count ?? 0,
-        valueHeld: (active?.totalDeposited ?? 0) + (completed?.totalDeposited ?? 0),
+        valueHeld: (active?.balance ?? 0) + (completed?.balance ?? 0),
         pendingPayout: {
           count: pending?.count ?? 0,
           amount: pending?.payoutRemaining ?? 0,

@@ -17,8 +17,8 @@ export const openAccountBody = z
     customerId: objectId,
     /** Label only — student accounts follow identical money rules. */
     accountType: z.enum(SAVINGS_ACCOUNT_TYPES).default('standard'),
-    /** Optional opening deposit — subject to the GHS 10 minimum. */
-    initialDeposit: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 10').optional(),
+    /** Optional opening deposit — subject to the GHS 5 minimum. */
+    initialDeposit: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 5').optional(),
     idempotencyKey: idempotencyKey.optional(),
     channel,
   })
@@ -55,7 +55,7 @@ export const txnIdParams = z.object({ id: objectId, txnId: objectId });
 export type TxnIdParams = z.infer<typeof txnIdParams>;
 
 export const depositBody = z.object({
-  amount: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 10'),
+  amount: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 5'),
   idempotencyKey,
   channel,
 });

@@ -11,6 +11,8 @@
 export const TXN_TYPES = [
   'susu-deposit',
   'susu-payout',
+  /** Part of a balance taken while the account stays open — no commission. */
+  'susu-withdrawal',
   'savings-deposit',
   'savings-withdrawal',
   'savings-closure',
@@ -19,6 +21,8 @@ export const TXN_TYPES = [
   'hp-deposit',
   'hp-installment',
   'hp-redemption',
+  /** Outright counter sale — no agreement, paid in full at the till. */
+  'hp-sale',
   'transfer',
 ] as const;
 export type TxnType = (typeof TXN_TYPES)[number];
@@ -32,6 +36,7 @@ export function moduleOf(type: TxnType): TxnModule {
   switch (type) {
     case 'susu-deposit':
     case 'susu-payout':
+    case 'susu-withdrawal':
       return 'susu';
     case 'savings-deposit':
     case 'savings-withdrawal':
@@ -43,6 +48,7 @@ export function moduleOf(type: TxnType): TxnModule {
     case 'hp-deposit':
     case 'hp-installment':
     case 'hp-redemption':
+    case 'hp-sale':
       return 'hire-purchase';
     case 'transfer':
       return 'transfers';
@@ -66,11 +72,13 @@ export function directionOf(
     case 'hp-deposit':
     case 'hp-installment':
     case 'hp-redemption':
+    case 'hp-sale':
       return channel === 'transfer' ? 'internal' : 'in';
     case 'savings-withdrawal':
     case 'savings-closure':
       return channel === 'transfer' ? 'internal' : 'out';
     case 'susu-payout':
+    case 'susu-withdrawal':
       return detail === 'cash' ? 'out' : 'internal';
     case 'loan-repayment':
       return detail === 'cash' ? 'in' : 'internal';

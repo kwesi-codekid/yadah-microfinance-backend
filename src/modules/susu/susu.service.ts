@@ -2,7 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { generateAccountNumber, SUSU_ACCOUNT_DIGITS } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
-import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
+import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -13,11 +13,22 @@ import {
   SusuAccountModel,
   SusuDepositModel,
   SusuPayoutModel,
+  UserModel,
   type Customer,
   type SusuAccount,
   type SusuDeposit,
 } from '../../models/index.js';
-import { SUSU_CYCLE_DEPOSITS, computeClosure, remainingDeposits } from '../../domain/susu.js';
+import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
+import {
+  SUSU_CYCLE_DEPOSITS,
+  computeClosure,
+  computePartialWithdrawal,
+  maxPartialWithdrawal,
+  remainingDeposits,
+  susuBalance,
+} from '../../domain/susu.js';
+import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
+import { notifyOffice } from '../../lib/notifications.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
@@ -38,7 +49,14 @@ export interface PublicSusuAccount {
   dailyAmount: number;
   depositsCount: number;
   cycleTarget: number;
+  /** Running total paid in over the cycle — never decreases. */
   totalDeposited: number;
+  /** Total taken out by partial withdrawals. */
+  withdrawnAmount: number;
+  /** totalDeposited − withdrawnAmount: what the account actually holds. */
+  balance: number;
+  /** What may be withdrawn today, keeping one day back for the commission. */
+  availableToWithdraw: number;
   status: 'active' | 'completed' | 'pending-payout' | 'closed' | 'terminated';
   commissionAmount?: number;
   payoutAmount?: number;
@@ -49,6 +67,8 @@ export interface PublicSusuAccount {
 }
 
 export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
+  const balance = susuBalance(a.totalDeposited, a.withdrawnAmount);
+  const open = a.status === 'active' || a.status === 'completed';
   return {
     id: a._id.toHexString(),
     accountNumber: a.accountNumber,
@@ -57,6 +77,11 @@ export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
     depositsCount: a.depositsCount,
     cycleTarget: SUSU_CYCLE_DEPOSITS,
     totalDeposited: a.totalDeposited,
+    withdrawnAmount: a.withdrawnAmount,
+    balance,
+    // A stopped account has nothing left to withdraw against — its value is
+    // already committed to payout.
+    availableToWithdraw: open ? maxPartialWithdrawal(balance, a.dailyAmount) : 0,
     status: a.status,
     ...(a.commissionAmount !== undefined ? { commissionAmount: a.commissionAmount } : {}),
     ...(a.payoutAmount !== undefined ? { payoutAmount: a.payoutAmount } : {}),
@@ -77,6 +102,8 @@ export function toSusuAccountExportRow(item: PublicSusuAccount): Record<string, 
     depositsCount: item.depositsCount,
     cycleTarget: item.cycleTarget,
     totalDeposited: item.totalDeposited,
+    withdrawnAmount: item.withdrawnAmount,
+    balance: item.balance,
     status: item.status,
     commissionAmount: item.commissionAmount ?? null,
     payoutAmount: item.payoutAmount ?? null,
@@ -195,7 +222,7 @@ export interface AccountList {
 }
 
 export async function listAccounts(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   query: ListAccountsQuery,
 ): Promise<AccountList> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
@@ -215,12 +242,16 @@ export async function listAccounts(
     filter.$or = or;
   }
 
+  // Applied last, as a top-level customerId condition: Mongo ANDs it with the
+  // search $or, so an account-number search cannot reach outside the round.
+  const scoped = await withCustomerScope(actor, filter);
+
   const [accounts, total] = await Promise.all([
-    SusuAccountModel.find(filter)
+    SusuAccountModel.find(scoped)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
-    SusuAccountModel.countDocuments(filter),
+    SusuAccountModel.countDocuments(scoped),
   ]);
 
   const names = await customerNamesById(accounts.map((a) => a.customerId));
@@ -239,21 +270,23 @@ async function customerNamesById(ids: Types.ObjectId[]): Promise<Map<string, str
 }
 
 export async function getAccount(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   id: Types.ObjectId,
 ): Promise<PublicSusuAccount> {
   const account = await SusuAccountModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
   return toPublicAccount(account);
 }
 
 export async function listAccountDeposits(
-  _actor: AccessTokenPayload,
+  actor: AccessTokenPayload,
   accountId: Types.ObjectId,
   query: ListDepositsQuery,
 ): Promise<{ items: PublicDeposit[]; page: number; limit: number; total: number }> {
   const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
 
   const depositFilter: Record<string, unknown> = { accountId, ...NOT_TRASHED };
   const depositDateFilter = createdAtFilter(query.from, query.to);
@@ -306,6 +339,7 @@ export async function recordDeposit(
 
   const accountPre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!accountPre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, accountPre.customerId);
   // dailyAmount is immutable, so the days covered can be derived pre-transaction.
   if (amount % accountPre.dailyAmount !== 0) {
     throw new AppError(
@@ -439,10 +473,6 @@ export interface CollectAllResult {
   replayed: boolean;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 export async function collectAll(
   actor: AccessTokenPayload,
   customerId: Types.ObjectId,
@@ -451,6 +481,7 @@ export async function collectAll(
   channel: Channel,
   requestId?: string,
 ): Promise<CollectAllResult> {
+  await assertCanActOnCustomer(actor, customerId);
   const customer = await loadCustomer(customerId);
 
   // Replay: per-account keys are derived as `${key}#${n}` — any hit means done.
@@ -623,12 +654,15 @@ export async function closeAccount(
   if (pre.status === 'closed' || pre.status === 'terminated') {
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
   }
-  if (pre.totalDeposited < pre.dailyAmount) {
+  if (susuBalance(pre.totalDeposited, pre.withdrawnAmount) < pre.dailyAmount) {
     throw new AppError(
       'COMMISSION_NOT_COVERED',
-      'Deposits do not cover the one-day commission — use terminate to refund the balance',
+      'The balance does not cover the one-day commission — use terminate to refund it',
       422,
-      { totalDeposited: pre.totalDeposited, dailyAmount: pre.dailyAmount },
+      {
+        balance: susuBalance(pre.totalDeposited, pre.withdrawnAmount),
+        dailyAmount: pre.dailyAmount,
+      },
     );
   }
   const customer = await CustomerModel.findById(pre.customerId);
@@ -643,22 +677,25 @@ export async function closeAccount(
         ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
-      if (account.totalDeposited < account.dailyAmount) {
+      const balance = susuBalance(account.totalDeposited, account.withdrawnAmount);
+      if (balance < account.dailyAmount) {
         throw new AppError(
           'COMMISSION_NOT_COVERED',
-          'Deposits do not cover the one-day commission — use terminate to refund the balance',
+          'The balance does not cover the one-day commission — use terminate to refund it',
           422,
-          { totalDeposited: account.totalDeposited, dailyAmount: account.dailyAmount },
+          { balance, dailyAmount: account.dailyAmount },
         );
       }
 
-      const { commission, payout, flagged } = computeClosure(
-        account.totalDeposited,
-        account.dailyAmount,
-      );
+      const { commission, payout, flagged } = computeClosure(balance, account.dailyAmount);
       const now = new Date();
       const upd = await SusuAccountModel.updateOne(
-        { _id: account._id, status: account.status, totalDeposited: account.totalDeposited },
+        {
+          _id: account._id,
+          status: account.status,
+          totalDeposited: account.totalDeposited,
+          withdrawnAmount: account.withdrawnAmount,
+        },
         {
           $set: {
             status: 'closed',
@@ -698,9 +735,15 @@ export async function closeAccount(
           action: 'susu.account.close',
           entityType: 'susu-account',
           entityId: account._id,
-          amountBefore: account.totalDeposited,
+          amountBefore: balance,
           amountAfter: payout,
-          after: { commission, payout, flagged, depositsCount: account.depositsCount },
+          after: {
+            commission,
+            payout,
+            flagged,
+            depositsCount: account.depositsCount,
+            withdrawnDuringCycle: account.withdrawnAmount,
+          },
           ...(requestId !== undefined ? { requestId } : {}),
         },
         session,
@@ -739,6 +782,185 @@ export async function closeAccount(
   return result;
 }
 
+// ---------------------------------------------------------------- partial withdrawal
+
+export interface PartialWithdrawalResult {
+  account: PublicSusuAccount;
+  amount: number;
+  /** True when this response replays an earlier identical request. */
+  replayed: boolean;
+}
+
+/**
+ * Take part of a susu balance without closing the account (client decision
+ * 2026-08-21, replacing the old rule that any withdrawal closed the account).
+ *
+ * Three things deliberately do NOT happen here:
+ *   - no commission is taken; it is one cycle-day's amount, charged once, at
+ *     closure, however many withdrawals happened along the way;
+ *   - the cycle is untouched — days already paid stay paid, so depositsCount
+ *     and the 31-day target are unchanged;
+ *   - the account does not close, whatever the resulting balance.
+ *
+ * One day's amount is reserved so the closing commission stays collectible.
+ */
+export async function withdrawPartial(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  amount: number,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<PartialWithdrawalResult> {
+  // Replay of a retried request → return the original, write nothing.
+  const existing = await SusuPayoutModel.findOne({ idempotencyKey });
+  if (existing) {
+    const account = await SusuAccountModel.findById(existing.accountId);
+    if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+    return { account: toPublicAccount(account), amount: existing.amount, replayed: true };
+  }
+
+  const pre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (pre.status !== 'active' && pre.status !== 'completed') {
+    throw new AppError(
+      'ACCOUNT_NOT_OPEN',
+      `Account is ${pre.status} — partial withdrawals need an open account`,
+      422,
+    );
+  }
+
+  const preBalance = susuBalance(pre.totalDeposited, pre.withdrawnAmount);
+  const available = maxPartialWithdrawal(preBalance, pre.dailyAmount);
+  if (amount > available) {
+    throw new AppError(
+      'EXCEEDS_AVAILABLE',
+      available === 0
+        ? `Nothing is withdrawable — ${formatGhs(pre.dailyAmount)} stays reserved for the closing commission`
+        : `Only ${formatGhs(available)} is withdrawable; ${formatGhs(pre.dailyAmount)} stays reserved for the closing commission`,
+      422,
+      { available, balance: preBalance, reserved: pre.dailyAmount },
+    );
+  }
+  const customer = await CustomerModel.findById(pre.customerId);
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const account = await SusuAccountModel.findOne({
+        _id: accountId,
+        status: { $in: ['active', 'completed'] },
+        ...NOT_TRASHED,
+      }).session(session);
+      if (!account) {
+        throw new AppError('ACCOUNT_NOT_OPEN', 'Account is no longer open', 422);
+      }
+
+      // Re-derive inside the transaction: a concurrent deposit or withdrawal
+      // may have moved the balance since the pre-flight check.
+      const balance = susuBalance(account.totalDeposited, account.withdrawnAmount);
+      const computation = (() => {
+        try {
+          return computePartialWithdrawal(balance, account.dailyAmount, amount);
+        } catch (err) {
+          if (err instanceof RangeError) {
+            throw new AppError('EXCEEDS_AVAILABLE', err.message, 422, {
+              available: maxPartialWithdrawal(balance, account.dailyAmount),
+              balance,
+              reserved: account.dailyAmount,
+            });
+          }
+          throw err;
+        }
+      })();
+
+      const upd = await SusuAccountModel.updateOne(
+        {
+          _id: account._id,
+          status: account.status,
+          totalDeposited: account.totalDeposited,
+          withdrawnAmount: account.withdrawnAmount,
+        },
+        { $inc: { withdrawnAmount: amount } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+
+      // The cash leaving the drawer — without this row the withdrawal would be
+      // invisible in the unified transactions feed.
+      await SusuPayoutModel.create(
+        [
+          {
+            accountId: account._id,
+            customerId: account.customerId,
+            amount,
+            kind: 'partial-withdrawal',
+            destination: 'cash',
+            recordedById: new Types.ObjectId(actor.sub),
+            idempotencyKey,
+          },
+        ],
+        { session },
+      );
+
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.withdrawal.partial',
+          entityType: 'susu-account',
+          entityId: account._id,
+          amountBefore: balance,
+          amountAfter: computation.balanceAfter,
+          after: {
+            amount,
+            reserved: computation.reserved,
+            commissionTaken: 0,
+            depositsCount: account.depositsCount,
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await SusuAccountModel.findById(accountId);
+  if (!after) throw new AppError('NOT_FOUND', 'Account not found', 404);
+
+  if (customer) {
+    const balanceAfter = susuBalance(after.totalDeposited, after.withdrawnAmount);
+    await enqueueSms({
+      to: customer.phone,
+      template: 'susu-withdrawal',
+      message:
+        `Yadah: ${formatGhs(amount)} withdrawn from susu acct ${after.accountNumber}. ` +
+        `Balance: ${formatGhs(balanceAfter)}. Your account stays open.`,
+      relatedEntityType: 'susu-account',
+      relatedEntityId: accountId,
+    });
+  }
+  emitAdminEvent('susu.withdrawal.partial', {
+    id: accountId.toHexString(),
+    customerId: after.customerId.toHexString(),
+    customerName: customer?.fullName ?? '',
+    amount,
+    balance: susuBalance(after.totalDeposited, after.withdrawnAmount),
+  });
+  notifyOffice({
+    type: 'susu.withdrawal',
+    title: 'Susu partial withdrawal',
+    body:
+      `${formatGhs(amount)} withdrawn from ${customer?.fullName ?? 'a customer'} ` +
+      `(acct ${after.accountNumber}). Account stays open.`,
+    data: { entity: 'susu-account', accountId: accountId.toHexString(), amount },
+  });
+
+  return { account: toPublicAccount(after), amount, replayed: false };
+}
+
 // ---------------------------------------------------------------- terminate
 
 export interface TerminationResult {
@@ -748,8 +970,8 @@ export interface TerminationResult {
 
 /**
  * Escape hatch for accounts that cannot be closed normally because their
- * deposits do not cover the one-day commission (including empty accounts).
- * Refunds everything deposited, charges nothing.
+ * BALANCE does not cover the one-day commission (including empty accounts).
+ * Refunds whatever is left, charges nothing.
  */
 export async function terminateAccount(
   actor: AccessTokenPayload,
@@ -764,12 +986,15 @@ export async function terminateAccount(
   if (pre.status !== 'active' && pre.status !== 'completed') {
     throw new AppError('CANNOT_TERMINATE', `Account is ${pre.status} — pay it out instead`, 422);
   }
-  if (pre.totalDeposited >= pre.dailyAmount) {
+  if (susuBalance(pre.totalDeposited, pre.withdrawnAmount) >= pre.dailyAmount) {
     throw new AppError(
       'CANNOT_TERMINATE',
-      'Deposits cover the one-day commission — close the account instead',
+      'The balance covers the one-day commission — close the account instead',
       422,
-      { totalDeposited: pre.totalDeposited, dailyAmount: pre.dailyAmount },
+      {
+        balance: susuBalance(pre.totalDeposited, pre.withdrawnAmount),
+        dailyAmount: pre.dailyAmount,
+      },
     );
   }
   const customer = await CustomerModel.findById(pre.customerId);
@@ -784,10 +1009,15 @@ export async function terminateAccount(
         ...NOT_TRASHED,
       }).session(session);
       if (!account) throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
-      refund = account.totalDeposited;
+      refund = susuBalance(account.totalDeposited, account.withdrawnAmount);
 
       const upd = await SusuAccountModel.updateOne(
-        { _id: account._id, status: account.status, totalDeposited: account.totalDeposited },
+        {
+          _id: account._id,
+          status: account.status,
+          totalDeposited: account.totalDeposited,
+          withdrawnAmount: account.withdrawnAmount,
+        },
         {
           $set: {
             status: 'terminated',
@@ -825,7 +1055,7 @@ export async function terminateAccount(
           action: 'susu.account.terminate',
           entityType: 'susu-account',
           entityId: account._id,
-          amountBefore: account.totalDeposited,
+          amountBefore: susuBalance(account.totalDeposited, account.withdrawnAmount),
           amountAfter: refund,
           after: { refund, depositsCount: account.depositsCount },
           ...(requestId !== undefined ? { requestId } : {}),
@@ -1566,4 +1796,159 @@ export async function updateDeposit(
     account: toPublicAccount(afterAccount),
     replayed: false,
   };
+}
+
+// ---------------------------------------------------------------- receipts
+
+export interface ReceiptFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+/**
+ * The account's balance at a point in time, rebuilt from the ledger rather
+ * than read off the account. A receipt reprinted months later must still show
+ * the balance as it stood that day, not today's.
+ */
+async function susuBalanceAsOf(accountId: Types.ObjectId, at: Date): Promise<number> {
+  const [deposited, withdrawn] = await Promise.all([
+    SusuDepositModel.aggregate<{ total: number }>([
+      { $match: { accountId, createdAt: { $lte: at }, ...NOT_TRASHED } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+    SusuPayoutModel.aggregate<{ total: number }>([
+      { $match: { accountId, kind: 'partial-withdrawal', createdAt: { $lte: at } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]),
+  ]);
+  return (deposited[0]?.total ?? 0) - (withdrawn[0]?.total ?? 0);
+}
+
+async function staffName(userId: Types.ObjectId): Promise<string> {
+  const user = await UserModel.findById(userId).select('name');
+  return user?.name ?? 'Yadah staff';
+}
+
+/** Loads the account + customer for a receipt, enforcing the collector lock. */
+async function receiptContext(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+): Promise<{ account: SusuAccount; customer: Customer | null }> {
+  const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  await assertCanActOnCustomer(actor, account.customerId);
+  const customer = await CustomerModel.findById(account.customerId);
+  return { account, customer };
+}
+
+export async function depositReceipt(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  depositId: Types.ObjectId,
+): Promise<ReceiptFile> {
+  const { account, customer } = await receiptContext(actor, accountId);
+  const deposit = await SusuDepositModel.findOne({ _id: depositId, accountId, ...NOT_TRASHED });
+  if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+
+  const lines: ReceiptLine[] = [
+    { label: 'Daily amount', value: formatGhs(account.dailyAmount) },
+    {
+      label: 'Days covered',
+      value:
+        deposit.daysCovered === 1
+          ? `1 day (day ${String(deposit.seqEnd)})`
+          : `${String(deposit.daysCovered)} days (days ${String(deposit.seqStart)}–${String(deposit.seqEnd)})`,
+    },
+    {
+      label: 'Cycle progress',
+      value: `${String(deposit.seqEnd)} of ${String(SUSU_CYCLE_DEPOSITS)} days paid`,
+    },
+    {
+      label: 'Balance after',
+      value: formatGhs(await susuBalanceAsOf(accountId, deposit.createdAt)),
+      emphasis: true,
+    },
+    { label: 'Payment method', value: deposit.channel },
+  ];
+
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber('SD', deposit._id),
+    kind: 'deposit',
+    title: 'Susu Deposit',
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: account.accountNumber,
+    amount: deposit.amount,
+    lines,
+    recordedByName: await staffName(deposit.collectorId),
+    at: deposit.createdAt,
+    reference: deposit._id.toHexString(),
+  });
+  return { buffer, filename: `susu-deposit-${receiptNumber('SD', deposit._id)}.pdf` };
+}
+
+/**
+ * Covers both kinds of money leaving a susu account: a partial withdrawal
+ * that leaves the account open, and the payout that ends it.
+ */
+export async function withdrawalReceipt(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  payoutId: Types.ObjectId,
+): Promise<ReceiptFile> {
+  const { account, customer } = await receiptContext(actor, accountId);
+  const payout = await SusuPayoutModel.findOne({ _id: payoutId, accountId });
+  if (!payout) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
+
+  const partial = payout.kind === 'partial-withdrawal';
+  const lines: ReceiptLine[] = [
+    { label: 'Daily amount', value: formatGhs(account.dailyAmount) },
+    {
+      label: 'Cycle progress',
+      value: `${String(account.depositsCount)} of ${String(SUSU_CYCLE_DEPOSITS)} days paid`,
+    },
+  ];
+
+  if (partial) {
+    lines.push(
+      {
+        label: 'Balance after',
+        value: formatGhs(await susuBalanceAsOf(accountId, payout.createdAt)),
+        emphasis: true,
+      },
+      { label: 'Commission taken', value: 'None — charged once when the account closes' },
+      { label: 'Account status', value: 'Still open' },
+    );
+  } else {
+    if (account.commissionAmount !== undefined) {
+      lines.push({ label: 'Commission (1 day)', value: formatGhs(account.commissionAmount) });
+    }
+    lines.push(
+      { label: 'Destination', value: payout.destination },
+      { label: 'Account status', value: account.status },
+    );
+    if (account.payoutRemaining > 0) {
+      lines.push({
+        label: 'Still awaiting payout',
+        value: formatGhs(account.payoutRemaining),
+        emphasis: true,
+      });
+    }
+  }
+
+  const prefix = partial ? 'SW' : 'SP';
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber(prefix, payout._id),
+    kind: 'withdrawal',
+    title: partial ? 'Susu Partial Withdrawal' : 'Susu Payout',
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: account.accountNumber,
+    amount: payout.amount,
+    lines,
+    recordedByName: await staffName(payout.recordedById),
+    at: payout.createdAt,
+    reference: payout._id.toHexString(),
+  });
+  return { buffer, filename: `susu-withdrawal-${receiptNumber(prefix, payout._id)}.pdf` };
 }

@@ -5,7 +5,8 @@ import { createdAtFilter } from '../../lib/time.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
-import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
+import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
+import { EXPORT_MAX_ROWS } from '../../lib/exports.js';
 import { addMonthsClamped, allocateRepayment, buildSchedule } from '../../domain/loans.js';
 import {
   HP_ELIGIBILITY_MIN_MONTHS,
@@ -20,16 +21,21 @@ import {
   HpConfigModel,
   HpItemModel,
   HpPaymentModel,
+  HpSaleModel,
   HpScheduleModel,
   LoanModel,
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  UserModel,
   type HpAgreement,
   type HpItem,
   type HpPayment,
+  type HpSale,
+  type HpSaleLine,
 } from '../../models/index.js';
+import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
@@ -37,6 +43,8 @@ import type {
   CreateItemBody,
   ListAgreementsQuery,
   ListItemsQuery,
+  ListSalesQuery,
+  RecordSaleBody,
   TrashListQuery,
   UpdateItemBody,
 } from './hp.schemas.js';
@@ -1478,4 +1486,433 @@ export async function listHpAgreementTrash(
     limit: query.limit,
     total,
   };
+}
+
+// ---------------------------------------------------------------- outright sales
+
+export interface PublicHpSaleLine {
+  itemId: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  listPrice: number;
+  lineTotal: number;
+}
+
+export interface PublicHpSale {
+  id: string;
+  receiptNo: string;
+  customerId: string | null;
+  buyerName: string;
+  buyerPhone?: string;
+  lines: PublicHpSaleLine[];
+  subtotal: number;
+  discount: number;
+  total: number;
+  channel: string;
+  soldById: string;
+  status: 'completed' | 'voided';
+  voidedAt?: Date;
+  voidReason?: string;
+  createdAt: Date;
+}
+
+/** Cost and profit are internal — never in a customer-facing response. */
+export function toPublicSale(sale: HpSale): PublicHpSale {
+  return {
+    id: sale._id.toHexString(),
+    receiptNo: receiptNumber('SALE', sale._id),
+    customerId: sale.customerId ? sale.customerId.toHexString() : null,
+    buyerName: sale.buyerName,
+    ...(sale.buyerPhone !== undefined ? { buyerPhone: sale.buyerPhone } : {}),
+    lines: sale.lines.map((l) => ({
+      itemId: l.itemId.toHexString(),
+      name: l.name,
+      quantity: l.quantity,
+      unitPrice: l.unitPrice,
+      listPrice: l.listPrice,
+      lineTotal: l.lineTotal,
+    })),
+    subtotal: sale.subtotal,
+    discount: sale.discount,
+    total: sale.total,
+    channel: sale.channel,
+    soldById: sale.soldById.toHexString(),
+    status: sale.status,
+    ...(sale.voidedAt !== undefined ? { voidedAt: sale.voidedAt } : {}),
+    ...(sale.voidReason !== undefined ? { voidReason: sale.voidReason } : {}),
+    createdAt: sale.createdAt,
+  };
+}
+
+/** Office-facing row: profit is included here, and only here. */
+export function toSaleExportRow(sale: HpSale): Record<string, unknown> {
+  return {
+    id: sale._id.toHexString(),
+    receiptNo: receiptNumber('SALE', sale._id),
+    soldAt: sale.createdAt,
+    buyerName: sale.buyerName,
+    buyerPhone: sale.buyerPhone ?? '',
+    registeredCustomer: sale.customerId ? 'yes' : 'no',
+    items: sale.lines.map((l) => `${l.name} x${String(l.quantity)}`).join('; '),
+    subtotal: sale.subtotal,
+    discount: sale.discount,
+    total: sale.total,
+    totalCost: sale.totalCost,
+    profit: sale.profit,
+    channel: sale.channel,
+    status: sale.status,
+  };
+}
+
+export interface SaleResult {
+  sale: PublicHpSale;
+  /** True when this response replays an earlier identical request. */
+  replayed: boolean;
+}
+
+/**
+ * Record an outright counter sale: stock out, money in, done. No agreement,
+ * no deposit, no instalments — this is the customer who simply buys the thing
+ * (client request 2026-08-21).
+ *
+ * The buyer need not be a registered customer. Where they are, their record is
+ * the source of truth for the name; a walk-in is recorded by name alone.
+ */
+export async function recordSale(
+  actor: AccessTokenPayload,
+  body: RecordSaleBody,
+  requestId?: string,
+): Promise<SaleResult> {
+  const existing = await HpSaleModel.findOne({ idempotencyKey: body.idempotencyKey });
+  if (existing) return { sale: toPublicSale(existing), replayed: true };
+
+  let buyerName = body.buyerName ?? '';
+  let buyerPhone = body.buyerPhone;
+  if (body.customerId) {
+    const customer = await CustomerModel.findOne({ _id: body.customerId, ...NOT_TRASHED });
+    if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+    buyerName = customer.fullName;
+    buyerPhone = body.buyerPhone ?? customer.phone;
+  }
+
+  // Prices and stock are read before the transaction to give precise errors;
+  // the decrement inside the transaction is still guarded, so a concurrent
+  // sale of the last unit loses rather than overselling.
+  const items = await HpItemModel.find({
+    _id: { $in: body.lines.map((l) => l.itemId) },
+    ...NOT_TRASHED,
+  });
+  const itemById = new Map(items.map((i) => [i._id.toHexString(), i]));
+
+  const lines: HpSaleLine[] = [];
+  for (const line of body.lines) {
+    const item = itemById.get(line.itemId.toHexString());
+    if (!item) {
+      throw new AppError('ITEM_NOT_FOUND', 'One of the items does not exist', 404, {
+        itemId: line.itemId.toHexString(),
+      });
+    }
+    if (item.status !== 'active') {
+      throw new AppError('ITEM_DISCONTINUED', `${item.name} is discontinued`, 422, {
+        itemId: item._id.toHexString(),
+      });
+    }
+    if (item.quantityInStock < line.quantity) {
+      throw new AppError('INSUFFICIENT_STOCK', `Not enough ${item.name} in stock`, 422, {
+        itemId: item._id.toHexString(),
+        requested: line.quantity,
+        quantityInStock: item.quantityInStock,
+      });
+    }
+    const unitPrice = line.unitPrice ?? item.sellingPrice;
+    lines.push({
+      itemId: item._id,
+      name: item.name,
+      quantity: line.quantity,
+      unitPrice,
+      listPrice: item.sellingPrice,
+      unitCost: item.costPrice,
+      lineTotal: unitPrice * line.quantity,
+    });
+  }
+
+  const subtotal = lines.reduce((sum, l) => sum + l.listPrice * l.quantity, 0);
+  const total = lines.reduce((sum, l) => sum + l.lineTotal, 0);
+  const totalCost = lines.reduce((sum, l) => sum + l.unitCost * l.quantity, 0);
+
+  const session = await mongoose.startSession();
+  let created!: HpSale;
+  try {
+    await session.withTransaction(async () => {
+      for (const line of lines) {
+        // Guarded on available stock, so two tills cannot sell the same unit.
+        const upd = await HpItemModel.updateOne(
+          { _id: line.itemId, quantityInStock: { $gte: line.quantity }, ...NOT_TRASHED },
+          { $inc: { quantityInStock: -line.quantity } },
+          { session },
+        );
+        if (upd.modifiedCount !== 1) {
+          throw new AppError('INSUFFICIENT_STOCK', `${line.name} sold out while ringing up`, 409, {
+            itemId: line.itemId.toHexString(),
+          });
+        }
+      }
+
+      const [sale] = await HpSaleModel.create(
+        [
+          {
+            ...(body.customerId ? { customerId: body.customerId } : {}),
+            buyerName,
+            ...(buyerPhone !== undefined ? { buyerPhone } : {}),
+            lines,
+            subtotal,
+            discount: subtotal - total,
+            total,
+            totalCost,
+            profit: total - totalCost,
+            channel: body.channel,
+            soldById: new Types.ObjectId(actor.sub),
+            idempotencyKey: body.idempotencyKey,
+            status: 'completed',
+          },
+        ],
+        { session },
+      );
+      if (!sale) throw new AppError('INTERNAL_ERROR', 'Sale was not written', 500);
+      created = sale;
+
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'hp.sale.record',
+          entityType: 'hp-sale',
+          entityId: sale._id,
+          amountBefore: 0,
+          amountAfter: total,
+          after: {
+            buyerName,
+            registeredCustomer: body.customerId ? body.customerId.toHexString() : null,
+            lines: lines.map((l) => ({
+              itemId: l.itemId.toHexString(),
+              quantity: l.quantity,
+              unitPrice: l.unitPrice,
+            })),
+            subtotal,
+            discount: subtotal - total,
+            total,
+            profit: total - totalCost,
+            channel: body.channel,
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  emitAdminEvent('hp.sale.recorded', {
+    id: created._id.toHexString(),
+    buyerName,
+    total,
+    items: lines.length,
+  });
+  return { sale: toPublicSale(created), replayed: false };
+}
+
+/**
+ * Reverse a sale rung up in error: stock goes back and the sale stops counting
+ * toward revenue, but the row stays — a ledger never forgets, it annotates.
+ */
+export async function voidSale(
+  actor: AccessTokenPayload,
+  saleId: Types.ObjectId,
+  reason: string,
+  requestId?: string,
+): Promise<PublicHpSale> {
+  const pre = await HpSaleModel.findById(saleId);
+  if (!pre) throw new AppError('NOT_FOUND', 'Sale not found', 404);
+  if (pre.status === 'voided') {
+    throw new AppError('ALREADY_VOIDED', 'This sale has already been voided', 409);
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await HpSaleModel.updateOne(
+        { _id: saleId, status: 'completed' },
+        {
+          $set: {
+            status: 'voided',
+            voidedAt: new Date(),
+            voidedById: new Types.ObjectId(actor.sub),
+            voidReason: reason,
+          },
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('ALREADY_VOIDED', 'This sale has already been voided', 409);
+      }
+
+      for (const line of pre.lines) {
+        await HpItemModel.updateOne(
+          { _id: line.itemId },
+          { $inc: { quantityInStock: line.quantity } },
+          { session },
+        );
+      }
+
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'hp.sale.void',
+          entityType: 'hp-sale',
+          entityId: saleId,
+          amountBefore: pre.total,
+          amountAfter: 0,
+          before: { status: 'completed', total: pre.total },
+          after: {
+            status: 'voided',
+            reason,
+            restocked: pre.lines.map((l) => ({
+              itemId: l.itemId.toHexString(),
+              quantity: l.quantity,
+            })),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await HpSaleModel.findById(saleId);
+  if (!after) throw new AppError('NOT_FOUND', 'Sale not found', 404);
+  emitAdminEvent('hp.sale.voided', { id: saleId.toHexString(), total: pre.total, reason });
+  return toPublicSale(after);
+}
+
+export interface SaleList {
+  items: PublicHpSale[];
+  page: number;
+  limit: number;
+  total: number;
+  /** Across the whole filter, not just this page. Voided sales are excluded. */
+  totals: { salesCount: number; revenue: number; profit: number };
+}
+
+function buildSaleFilter(query: ListSalesQuery): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
+  if (query.customerId) filter.customerId = query.customerId;
+  if (query.status) filter.status = query.status;
+  // `null` matches both an explicit null and a missing field.
+  if (query.walkInOnly === true) filter.customerId = null;
+  if (query.search !== undefined) {
+    filter.buyerName = { $regex: escapeRegex(query.search), $options: 'i' };
+  }
+  const dateFilter = createdAtFilter(query.from, query.to);
+  if (dateFilter) filter.createdAt = dateFilter;
+  return filter;
+}
+
+export async function listSales(query: ListSalesQuery): Promise<SaleList> {
+  const filter = buildSaleFilter(query);
+
+  const [rows, total, summary] = await Promise.all([
+    HpSaleModel.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    HpSaleModel.countDocuments(filter),
+    HpSaleModel.aggregate<{ salesCount: number; revenue: number; profit: number }>([
+      { $match: { ...filter, status: 'completed' } },
+      {
+        $group: {
+          _id: null,
+          salesCount: { $sum: 1 },
+          revenue: { $sum: '$total' },
+          profit: { $sum: '$profit' },
+        },
+      },
+    ]),
+  ]);
+
+  return {
+    items: rows.map(toPublicSale),
+    page: query.page,
+    limit: query.limit,
+    total,
+    totals: {
+      salesCount: summary[0]?.salesCount ?? 0,
+      revenue: summary[0]?.revenue ?? 0,
+      profit: summary[0]?.profit ?? 0,
+    },
+  };
+}
+
+/** Export rows carry cost and profit, so this is office-only by route. */
+export async function listSalesForExport(
+  query: ListSalesQuery,
+): Promise<Record<string, unknown>[]> {
+  const rows = await HpSaleModel.find(buildSaleFilter(query))
+    .sort({ createdAt: -1 })
+    .limit(EXPORT_MAX_ROWS);
+  return rows.map(toSaleExportRow);
+}
+
+export async function getSale(saleId: Types.ObjectId): Promise<PublicHpSale> {
+  const sale = await HpSaleModel.findById(saleId);
+  if (!sale) throw new AppError('NOT_FOUND', 'Sale not found', 404);
+  return toPublicSale(sale);
+}
+
+export interface SaleReceiptFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+/** Counter receipt: one line per basket item, then the totals. */
+export async function saleReceipt(saleId: Types.ObjectId): Promise<SaleReceiptFile> {
+  const sale = await HpSaleModel.findById(saleId);
+  if (!sale) throw new AppError('NOT_FOUND', 'Sale not found', 404);
+
+  const lines: ReceiptLine[] = sale.lines.map((l) => ({
+    label: `${l.name} x ${String(l.quantity)}`,
+    value:
+      l.unitPrice === l.listPrice
+        ? formatGhs(l.lineTotal)
+        : `${formatGhs(l.lineTotal)} (list ${formatGhs(l.listPrice * l.quantity)})`,
+  }));
+  if (sale.discount > 0) {
+    lines.push({ label: 'Subtotal at list', value: formatGhs(sale.subtotal) });
+    lines.push({ label: 'Discount', value: `less ${formatGhs(sale.discount)}` });
+  }
+  lines.push({ label: 'Total paid', value: formatGhs(sale.total), emphasis: true });
+  lines.push({ label: 'Payment method', value: sale.channel });
+  if (sale.status === 'voided') {
+    lines.push({ label: 'VOIDED', value: sale.voidReason ?? 'Sale reversed', emphasis: true });
+  }
+
+  const staff = await UserModel.findById(sale.soldById).select('name');
+  const receiptNo = receiptNumber('SALE', sale._id);
+  const buffer = await buildReceiptPdf({
+    receiptNo,
+    kind: 'deposit', // money in, from the company's side
+    title: 'Sales Receipt',
+    customerName: sale.buyerName,
+    ...(sale.buyerPhone !== undefined ? { customerPhone: sale.buyerPhone } : {}),
+    // Outright sales have no account; say so rather than printing a blank.
+    accountNumber: sale.customerId ? 'Registered customer' : 'Walk-in',
+    amount: sale.total,
+    lines,
+    recordedByName: staff?.name ?? 'Yadah staff',
+    at: sale.createdAt,
+    reference: sale._id.toHexString(),
+  });
+  return { buffer, filename: `sale-${receiptNo}.pdf` };
 }

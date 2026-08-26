@@ -2,6 +2,7 @@ import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { connectDb, disconnectDb } from './lib/db.js';
 import { startSmsWorker } from './lib/sms.js';
+import { initPush } from './lib/notifications.js';
 import { startLoanEscalationWorker } from './lib/loan-escalation.js';
 import { startHpArrearsWorker } from './lib/hp-arrears.js';
 import { startDebtRecoveryWorker } from './lib/debt-recovery.js';
@@ -12,6 +13,7 @@ const app = createApp();
 
 await connectDb();
 startSmsWorker();
+initPush();
 startLoanEscalationWorker();
 startHpArrearsWorker();
 startDebtRecoveryWorker();

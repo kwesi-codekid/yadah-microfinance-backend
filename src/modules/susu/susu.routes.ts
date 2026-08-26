@@ -13,7 +13,9 @@ import {
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
+  partialWithdrawalBody,
   payoutBody,
+  payoutIdParams,
   summaryQuery,
   updateDepositBody,
   type AccountIdParams,
@@ -24,7 +26,9 @@ import {
   type ListDepositsQuery,
   type ListTrashQuery,
   type OpenAccountBody,
+  type PartialWithdrawalBody,
   type PayoutBody,
+  type PayoutIdParams,
   type SummaryQuery,
   type UpdateDepositBody,
 } from './susu.schemas.js';
@@ -223,6 +227,24 @@ susuRouter.post('/collect-all', validate({ body: collectAllBody }), (req, res, n
 });
 
 // Withdrawals are processed at the office only (rule 7).
+// Take part of the balance and leave the account running (office only —
+// withdrawals happen at the office, same as closures).
+susuRouter.post(
+  '/accounts/:id/withdraw',
+  requireOffice,
+  validate({ params: accountIdParams, body: partialWithdrawalBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: AccountIdParams;
+      body: PartialWithdrawalBody;
+    }>(req);
+    susuService
+      .withdrawPartial(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
 susuRouter.post(
   '/accounts/:id/close',
   requireOffice,
@@ -287,6 +309,36 @@ susuRouter.post(
     susuService
       .payoutPending(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Printable receipts. Not office-only: a collector who took the cash in the
+// field must be able to hand over a receipt for it.
+susuRouter.get(
+  '/accounts/:id/deposits/:depositId/receipt',
+  validate({ params: depositIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: DepositIdParams }>(req);
+    susuService
+      .depositReceipt(getAuth(req), params.id, params.depositId)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
+      .catch(next);
+  },
+);
+
+susuRouter.get(
+  '/accounts/:id/withdrawals/:payoutId/receipt',
+  validate({ params: payoutIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: PayoutIdParams }>(req);
+    susuService
+      .withdrawalReceipt(getAuth(req), params.id, params.payoutId)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
       .catch(next);
   },
 );

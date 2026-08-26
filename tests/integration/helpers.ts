@@ -2,6 +2,8 @@ import mongoose, { Types } from 'mongoose';
 import { connectDb, disconnectDb } from '../../src/lib/db.js';
 import {
   CustomerModel,
+  HpItemModel,
+  HpSaleModel,
   LoanModel,
   LoanScheduleModel,
   RepaymentModel,
@@ -26,6 +28,8 @@ export async function setupDb(): Promise<void> {
       CustomerModel,
       SusuAccountModel,
       SusuDepositModel,
+      HpItemModel,
+      HpSaleModel,
       SavingsAccountModel,
       SavingsTxnModel,
       LoanModel,
@@ -44,15 +48,32 @@ export function asOfficer(): AccessTokenPayload {
   return { sub: new Types.ObjectId().toHexString(), role: 'admin' };
 }
 
+/** A collector actor plus the user record the scope lock resolves against. */
+export async function makeCollector(name = 'Field Collector'): Promise<AccessTokenPayload> {
+  const user = await UserModel.create({
+    name,
+    username: `collector-${new Types.ObjectId().toHexString()}`,
+    phone: '0244000000',
+    role: 'collector',
+    status: 'active',
+    passwordHash: 'x'.repeat(60),
+  });
+  return { sub: user._id.toHexString(), role: 'collector' };
+}
+
 let phoneCounter = 100;
 
-export async function makeCustomer(withGhanaCard = false): Promise<Types.ObjectId> {
+export async function makeCustomer(
+  withGhanaCard = false,
+  assignedCollectorId?: Types.ObjectId,
+): Promise<Types.ObjectId> {
   phoneCounter += 1;
   const customer = await CustomerModel.create({
     fullName: `Test Customer ${String(phoneCounter)}`,
     phone: `05000${String(phoneCounter).padStart(5, '0')}`,
     registeredById: new Types.ObjectId(),
     status: 'active',
+    ...(assignedCollectorId ? { assignedCollectorId } : {}),
     ...(withGhanaCard
       ? {
           identification: {

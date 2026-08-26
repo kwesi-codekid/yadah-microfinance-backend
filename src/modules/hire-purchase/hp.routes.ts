@@ -13,11 +13,14 @@ import {
   idParams,
   listAgreementsQuery,
   listItemsQuery,
+  listSalesQuery,
   paymentBody,
   putConfigBody,
   reasonBody,
+  recordSaleBody,
   redeemBody,
   trashBody,
+  voidSaleBody,
   trashListQuery,
   updateItemBody,
   type AdjustStockBody,
@@ -29,19 +32,85 @@ import {
   type IdParams,
   type ListAgreementsQuery,
   type ListItemsQuery,
+  type ListSalesQuery,
   type PaymentBody,
   type PutConfigBody,
   type ReasonBody,
+  type RecordSaleBody,
   type RedeemBody,
   type TrashBody,
   type TrashListQuery,
   type UpdateItemBody,
+  type VoidSaleBody,
 } from './hp.schemas.js';
 import * as hp from './hp.service.js';
 
 // Hire purchase is office territory throughout (admin ≡ manager).
 export const hpRouter = Router();
 hpRouter.use(requireAuth, requireOffice);
+
+// ---- outright sales (counter / POS)
+//
+// Registered before /agreements/:id-style routes so nothing shadows them.
+// Stock out, money in, no agreement — the buyer need not be a registered
+// customer, since requiring a photo and an ID to sell a kettle is absurd.
+
+hpRouter.post('/sales', validate({ body: recordSaleBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: RecordSaleBody }>(req);
+  hp.recordSale(getAuth(req), body, req.id as string)
+    .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+    .catch(next);
+});
+
+hpRouter.get('/sales', validate({ query: listSalesQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: ListSalesQuery }>(req);
+  if (query.format !== 'json') {
+    hp.listSalesForExport(query)
+      .then((rows) =>
+        sendExport(res, {
+          format: query.format,
+          filename: 'outright-sales',
+          payload: null,
+          rows,
+          moneyKeys: ['subtotal', 'discount', 'total', 'totalCost', 'profit'],
+          sheet: 'Sales',
+        }),
+      )
+      .catch(next);
+    return;
+  }
+  hp.listSales(query)
+    .then((list) => res.json(list))
+    .catch(next);
+});
+
+hpRouter.get('/sales/:id', validate({ params: idParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: IdParams }>(req);
+  hp.getSale(params.id)
+    .then((sale) => res.json({ sale }))
+    .catch(next);
+});
+
+hpRouter.get('/sales/:id/receipt', validate({ params: idParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: IdParams }>(req);
+  hp.saleReceipt(params.id)
+    .then(({ buffer, filename }) => {
+      res.type('application/pdf').attachment(filename).send(buffer);
+    })
+    .catch(next);
+});
+
+// Reverses a sale rung up in error: stock back, revenue off, row retained.
+hpRouter.post(
+  '/sales/:id/void',
+  validate({ params: idParams, body: voidSaleBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: VoidSaleBody }>(req);
+    hp.voidSale(getAuth(req), params.id, body.reason, req.id as string)
+      .then((sale) => res.json({ sale }))
+      .catch(next);
+  },
+);
 
 // ---- inventory
 

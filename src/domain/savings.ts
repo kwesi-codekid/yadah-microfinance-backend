@@ -1,11 +1,11 @@
 /**
  * Savings money rules as pure functions — integer pesewas throughout.
- * Client-confirmed: min deposit GHS 10 · no interest · max 1 withdrawal
+ * Client-confirmed: min deposit GHS 5 · no interest · max 1 withdrawal
  * per Accra day · flat GHS 10 fee per withdrawal (closure included) ·
  * min balance GHS 50 withdrawable only on closure.
  */
 
-export const MIN_DEPOSIT = 1000; // GHS 10
+export const MIN_DEPOSIT = 500; // GHS 5 (lowered from GHS 10 on 2026-08-21)
 export const WITHDRAWAL_FEE = 1000; // GHS 10 flat, any amount
 export const MIN_BALANCE = 5000; // GHS 50, released only on closure
 

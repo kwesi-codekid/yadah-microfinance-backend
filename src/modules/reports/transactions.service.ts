@@ -8,6 +8,7 @@ import {
   type TxnModule,
   type TxnType,
 } from '../../domain/transactions.js';
+import { susuBalance } from '../../domain/susu.js';
 import {
   CustomerModel,
   HpAgreementModel,
@@ -25,13 +26,20 @@ import type { TransactionsQuery } from './reports.schemas.js';
 
 /** Automated debt-recovery moves are recorded by this well-known actor. */
 const SYSTEM_ACTOR_HEX = '000000000000000000000000';
+/**
+ * Outright counter sales often have no registered customer. The feed row
+ * shape requires one, so walk-ins are projected onto this well-known id and
+ * rendered by name; the sale document itself stores no customerId at all.
+ */
+const WALK_IN_CUSTOMER_HEX = '000000000000000000000001';
 
 /** Statements are bounded; a customer can't realistically exceed this. */
 const STATEMENT_MAX_ROWS = 5000;
 /** CSV exports skip pagination but are capped — documented in the OpenAPI spec. */
 const CSV_MAX_ROWS = 10_000;
 
-type RefKind = 'susu-account' | 'savings-account' | 'loan' | 'hp-agreement' | 'transfer';
+type RefKind =
+  'susu-account' | 'savings-account' | 'loan' | 'hp-agreement' | 'hp-sale' | 'transfer';
 
 /** The shape every $unionWith branch projects to. */
 interface RawRow {
@@ -127,7 +135,11 @@ function buildBranches(
           { $match: { createdAt, ...byCustomer } },
           {
             $project: {
-              type: { $literal: 'susu-payout' },
+              // A partial withdrawal leaves the account open, so it reads as a
+              // different event from the payout that ends one.
+              type: {
+                $cond: [{ $eq: ['$kind', 'partial-withdrawal'] }, 'susu-withdrawal', 'susu-payout'],
+              },
               amount: 1,
               fee: { $literal: 0 },
               customerId: 1,
@@ -242,6 +254,33 @@ function buildBranches(
     });
   }
 
+  if (wanted.has('hire-purchase')) {
+    branches.push({
+      coll: 'hp-sales',
+      stages: [
+        // Voided sales are excluded: the row stays in its own collection for
+        // the audit trail, but it is no longer money the business took.
+        { $match: { createdAt, status: 'completed', ...byCustomer } },
+        {
+          $project: {
+            type: { $literal: 'hp-sale' },
+            amount: '$total',
+            fee: { $literal: 0 },
+            customerId: {
+              $ifNull: ['$customerId', new Types.ObjectId(WALK_IN_CUSTOMER_HEX)],
+            },
+            refId: '$_id',
+            refKind: { $literal: 'hp-sale' },
+            channel: 1,
+            detail: '$buyerName',
+            recordedById: '$soldById',
+            createdAt: 1,
+          },
+        },
+      ],
+    });
+  }
+
   if (wanted.has('transfers')) {
     branches.push({
       coll: 'transfers',
@@ -322,7 +361,10 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
       channel,
       detail,
       customerId: r.customerId.toHexString(),
-      customerName: customerNames.get(r.customerId.toHexString()) ?? '',
+      customerName:
+        r.customerId.toHexString() === WALK_IN_CUSTOMER_HEX
+          ? 'Walk-in customer'
+          : (customerNames.get(r.customerId.toHexString()) ?? ''),
       ref: {
         kind: r.refKind,
         id: r.refId.toHexString(),
@@ -525,6 +567,8 @@ export interface CustomerStatement {
       dailyAmount: number;
       depositsCount: number;
       totalDeposited: number;
+      withdrawnAmount: number;
+      balance: number;
       payoutRemaining: number;
     }[];
     savings: {
@@ -639,6 +683,8 @@ export async function customerStatement(
         dailyAmount: a.dailyAmount,
         depositsCount: a.depositsCount,
         totalDeposited: a.totalDeposited,
+        withdrawnAmount: a.withdrawnAmount,
+        balance: susuBalance(a.totalDeposited, a.withdrawnAmount),
         payoutRemaining: a.payoutRemaining,
       })),
       savings,

@@ -9,6 +9,7 @@ import {
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
+  partialWithdrawalBody,
   payoutBody,
   summaryQuery,
   updateDepositBody,
@@ -23,7 +24,16 @@ const susuAccount = z
     dailyAmount: z.number().int().describe('Pesewas. Immutable for the life of the cycle.'),
     depositsCount: z.number().int(),
     cycleTarget: z.literal(31),
-    totalDeposited: z.number().int(),
+    totalDeposited: z
+      .number()
+      .int()
+      .describe('Running total paid IN over the cycle — never decreases'),
+    withdrawnAmount: z.number().int().describe('Total taken out by partial withdrawals'),
+    balance: z.number().int().describe('totalDeposited − withdrawnAmount: what the account holds'),
+    availableToWithdraw: z
+      .number()
+      .int()
+      .describe('Withdrawable today; one day’s amount stays reserved for the closing commission'),
     status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']),
     commissionAmount: z
       .number()
@@ -94,7 +104,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Open a susu account (office only)',
       description:
-        'One account = one cycle of 31 deposits at a fixed daily amount (min GHS 5). ' +
+        'One account = one cycle of 31 deposits at a fixed daily amount (min GHS 10). ' +
         'The daily amount is immutable — changing it means closing and opening a new ' +
         'account. A customer may hold multiple concurrent accounts.',
       security,
@@ -359,16 +369,108 @@ export const susuPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/susu/accounts/{id}/deposits/{depositId}/receipt': {
+    get: {
+      tags: ['Susu'],
+      summary: 'Printable deposit receipt',
+      description:
+        'A4 receipt laid out to stay readable printed in black and white on office paper: ' +
+        'receipt number, customer, account, the amount in a boxed headline, the ' +
+        'product-specific detail rows, who recorded it, and signature lines. Reprints are ' +
+        'identical: the receipt number is derived from the transaction id, and historical ' +
+        'balances are rebuilt from the ledger rather than read off the current account. ' +
+        'Binary response (application/pdf).' +
+        ' Available to collectors as well as the office — whoever took the cash in the ' +
+        'field has to be able to hand over a receipt for it.',
+      security,
+      requestParams: {
+        path: z.object({
+          id: z.string().describe('Susu account id'),
+          depositId: z.string(),
+        }),
+      },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '403': errorResponse('CUSTOMER_NOT_ASSIGNED — collector reaching outside their round'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/withdrawals/{payoutId}/receipt': {
+    get: {
+      tags: ['Susu'],
+      summary: 'Printable withdrawal or payout receipt',
+      description:
+        'Covers both kinds of money leaving a susu account: a partial withdrawal that ' +
+        'leaves the account open (which states plainly that no commission was taken), and ' +
+        'the payout that ends it (which shows the one-day commission). ' +
+        'Binary response (application/pdf).',
+      security,
+      requestParams: {
+        path: z.object({
+          id: z.string().describe('Susu account id'),
+          payoutId: z.string(),
+        }),
+      },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '403': errorResponse('CUSTOMER_NOT_ASSIGNED — collector reaching outside their round'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/withdraw': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Withdraw part of the balance, keeping the account open (office only)',
+      description:
+        'Client decision 2026-08-21, replacing the rule that any withdrawal closed the ' +
+        'account. NO commission is taken here — commission is exactly one cycle-day’s ' +
+        'amount, charged once, at closure. The cycle is untouched: days already paid stay ' +
+        'paid, so depositsCount and the 31-day target do not move. One day’s amount stays ' +
+        'reserved in the account so the closing commission remains collectible, which is ' +
+        'why availableToWithdraw is balance − dailyAmount. Idempotent on idempotencyKey; ' +
+        'sends an SMS confirming the account stays open.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(partialWithdrawalBody),
+      responses: {
+        '201': jsonResponse(
+          'Withdrawn',
+          z.object({
+            account: susuAccount,
+            amount: z.number().int(),
+            replayed: z.boolean(),
+          }),
+        ),
+        '200': jsonResponse('Replay of an earlier identical request', z.object({})),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — account changed concurrently, retry'),
+        '422': errorResponse(
+          'ACCOUNT_NOT_OPEN, or EXCEEDS_AVAILABLE ' +
+            '(details.available, details.balance, details.reserved)',
+        ),
+      },
+    },
+  },
   '/susu/accounts/{id}/close': {
     post: {
       tags: ['Susu'],
-      summary: 'Close account = withdrawal (office only)',
+      summary: 'Close the account and pay out (office only)',
       description:
-        'Payout = total deposits − exactly 1 day’s commission, regardless of exit ' +
-        'day. Deposits must cover the commission — otherwise the request is ' +
-        'refused (COMMISSION_NOT_COVERED) and the account can only be terminated. ' +
-        'The cash disbursement is recorded and appears in the transactions feed. ' +
-        'Sends the withdrawal SMS.',
+        'Payout = BALANCE − exactly 1 day’s commission, regardless of exit day and ' +
+        'regardless of how many partial withdrawals happened along the way — the ' +
+        'commission is charged once per cycle, here. The balance must cover it, ' +
+        'otherwise the request is refused (COMMISSION_NOT_COVERED) and the account ' +
+        'can only be terminated. The cash disbursement is recorded and appears in ' +
+        'the transactions feed. Sends the withdrawal SMS.',
       security,
       requestParams: { path: idParam },
       responses: {
@@ -383,9 +485,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
         ),
         '403': errorResponse('FORBIDDEN — office only'),
         '409': errorResponse('ALREADY_CLOSED'),
-        '422': errorResponse(
-          'COMMISSION_NOT_COVERED (details.totalDeposited, details.dailyAmount)',
-        ),
+        '422': errorResponse('COMMISSION_NOT_COVERED (details.balance, details.dailyAmount)'),
       },
     },
   },

@@ -15,6 +15,15 @@ const envSchema = z.object({
   FRONTEND_ORIGIN: z.string().default('*'),
   /** Paystack secret key (sk_...). Empty = payments endpoints answer 503. */
   PAYSTACK_SECRET_KEY: z.string().default(''),
+  /**
+   * Web Push (VAPID). Generate once with `npx web-push generate-vapid-keys`
+   * and keep the pair stable — rotating it invalidates every subscription.
+   * Empty = in-app notifications still work, browser push is skipped.
+   */
+  VAPID_PUBLIC_KEY: z.string().default(''),
+  VAPID_PRIVATE_KEY: z.string().default(''),
+  /** Contact URI push services can reach you on, e.g. mailto:ops@example.com. */
+  VAPID_SUBJECT: z.string().default('mailto:support@yadah.example'),
 });
 
 const parsed = envSchema.safeParse(process.env);

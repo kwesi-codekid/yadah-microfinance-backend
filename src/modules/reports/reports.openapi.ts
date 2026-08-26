@@ -84,6 +84,7 @@ const dashboardMetrics = z
       to: z.string(),
       susuCommission: countAmount,
       savingsFees: countAmount,
+      outrightSalesProfit: countAmount,
       totalRevenue: z.number().int(),
     }),
     portfolio: z.object({
@@ -121,7 +122,8 @@ export const reportPaths: ZodOpenApiPathsObject = {
       summary: 'Live dashboard metrics: today’s cash, month revenue, portfolio position',
       description:
         "Today's cash in/out by source (internal transfers excluded), month-to-date " +
-        'revenue (susu commission + savings fees), and the live portfolio position ' +
+        'revenue (susu commission + savings fees + outright-sale margin), and the ' +
+        'live portfolio position ' +
         '(accounts, balances, outstanding loans/HP). All amounts are integer pesewas. ' +
         'Socket.io money events to the admin room signal WHEN to refetch — this ' +
         'endpoint is always the source of truth. JSON only.',
@@ -182,9 +184,13 @@ export const reportPaths: ZodOpenApiPathsObject = {
   '/reports/commission': {
     get: {
       tags: ['Reports'],
-      summary: 'Revenue earned: susu commissions + savings fees',
+      summary: 'Revenue earned: susu commissions + savings fees + outright-sale margin',
       description:
-        'Susu closure commissions and savings withdrawal/closure fees in the range.' + csvNote,
+        'Susu closure commissions, savings withdrawal/closure fees, and the margin on ' +
+        'outright counter sales (selling price less cost, voided sales excluded) in the ' +
+        'range. The sale margin is trading profit rather than a fee, but it is real money ' +
+        'earned in the period, so it counts toward totalRevenue.' +
+        csvNote,
       security,
       requestParams: { query: rangeQuery },
       responses: { '200': jsonResponse('Report', z.unknown()) },

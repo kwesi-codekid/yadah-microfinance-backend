@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { accraDay } from '../../lib/time.js';
 import {
   CustomerModel,
+  HpSaleModel,
   LoanModel,
   SavingsTxnModel,
   SusuAccountModel,
@@ -193,13 +194,19 @@ export interface CommissionReport {
   to: string;
   susuCommission: { count: number; amount: number };
   savingsFees: { count: number; amount: number };
+  /**
+   * Margin on outright counter sales — selling price less cost, voided sales
+   * excluded. Trading profit rather than a fee, but it is real money the
+   * business earned in the period, so it counts toward totalRevenue.
+   */
+  outrightSalesProfit: { count: number; amount: number };
   totalRevenue: number;
 }
 
 export async function commissionEarned(from?: string, to?: string): Promise<CommissionReport> {
   const window = rangeToWindow(from, to);
 
-  const [susu, savings] = await Promise.all([
+  const [susu, savings, sales] = await Promise.all([
     SusuAccountModel.aggregate<{ count: number; amount: number }>([
       {
         $match: {
@@ -222,15 +229,21 @@ export async function commissionEarned(from?: string, to?: string): Promise<Comm
       },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$fee' } } },
     ]),
+    HpSaleModel.aggregate<{ count: number; amount: number }>([
+      { $match: { createdAt: { $gte: window.start, $lt: window.end }, status: 'completed' } },
+      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$profit' } } },
+    ]),
   ]);
 
   const susuCommission = { count: susu[0]?.count ?? 0, amount: susu[0]?.amount ?? 0 };
   const savingsFees = { count: savings[0]?.count ?? 0, amount: savings[0]?.amount ?? 0 };
+  const outrightSalesProfit = { count: sales[0]?.count ?? 0, amount: sales[0]?.amount ?? 0 };
   return {
     from: window.from,
     to: window.to,
     susuCommission,
     savingsFees,
-    totalRevenue: susuCommission.amount + savingsFees.amount,
+    outrightSalesProfit,
+    totalRevenue: susuCommission.amount + savingsFees.amount + outrightSalesProfit.amount,
   };
 }
