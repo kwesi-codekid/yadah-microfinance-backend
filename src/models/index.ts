@@ -39,6 +39,32 @@ export { SmsLogModel, type SmsLog } from './sms-log.model.js';
 export { AuditLogModel, type AuditLog } from './audit-log.model.js';
 export { CounterModel, type Counter } from './counter.model.js';
 export {
+  CashAccountModel,
+  CASH_ACCOUNT_KINDS,
+  type CashAccount,
+  type CashAccountKind,
+} from './cash-account.model.js';
+export {
+  ExpenseModel,
+  EXPENSE_CATEGORIES,
+  EXPENSE_STATUSES,
+  type Expense,
+  type ExpenseCategory,
+  type ExpenseStatus,
+} from './expense.model.js';
+export {
+  FixedAssetModel,
+  FIXED_ASSET_CATEGORIES,
+  type FixedAsset,
+  type FixedAssetCategory,
+} from './fixed-asset.model.js';
+export {
+  CapitalEntryModel,
+  CAPITAL_ENTRY_KINDS,
+  type CapitalEntry,
+  type CapitalEntryKind,
+} from './capital-entry.model.js';
+export {
   PayoutRequestModel,
   PAYOUT_REQUEST_KINDS,
   PAYOUT_REQUEST_STATUSES,

@@ -10,6 +10,7 @@ import { reportPaths } from '../modules/reports/reports.openapi.js';
 import { dashboardPaths } from '../modules/dashboard/dashboard.openapi.js';
 import { collectorPaths } from '../modules/collectors/collectors.openapi.js';
 import { portalPaths } from '../modules/portal/portal.openapi.js';
+import { accountingPaths } from '../modules/accounting/accounting.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
@@ -88,6 +89,13 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
           'The office side of customer withdrawal requests. Approving one EXECUTES the ' +
           'withdrawal and then sends the money by Paystack transfer.',
       },
+      {
+        name: 'Accounting',
+        description:
+          'The company own books: expenses, cash and bank accounts, the fixed-asset ' +
+          'register, owner capital, and the balance sheet and profit-and-loss statements ' +
+          'built from them.',
+      },
       { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
       {
         name: 'Hire Purchase',
@@ -115,6 +123,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...dashboardPaths,
       ...collectorPaths,
       ...portalPaths,
+      ...accountingPaths,
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,

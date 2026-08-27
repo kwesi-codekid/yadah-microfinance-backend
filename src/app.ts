@@ -15,6 +15,7 @@ import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { collectorsRouter } from './modules/collectors/collectors.routes.js';
 import { portalRouter } from './modules/portal/portal.routes.js';
 import { payoutRequestsRouter } from './modules/portal/payout-requests.routes.js';
+import { accountingRouter } from './modules/accounting/accounting.routes.js';
 import { hpRouter } from './modules/hire-purchase/hp.routes.js';
 import { transfersRouter } from './modules/transfers/transfers.routes.js';
 import { reconciliationRouter } from './modules/reconciliation/reconciliation.routes.js';
@@ -56,6 +57,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/collectors', collectorsRouter);
   app.use('/api/v1/portal', portalRouter);
   app.use('/api/v1/payout-requests', payoutRequestsRouter);
+  app.use('/api/v1/accounting', accountingRouter);
   app.use('/api/v1/hire-purchase', hpRouter);
   app.use('/api/v1/transfers', transfersRouter);
   app.use('/api/v1/reconciliation', reconciliationRouter);

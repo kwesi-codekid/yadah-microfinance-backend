@@ -1,7 +1,11 @@
 import mongoose, { Types } from 'mongoose';
 import { connectDb, disconnectDb } from '../../src/lib/db.js';
 import {
+  CapitalEntryModel,
+  CashAccountModel,
   CustomerModel,
+  ExpenseModel,
+  FixedAssetModel,
   HpAgreementModel,
   HpItemModel,
   PayoutRequestModel,
@@ -44,6 +48,10 @@ export async function setupDb(): Promise<void> {
       PayoutRequestModel,
       PortalOtpModel,
       PortalSessionModel,
+      CashAccountModel,
+      ExpenseModel,
+      FixedAssetModel,
+      CapitalEntryModel,
     ].map((m) => m.syncIndexes()),
   );
 }

@@ -526,6 +526,8 @@ export interface TxnGroupSummary {
   groups: {
     type: TxnType;
     direction: TxnDirection;
+    /** How the money moved: cash, paystack, momo — null when unrecorded. */
+    channel: string | null;
     count: number;
     amount: number;
     fee: number;
@@ -552,6 +554,7 @@ export async function transactionGroups(from?: string, to?: string): Promise<Txn
     groups: groups.map((g) => ({
       type: g._id.type,
       direction: directionOf(g._id.type, g._id.channel, g._id.detail),
+      channel: g._id.channel,
       count: g.count,
       amount: g.amount,
       fee: g.fee,
