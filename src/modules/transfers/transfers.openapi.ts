@@ -42,4 +42,29 @@ export const transferPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/transfers/{id}/receipt': {
+    get: {
+      tags: ['Transfers'],
+      summary: 'Printable transfer receipt',
+      description:
+        'Proof of an internal move between the products a customer already holds. No cash ' +
+        'crosses the ' +
+        'counter, so the headline reads AMOUNT MOVED rather than received or paid out, and ' +
+        'both legs are named explicitly — showing where the money went is the whole point ' +
+        'of the document.' +
+        '\n\n' +
+        'Money the destination could not absorb (a loan already settled, say) appears as ' +
+        'excess held pending rather than quietly vanishing. Binary response ' +
+        '(application/pdf).',
+      security: [{ bearerAuth: [] }],
+      requestParams: { path: z.object({ id: z.string().describe('Transfer id') }) },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
 };

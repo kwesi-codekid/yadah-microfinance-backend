@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { BRAND } from './brand.js';
 import { formatGhs } from './money.js';
 
 /**
@@ -17,12 +18,23 @@ const MARGIN = 42;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 const LABEL_WIDTH = 150;
 
-const INK = '#1a1a1a';
-const MUTED = '#666666';
-const RULE = '#bbbbbb';
-const ACCENT = '#0f5132';
+const INK = BRAND.ink;
+const MUTED = BRAND.muted;
+const RULE = BRAND.rule;
+const ACCENT = BRAND.coral;
 
-export type ReceiptKind = 'deposit' | 'withdrawal';
+/**
+ * What the headline figure means. A transfer is neither money in nor money
+ * out — nothing crosses the counter — so it gets its own wording rather than
+ * being forced into one of the other two.
+ */
+export type ReceiptKind = 'deposit' | 'withdrawal' | 'transfer';
+
+const AMOUNT_CAPTION: Record<ReceiptKind, string> = {
+  deposit: 'AMOUNT RECEIVED',
+  withdrawal: 'AMOUNT PAID OUT',
+  transfer: 'AMOUNT MOVED',
+};
 
 export interface ReceiptLine {
   label: string;
@@ -67,7 +79,7 @@ export function buildReceiptPdf(data: ReceiptData): Promise<Buffer> {
 
   let y = MARGIN;
 
-  function rule(colour = RULE, width = 0.5): void {
+  function rule(colour: string = RULE, width = 0.5): void {
     doc
       .save()
       .lineWidth(width)
@@ -135,7 +147,7 @@ export function buildReceiptPdf(data: ReceiptData): Promise<Buffer> {
     .font('Helvetica')
     .fontSize(9)
     .fillColor(MUTED)
-    .text(data.kind === 'deposit' ? 'AMOUNT RECEIVED' : 'AMOUNT PAID OUT', MARGIN + 14, y + 11);
+    .text(AMOUNT_CAPTION[data.kind], MARGIN + 14, y + 11);
   doc
     .font('Helvetica-Bold')
     .fontSize(24)

@@ -599,4 +599,28 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/agreements/{id}/payments/{paymentId}/receipt': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'Printable receipt for a deposit, instalment or redemption payment',
+      description:
+        'One endpoint for all three payment types — they are the same document with a ' +
+        'different title. Balances are rebuilt as at THIS payment, so a reprint shows the ' +
+        'position at the time it was issued rather than the position today.\n\n' +
+        'A deposit receipt shows no remaining-balance figure: the deposit is not part of the ' +
+        'financed balance, so the number would be meaningless until the agreement is ' +
+        'priced. Binary response (application/pdf).',
+      security,
+      requestParams: {
+        path: z.object({ id: z.string().describe('Agreement id'), paymentId: z.string() }),
+      },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
 };

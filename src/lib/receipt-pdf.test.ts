@@ -1,6 +1,38 @@
+import { inflateSync } from 'node:zlib';
 import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
-import { buildReceiptPdf, receiptNumber, type ReceiptData } from './receipt-pdf.js';
+import {
+  buildReceiptPdf,
+  receiptNumber,
+  type ReceiptData,
+  type ReceiptKind,
+} from './receipt-pdf.js';
+
+/** pdfkit compresses its content streams, so read the drawn text back out. */
+function textOf(buffer: Buffer): string {
+  const raw = buffer.toString('latin1');
+  let out = '';
+  const re = /stream\r?\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const start = m.index + m[0].length;
+    const end = raw.indexOf('endstream', start);
+    if (end < 0) continue;
+    let content: string;
+    try {
+      content = inflateSync(Buffer.from(raw.slice(start, end), 'latin1')).toString('latin1');
+    } catch {
+      continue;
+    }
+    for (const hex of content.matchAll(/<([0-9a-fA-F]+)>/g)) {
+      const chars = hex[1] ?? '';
+      for (let i = 0; i + 1 < chars.length; i += 2) {
+        out += String.fromCharCode(parseInt(chars.slice(i, i + 2), 16));
+      }
+    }
+  }
+  return out;
+}
 
 const base: ReceiptData = {
   receiptNo: 'SD-1A2B3C4D',
@@ -68,5 +100,16 @@ describe('buildReceiptPdf', () => {
   it('handles a zero amount', async () => {
     const buffer = await buildReceiptPdf({ ...base, amount: 0 });
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('labels the headline by what the money actually did', async () => {
+    const captionOf = async (kind: ReceiptKind): Promise<string> =>
+      textOf(await buildReceiptPdf({ ...base, kind }));
+
+    expect(await captionOf('deposit')).toContain('AMOUNT RECEIVED');
+    expect(await captionOf('withdrawal')).toContain('AMOUNT PAID OUT');
+    // A transfer is neither: nothing crosses the counter, so forcing it into
+    // one of the other two would misdescribe what happened.
+    expect(await captionOf('transfer')).toContain('AMOUNT MOVED');
   });
 });

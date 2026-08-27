@@ -248,6 +248,9 @@ export const trashListQuery = pagination;
 export type TrashListQuery = z.infer<typeof trashListQuery>;
 
 export const idParams = z.object({ id: objectId });
+
+export const paymentIdParams = z.object({ id: objectId, paymentId: objectId });
+export type PaymentIdParams = z.infer<typeof paymentIdParams>;
 export type IdParams = z.infer<typeof idParams>;
 
 export const customerIdParams = z.object({ customerId: objectId });

@@ -1879,6 +1879,7 @@ export async function getSale(saleId: Types.ObjectId): Promise<PublicHpSale> {
   return toPublicSale(sale);
 }
 
+/** A rendered PDF and the filename to serve it under. */
 export interface SaleReceiptFile {
   buffer: Buffer;
   filename: string;
@@ -1923,4 +1924,89 @@ export async function saleReceipt(saleId: Types.ObjectId): Promise<SaleReceiptFi
     reference: sale._id.toHexString(),
   });
   return { buffer, filename: `sale-${receiptNo}.pdf` };
+}
+
+// ---------------------------------------------------------------- agreement payment receipts
+
+const HP_PAYMENT_TITLES: Record<HpPayment['type'], string> = {
+  deposit: 'Hire Purchase Deposit',
+  installment: 'Hire Purchase Instalment',
+  redemption: 'Hire Purchase Redemption',
+};
+
+const HP_PAYMENT_PREFIX: Record<HpPayment['type'], string> = {
+  deposit: 'HD',
+  installment: 'HI',
+  redemption: 'HX',
+};
+
+/**
+ * Proof of a payment against an agreement — the deposit, a monthly instalment,
+ * or the payment that redeems repossessed goods.
+ *
+ * Balances are rebuilt as at THIS payment rather than read off the agreement,
+ * so reprinting an old receipt shows the position at the time it was issued
+ * rather than today's. A receipt records a moment; a reprint must not rewrite it.
+ */
+export async function agreementPaymentReceipt(
+  agreementId: Types.ObjectId,
+  paymentId: Types.ObjectId,
+): Promise<SaleReceiptFile> {
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+
+  const payment = await HpPaymentModel.findOne({ _id: paymentId, agreementId, ...NOT_TRASHED });
+  if (!payment) throw new AppError('NOT_FOUND', 'Payment not found', 404);
+
+  const [customer, staff, paidRows] = await Promise.all([
+    CustomerModel.findById(agreement.customerId),
+    UserModel.findById(payment.recordedById).select('name'),
+    HpPaymentModel.aggregate<{ paid: number }>([
+      { $match: { agreementId, createdAt: { $lte: payment.createdAt }, ...NOT_TRASHED } },
+      { $group: { _id: null, paid: { $sum: '$amount' } } },
+    ]),
+  ]);
+  const paid = paidRows[0]?.paid ?? 0;
+
+  const lines: ReceiptLine[] = [{ label: 'Item', value: agreement.itemSnapshot.name }];
+  if (payment.type === 'deposit') {
+    lines.push({ label: 'Deposit required', value: formatGhs(agreement.depositRequired) });
+    lines.push({ label: 'Amount financed', value: formatGhs(agreement.financedAmount) });
+  }
+  if (agreement.totalPayable !== undefined) {
+    lines.push({ label: 'Total payable', value: formatGhs(agreement.totalPayable) });
+  }
+  lines.push({ label: 'Paid to date', value: formatGhs(paid) });
+  // The deposit is not part of the financed balance, so a deposit receipt has
+  // no meaningful "remaining" figure until the agreement is priced.
+  if (agreement.totalPayable !== undefined && payment.type !== 'deposit') {
+    lines.push({
+      label: 'Remaining after this',
+      value: formatGhs(Math.max(0, agreement.totalPayable - (paid - agreement.depositRequired))),
+      emphasis: true,
+    });
+  }
+  lines.push({ label: 'Instalments', value: `${String(agreement.durationMonths)} months` });
+  lines.push({ label: 'Payment method', value: payment.channel });
+
+  const prefix = HP_PAYMENT_PREFIX[payment.type];
+  const reference = agreement.accountNumber ?? agreement._id.toHexString().slice(-8).toUpperCase();
+
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber(prefix, payment._id),
+    kind: 'deposit',
+    title: HP_PAYMENT_TITLES[payment.type],
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: reference,
+    amount: payment.amount,
+    lines,
+    recordedByName: staff?.name ?? 'Yadah staff',
+    at: payment.createdAt,
+    reference: payment._id.toHexString(),
+  });
+  return {
+    buffer,
+    filename: `hp-${payment.type}-${receiptNumber(prefix, payment._id)}.pdf`,
+  };
 }

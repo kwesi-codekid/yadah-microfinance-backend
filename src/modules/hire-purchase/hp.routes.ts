@@ -11,6 +11,7 @@ import {
   depositBody,
   forfeitBody,
   idParams,
+  paymentIdParams,
   listAgreementsQuery,
   listItemsQuery,
   listSalesQuery,
@@ -30,6 +31,7 @@ import {
   type DepositBody,
   type ForfeitBody,
   type IdParams,
+  type PaymentIdParams,
   type ListAgreementsQuery,
   type ListItemsQuery,
   type ListSalesQuery,
@@ -368,6 +370,23 @@ hpRouter.post(
     const { params, body } = getValidated<{ params: IdParams; body: ForfeitBody }>(req);
     hp.forfeit(getAuth(req), params.id, body.restock, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+/**
+ * Proof of a payment against an agreement — deposit, instalment or redemption.
+ * One endpoint for all three: they are the same document with a different title.
+ */
+hpRouter.get(
+  '/agreements/:id/payments/:paymentId/receipt',
+  validate({ params: paymentIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: PaymentIdParams }>(req);
+    hp.agreementPaymentReceipt(params.id, params.paymentId)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
       .catch(next);
   },
 );

@@ -16,24 +16,49 @@ import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
 import { reconciliationPaths } from '../modules/reconciliation/reconciliation.openapi.js';
 import { notificationPaths } from '../modules/notifications/notifications.openapi.js';
+import { applyAudienceTags, AUDIENCE_TAGS, TAG_GROUPS } from './audiences.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
 export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
-  return createDocument({
+  const document = createDocument({
     openapi: '3.1.0',
     info: {
       title: 'Yadah Microfinance API',
       version: '0.1.0',
       description:
         'Susu collection, savings, and loans API for Yadah Dynamic Enterprise.\n\n' +
-        '**Conventions**: JSON, camelCase fields. All money values are **integer pesewas** ' +
-        '(GHS 10.50 = `1050`). Dates are ISO 8601 UTC. Errors always use the ' +
-        '`{ error: { code, message, details? } }` envelope. Authenticate with ' +
-        '`Authorization: Bearer <accessToken>`.',
+        '### Which app are you building?\n\n' +
+        'Three clients share this API and they are not interchangeable. Start from the ' +
+        'section that matches yours:\n\n' +
+        '- **Collector app** (field staff). The **Collector App** tag lists every endpoint ' +
+        'a collector token can reach — nothing else will answer. Collectors are further ' +
+        'scoped to their own assigned customers: reaching for anyone else returns 403, ' +
+        'never an empty list.\n' +
+        '- **Customer portal**. Everything under **Customer Portal**, on the `/portal` ' +
+        'prefix. Portal tokens are signed with a different key and are rejected by every ' +
+        'staff endpoint, so they use the `portalAuth` scheme, not `bearerAuth`.\n' +
+        '- **Office app** (admin and manager). Everything else, grouped by subject.\n\n' +
+        'Endpoints a collector shares with the office appear twice — once under their ' +
+        'subject, once under Collector App. That is one endpoint seen two ways, not two ' +
+        'endpoints.\n\n' +
+        '### Conventions\n\n' +
+        'JSON, camelCase fields. All money values are **integer pesewas** ' +
+        '(GHS 10.50 = `1050`) — convert only when you display. Dates are ISO 8601 UTC, and ' +
+        'day-boundary rules use the Africa/Accra calendar day. Errors always use the ' +
+        '`{ error: { code, message, details? } }` envelope, with Zod issues in `details`. ' +
+        'Authenticate with `Authorization: Bearer <accessToken>`.',
     },
     servers: [{ url: '/api/v1' }],
     tags: [
       { name: 'Auth', description: 'Login (username+password or phone OTP), sessions' },
+      {
+        name: AUDIENCE_TAGS.collector,
+        description:
+          'Everything a COLLECTOR token can reach, gathered in one place — the definitive ' +
+          'list for building the field app. Each of these also appears under its own ' +
+          'subject tag; this is the same set viewed by audience rather than by topic. ' +
+          'Anything not listed here answers 403 to a collector.',
+      },
       { name: 'Users', description: 'Staff management and role assignment (office roles)' },
       { name: 'Customers', description: 'Customer registration, profile, collector assignment' },
       {
@@ -139,4 +164,10 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       },
     },
   });
+
+  // Stamped after the fact rather than written into each module: which app can
+  // call what is one cross-cutting decision, and it belongs in one file where
+  // it can be read whole and checked against the routers (see audiences.ts).
+  applyAudienceTags(document.paths ?? {});
+  return { ...document, 'x-tagGroups': TAG_GROUPS };
 }

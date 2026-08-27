@@ -302,4 +302,51 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/loans/{id}/disbursement/receipt': {
+    get: {
+      tags: ['Loans'],
+      summary: 'Printable disbursement receipt',
+      description:
+        'Proof the customer received the money. The boxed headline is the PRINCIPAL handed ' +
+        'over, not the total repayable — a disbursement receipt records what left the ' +
+        'drawer, with what is owed back stated underneath so the difference is never ' +
+        'ambiguous. Binary response (application/pdf).' +
+        '\n\n' +
+        'Office-only, like the rest of this router: loans are collected at the counter, ' +
+        'never on a round.',
+      security,
+      requestParams: { path: z.object({ id: z.string().describe('Loan id') }) },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '422': errorResponse('NOT_DISBURSED — the loan has not been paid out yet'),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/loans/{id}/repayments/{repaymentId}/receipt': {
+    get: {
+      tags: ['Loans'],
+      summary: 'Printable repayment receipt',
+      description:
+        'Proof the customer paid. Balances are rebuilt as at THIS repayment rather than ' +
+        'read off the loan, so reprinting an old receipt shows the position at the time it ' +
+        'was issued rather than the position today: a receipt records a moment, and a ' +
+        'reprint must ' +
+        'not silently rewrite it. Binary response (application/pdf).',
+      security,
+      requestParams: {
+        path: z.object({ id: z.string().describe('Loan id'), repaymentId: z.string() }),
+      },
+      responses: {
+        '200': {
+          description: 'The receipt',
+          content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+        },
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
 };

@@ -42,6 +42,9 @@ export { trashBody, type TrashBody } from '../../schemas/common.js';
 export const loanIdParams = z.object({ id: objectId });
 export type LoanIdParams = z.infer<typeof loanIdParams>;
 
+export const repaymentIdParams = z.object({ id: objectId, repaymentId: objectId });
+export type RepaymentIdParams = z.infer<typeof repaymentIdParams>;
+
 export const customerIdParams = z.object({ customerId: objectId });
 export type CustomerIdParams = z.infer<typeof customerIdParams>;
 

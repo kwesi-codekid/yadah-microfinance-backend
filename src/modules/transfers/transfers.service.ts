@@ -23,9 +23,11 @@ import {
   SusuDepositModel,
   SusuPayoutModel,
   TransferModel,
+  UserModel,
   type Customer,
   type Transfer,
 } from '../../models/index.js';
+import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { applyRepaymentInTxn } from '../loans/loans.service.js';
 import { applyHpPaymentInTxn, remainingOn } from '../hire-purchase/hp.service.js';
@@ -534,4 +536,83 @@ async function notifyTransfer(customer: Customer, t: Transfer): Promise<void> {
     relatedEntityType: 'transfer',
     relatedEntityId: t._id,
   });
+}
+
+// ---------------------------------------------------------------- receipt
+
+export interface ReceiptFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+const PRODUCT_LABELS: Record<string, string> = {
+  susu: 'Susu account',
+  savings: 'Savings account',
+  loan: 'Loan',
+  'hire-purchase': 'Hire purchase agreement',
+};
+
+/** The account or agreement number behind one leg of a transfer. */
+async function legReference(type: string, id: Types.ObjectId): Promise<string> {
+  const short = (): string => id.toHexString().slice(-8).toUpperCase();
+  if (type === 'susu') return (await SusuAccountModel.findById(id))?.accountNumber ?? short();
+  if (type === 'savings') return (await SavingsAccountModel.findById(id))?.accountNumber ?? short();
+  if (type === 'loan') return (await LoanModel.findById(id))?.accountNumber ?? short();
+  return (await HpAgreementModel.findById(id))?.accountNumber ?? short();
+}
+
+/**
+ * Proof of an internal move between a customer's own products.
+ *
+ * No cash crosses the counter, so the headline reads AMOUNT MOVED rather than
+ * received or paid out. Both legs are named explicitly: the whole point of the
+ * document is showing where the money went.
+ */
+export async function transferReceipt(transferId: Types.ObjectId): Promise<ReceiptFile> {
+  const transfer = await TransferModel.findById(transferId);
+  if (!transfer) throw new AppError('NOT_FOUND', 'Transfer not found', 404);
+
+  const [customer, staff, fromRef, toRef] = await Promise.all([
+    CustomerModel.findById(transfer.customerId),
+    UserModel.findById(transfer.recordedById).select('name'),
+    legReference(transfer.fromType, transfer.fromId),
+    legReference(transfer.toType, transfer.toId),
+  ]);
+
+  const lines: ReceiptLine[] = [
+    {
+      label: 'From',
+      value: `${PRODUCT_LABELS[transfer.fromType] ?? transfer.fromType} ${fromRef}`,
+    },
+    { label: 'To', value: `${PRODUCT_LABELS[transfer.toType] ?? transfer.toType} ${toRef}` },
+  ];
+  // Only a savings leg carries a fee; showing a zero would invite the question.
+  if (transfer.fee > 0) {
+    lines.push({ label: 'Transfer fee', value: formatGhs(transfer.fee) });
+  }
+  lines.push({
+    label: 'Credited to destination',
+    value: formatGhs(transfer.amountCredited),
+    emphasis: true,
+  });
+  // Money the destination could not absorb — a loan already settled, say — is
+  // still the customer's, so it must appear rather than quietly vanish.
+  if (transfer.excessPending > 0) {
+    lines.push({ label: 'Excess held pending', value: formatGhs(transfer.excessPending) });
+  }
+
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber('TR', transfer._id),
+    kind: 'transfer',
+    title: 'Internal Transfer',
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: fromRef,
+    amount: transfer.amountMoved,
+    lines,
+    recordedByName: staff?.name ?? 'Yadah staff',
+    at: transfer.createdAt,
+    reference: transfer._id.toHexString(),
+  });
+  return { buffer, filename: `transfer-${receiptNumber('TR', transfer._id)}.pdf` };
 }

@@ -6,6 +6,7 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
+import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
   CustomerModel,
   LoanConfigModel,
@@ -17,6 +18,7 @@ import {
   SusuAccountModel,
   SusuDepositModel,
   SusuPayoutModel,
+  UserModel,
   type Customer,
   type Loan,
   type Repayment,
@@ -1118,4 +1120,122 @@ export async function listLoanTrash(
     limit: query.limit,
     total,
   };
+}
+
+// ---------------------------------------------------------------- receipts
+
+export interface ReceiptFile {
+  buffer: Buffer;
+  filename: string;
+}
+
+/** The customer, staff name and display reference every loan receipt needs. */
+async function loanReceiptContext(
+  loanId: Types.ObjectId,
+): Promise<{ loan: Loan; customer: Customer | null; reference: string }> {
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  const customer = await CustomerModel.findById(loan.customerId);
+  // Loans written before the numbering scheme have no reference of their own.
+  const reference = loan.accountNumber ?? loan._id.toHexString().slice(-8).toUpperCase();
+  return { loan, customer, reference };
+}
+
+async function staffName(id: Types.ObjectId | null | undefined): Promise<string> {
+  if (!id) return 'Yadah staff';
+  const user = await UserModel.findById(id).select('name');
+  return user?.name ?? 'Yadah staff';
+}
+
+/**
+ * Proof the customer received the money.
+ *
+ * The figure is the PRINCIPAL handed over, not the total repayable — a
+ * disbursement receipt records what left the drawer. What is owed back is
+ * stated underneath so there is no ambiguity about the difference.
+ */
+export async function disbursementReceipt(loanId: Types.ObjectId): Promise<ReceiptFile> {
+  const { loan, customer, reference } = await loanReceiptContext(loanId);
+  if (!loan.disbursedAt) {
+    throw new AppError('NOT_DISBURSED', 'This loan has not been disbursed yet', 422);
+  }
+
+  const lines: ReceiptLine[] = [
+    { label: 'Loan tier', value: loan.tier === 'big' ? 'Big' : 'Small' },
+    { label: 'Duration', value: `${String(loan.durationMonths)} months` },
+    { label: 'Interest rate', value: `${String(loan.ratePercent)}% flat on principal` },
+    { label: 'Interest', value: formatGhs(loan.interestAmount) },
+    { label: 'Total repayable', value: formatGhs(loan.totalDue), emphasis: true },
+    ...(loan.dueDate ? [{ label: 'Due by', value: accraDay(loan.dueDate) }] : []),
+  ];
+
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber('LD', loan._id),
+    kind: 'withdrawal',
+    title: 'Loan Disbursement',
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: reference,
+    amount: loan.principal,
+    lines,
+    recordedByName: await staffName(loan.approvedById),
+    at: loan.disbursedAt,
+    reference: loan._id.toHexString(),
+  });
+  return { buffer, filename: `loan-disbursement-${receiptNumber('LD', loan._id)}.pdf` };
+}
+
+/**
+ * Proof the customer paid.
+ *
+ * Balances are rebuilt as at THIS repayment rather than read off the loan, so
+ * a reprint of an old receipt shows the position at the time it was issued —
+ * not today's. A receipt is a record of a moment, and reprinting one must not
+ * silently rewrite it.
+ */
+export async function repaymentReceipt(
+  loanId: Types.ObjectId,
+  repaymentId: Types.ObjectId,
+): Promise<ReceiptFile> {
+  const { loan, customer, reference } = await loanReceiptContext(loanId);
+  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId });
+  if (!repayment) throw new AppError('NOT_FOUND', 'Repayment not found', 404);
+
+  const [{ paid } = { paid: 0 }] = await RepaymentModel.aggregate<{ paid: number }>([
+    { $match: { loanId, createdAt: { $lte: repayment.createdAt } } },
+    { $group: { _id: null, paid: { $sum: '$amount' } } },
+  ]);
+
+  const SOURCE_LABELS: Record<Repayment['source'], string> = {
+    cash: 'Cash',
+    'susu-closure': 'Susu account closure',
+    transfer: 'Internal transfer',
+  };
+
+  const lines: ReceiptLine[] = [
+    { label: 'Paid by', value: SOURCE_LABELS[repayment.source] },
+    { label: 'Total repayable', value: formatGhs(loan.totalDue) },
+    { label: 'Repaid to date', value: formatGhs(paid) },
+    {
+      label: 'Remaining after this',
+      value: formatGhs(Math.max(0, loan.totalDue - paid)),
+      emphasis: true,
+    },
+    { label: 'Payment method', value: repayment.channel },
+  ];
+
+  const buffer = await buildReceiptPdf({
+    receiptNo: receiptNumber('LR', repayment._id),
+    kind: 'deposit',
+    title: 'Loan Repayment',
+    customerName: customer?.fullName ?? 'Customer',
+    ...(customer?.phone !== undefined ? { customerPhone: customer.phone } : {}),
+    accountNumber: reference,
+    amount: repayment.amount,
+    lines,
+    recordedByName: await staffName(repayment.recordedById),
+    at: repayment.createdAt,
+    reference: repayment._id.toHexString(),
+  });
+  return { buffer, filename: `loan-repayment-${receiptNumber('LR', repayment._id)}.pdf` };
 }

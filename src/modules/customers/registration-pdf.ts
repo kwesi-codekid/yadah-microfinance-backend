@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { BRAND } from '../../lib/brand.js';
 import type { Customer } from '../../models/index.js';
 
 /**
@@ -14,9 +15,10 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 const LABEL_WIDTH = 150;
 const PHOTO_SIZE = 110;
 
-const INK = '#1a1a1a';
-const MUTED = '#666666';
-const RULE = '#bbbbbb';
+const INK = BRAND.ink;
+const MUTED = BRAND.muted;
+const RULE = BRAND.rule;
+const ACCENT = BRAND.coral;
 
 /** Cloudinary stores webp/auto variants; pdfkit embeds only JPEG/PNG. */
 function asJpegUrl(url: string): string {
@@ -62,6 +64,18 @@ export async function buildRegistrationFormPdf(
     .text('YADAH DYNAMIC ENTERPRISE', PAGE_MARGIN, PAGE_MARGIN);
   doc.font('Helvetica').fontSize(11).fillColor(MUTED).text('Customer Registration Form');
   doc.fontSize(9).text(`Generated ${new Date().toISOString().slice(0, 10)}`);
+
+  // The same coral letterhead rule the receipts and statements carry, so every
+  // document Yadah hands out is recognisably from the same place. Stops short
+  // of the photo box on the right.
+  doc
+    .save()
+    .lineWidth(1.5)
+    .strokeColor(ACCENT)
+    .moveTo(PAGE_MARGIN, PAGE_MARGIN + 52)
+    .lineTo(PAGE_WIDTH - PAGE_MARGIN - PHOTO_SIZE - 16, PAGE_MARGIN + 52)
+    .stroke()
+    .restore();
 
   // Photo (or placeholder) top-right.
   const photoX = PAGE_WIDTH - PAGE_MARGIN - PHOTO_SIZE;

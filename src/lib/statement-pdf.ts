@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { BRAND } from './brand.js';
 import { formatAmount } from './money.js';
 
 /**
@@ -30,11 +31,16 @@ const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 const AMOUNT_WIDTH = 110;
 const BOTTOM_LIMIT = PAGE_HEIGHT - MARGIN - 40;
 
-const INK = '#1a1a1a';
-const MUTED = '#666666';
-const RULE = '#bbbbbb';
-const ACCENT = '#0f5132';
-const ALERT = '#842029';
+const INK = BRAND.ink;
+const MUTED = BRAND.muted;
+const RULE = BRAND.rule;
+/** Letterhead rule and the statement title — the one flash of brand colour. */
+const ACCENT = BRAND.coral;
+/**
+ * Something needs attention: a sheet that does not balance, or a net loss.
+ * The same coral, because on screen that is exactly what coral already means.
+ */
+const ALERT = BRAND.coral;
 
 export interface StatementLine {
   label: string;
@@ -97,7 +103,7 @@ export function buildStatementPdf(data: StatementData): Promise<Buffer> {
 
   let y = MARGIN;
 
-  function rule(colour = RULE, width = 0.5, from = MARGIN, to = PAGE_WIDTH - MARGIN): void {
+  function rule(colour: string = RULE, width = 0.5, from = MARGIN, to = PAGE_WIDTH - MARGIN): void {
     doc
       .save()
       .lineWidth(width)
@@ -201,7 +207,7 @@ export function buildStatementPdf(data: StatementData): Promise<Buffer> {
     doc
       .font('Helvetica-Bold')
       .fontSize(10.5)
-      .fillColor(ACCENT)
+      .fillColor(INK)
       .text(section.heading.toUpperCase(), MARGIN, y, { characterSpacing: 0.6 });
     y = doc.y + 6;
     for (const line of section.lines) renderLine(line);
@@ -212,7 +218,7 @@ export function buildStatementPdf(data: StatementData): Promise<Buffer> {
   if (data.highlight) {
     ensureSpace(76);
     const boxHeight = data.highlight.caption === undefined ? 52 : 66;
-    const colour = data.highlight.alert === true ? ALERT : ACCENT;
+    const colour = data.highlight.alert === true ? ALERT : INK;
     doc
       .save()
       .lineWidth(1.2)
@@ -251,7 +257,7 @@ export function buildStatementPdf(data: StatementData): Promise<Buffer> {
     doc
       .font('Helvetica-Bold')
       .fontSize(10.5)
-      .fillColor(ACCENT)
+      .fillColor(INK)
       .text('NOTES TO THE ACCOUNTS', MARGIN, y, { characterSpacing: 0.6 });
     y = doc.y + 6;
     for (const [index, note] of data.notes.entries()) {

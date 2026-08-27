@@ -8,6 +8,7 @@ import {
   customerIdParams,
   listLoansQuery,
   loanIdParams,
+  repaymentIdParams,
   loanTrashQuery,
   putConfigBody,
   rejectBody,
@@ -18,6 +19,7 @@ import {
   type CustomerIdParams,
   type ListLoansQuery,
   type LoanIdParams,
+  type RepaymentIdParams,
   type LoanTrashQuery,
   type PutConfigBody,
   type RejectBody,
@@ -187,6 +189,40 @@ loansRouter.post(
         req.id as string,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// ---------------------------------------------------------------- receipts
+// Office-only like the rest of this router: loans are collected at the counter,
+// never on a collector's round.
+
+// Proof the customer received the money.
+loansRouter.get(
+  '/:id/disbursement/receipt',
+  validate({ params: loanIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: LoanIdParams }>(req);
+    loansService
+      .disbursementReceipt(params.id)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
+      .catch(next);
+  },
+);
+
+// Proof the customer paid.
+loansRouter.get(
+  '/:id/repayments/:repaymentId/receipt',
+  validate({ params: repaymentIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: RepaymentIdParams }>(req);
+    loansService
+      .repaymentReceipt(params.id, params.repaymentId)
+      .then(({ buffer, filename }) => {
+        res.type('application/pdf').attachment(filename).send(buffer);
+      })
       .catch(next);
   },
 );
