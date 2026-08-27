@@ -4,6 +4,9 @@ import {
   CustomerModel,
   HpAgreementModel,
   HpItemModel,
+  PayoutRequestModel,
+  PortalOtpModel,
+  PortalSessionModel,
   HpSaleModel,
   LoanModel,
   LoanScheduleModel,
@@ -38,6 +41,9 @@ export async function setupDb(): Promise<void> {
       LoanScheduleModel,
       RepaymentModel,
       UserModel,
+      PayoutRequestModel,
+      PortalOtpModel,
+      PortalSessionModel,
     ].map((m) => m.syncIndexes()),
   );
 }

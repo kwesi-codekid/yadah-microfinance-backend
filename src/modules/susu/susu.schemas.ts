@@ -22,9 +22,10 @@ export const listAccountsQuery = pagination
   .extend({
     customerId: objectId.optional(),
     status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']).optional(),
+    /** Current format (SU26080001) or a grandfathered 6-digit number. */
     accountNumber: z
       .string()
-      .regex(/^\d{6}$/)
+      .regex(/^(SU\d{8}|\d{6})$/, 'Expected an account number like SU26080001')
       .optional(),
     /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
     search: z.string().min(1).max(100).optional(),

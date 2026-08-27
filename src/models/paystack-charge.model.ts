@@ -34,8 +34,10 @@ export interface PaystackCharge {
   phone: string;
   provider: 'mtn' | 'vod' | 'atl';
   email: string;
+  /** A User id for staff-initiated charges, a Customer id for portal ones. */
   initiatedById: Types.ObjectId;
-  initiatedByRole: Role;
+  /** 'customer' when the charge came from the portal rather than a staff member. */
+  initiatedByRole: Role | 'customer';
   paystackStatus?: string;
   displayText?: string;
   failureReason?: string;
@@ -58,7 +60,7 @@ const paystackChargeSchema = new Schema<PaystackCharge>(
     phone: { type: String, required: true },
     provider: { type: String, enum: ['mtn', 'vod', 'atl'], required: true },
     email: { type: String, required: true },
-    initiatedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    initiatedById: { type: Schema.Types.ObjectId, required: true },
     initiatedByRole: { type: String, required: true },
     paystackStatus: { type: String },
     displayText: { type: String },

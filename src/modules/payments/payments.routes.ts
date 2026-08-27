@@ -29,7 +29,7 @@ paymentsRouter.get(
   (req, res, next) => {
     const { params } = getValidated<{ params: ReferenceParams }>(req);
     paymentsService
-      .getCharge(params.reference)
+      .getCharge(getAuth(req), params.reference)
       .then((charge) => res.json({ charge }))
       .catch(next);
   },
@@ -41,7 +41,7 @@ paymentsRouter.post(
   (req, res, next) => {
     const { params } = getValidated<{ params: ReferenceParams }>(req);
     paymentsService
-      .verifyAndApply(params.reference)
+      .verifyAndApply(getAuth(req), params.reference)
       .then((charge) => res.json({ charge }))
       .catch(next);
   },

@@ -30,6 +30,9 @@ interface PaystackResponse {
     display_text?: string;
     amount?: number;
     currency?: string;
+    // Transfer endpoints (money out) return these instead.
+    recipient_code?: string;
+    transfer_code?: string;
   };
 }
 
@@ -111,4 +114,102 @@ export function verifyWebhookSignature(rawBody: Buffer, signature: string | unde
   const got = Buffer.from(signature, 'utf8');
   const want = Buffer.from(expected, 'utf8');
   return got.length === want.length && timingSafeEqual(got, want);
+}
+
+// ------------------------------------------------------------------ transfers
+
+/**
+ * Paystack Transfers — money OUT to a customer's mobile wallet.
+ *
+ * The opposite direction from the charge API above, and a different shape: a
+ * recipient is created once per (phone, provider), then transfers are pushed
+ * to its code. Paystack settles asynchronously, so the outcome arrives on the
+ * transfer.success / transfer.failed / transfer.reversed webhooks — never
+ * treat a 200 here as money delivered.
+ *
+ * Requires the Paystack account to be enabled for transfers, with a funded
+ * balance and a secret key that carries transfer permissions.
+ */
+
+/** Paystack's bank codes for Ghanaian mobile money wallets. */
+const MOMO_BANK_CODE: Record<MomoProvider, string> = {
+  mtn: 'MTN',
+  vod: 'VOD',
+  atl: 'ATL',
+};
+
+/**
+ * Create (or re-fetch) a transfer recipient for a mobile wallet. Paystack is
+ * idempotent on (type, account_number, bank_code) and returns the existing
+ * recipient code rather than duplicating it.
+ */
+export async function createTransferRecipient(args: {
+  name: string;
+  phone: string;
+  provider: MomoProvider;
+}): Promise<string> {
+  const body = await call('/transferrecipient', {
+    method: 'POST',
+    body: JSON.stringify({
+      type: 'mobile_money',
+      name: args.name,
+      account_number: args.phone,
+      bank_code: MOMO_BANK_CODE[args.provider],
+      currency: 'GHS',
+    }),
+  });
+
+  const code = body.data?.recipient_code;
+  if (!code) {
+    throw new AppError('PAYSTACK_ERROR', 'Paystack did not return a recipient code', 502);
+  }
+  return code;
+}
+
+export interface TransferInitiation {
+  transferCode: string;
+  reference: string;
+  /** Paystack's view: usually 'pending' or 'otp' when 2FA is on the account. */
+  paystackStatus: string;
+}
+
+/**
+ * Push money to a recipient. `reference` is ours and must be unique — Paystack
+ * rejects a duplicate, which is what makes a retried approval safe.
+ */
+export async function initiateTransfer(args: {
+  recipientCode: string;
+  amount: number; // pesewas
+  reference: string;
+  reason: string;
+}): Promise<TransferInitiation> {
+  const body = await call('/transfer', {
+    method: 'POST',
+    body: JSON.stringify({
+      source: 'balance',
+      amount: args.amount,
+      recipient: args.recipientCode,
+      reference: args.reference,
+      reason: args.reason,
+      currency: 'GHS',
+    }),
+  });
+
+  const transferCode = body.data?.transfer_code;
+  if (!transferCode) {
+    throw new AppError('PAYSTACK_ERROR', 'Paystack did not return a transfer code', 502);
+  }
+  return {
+    transferCode,
+    reference: body.data?.reference ?? args.reference,
+    paystackStatus: body.data?.status ?? 'pending',
+  };
+}
+
+/** Ask Paystack directly about a transfer — the fallback for a missed webhook. */
+export async function fetchTransfer(reference: string): Promise<{ paystackStatus: string }> {
+  const body = await call(`/transfer/verify/${encodeURIComponent(reference)}`, {
+    method: 'GET',
+  });
+  return { paystackStatus: body.data?.status ?? 'unknown' };
 }

@@ -38,4 +38,14 @@ export { PushSubscriptionModel, type PushSubscription } from './push-subscriptio
 export { SmsLogModel, type SmsLog } from './sms-log.model.js';
 export { AuditLogModel, type AuditLog } from './audit-log.model.js';
 export { CounterModel, type Counter } from './counter.model.js';
+export {
+  PayoutRequestModel,
+  PAYOUT_REQUEST_KINDS,
+  PAYOUT_REQUEST_STATUSES,
+  type PayoutRequest,
+  type PayoutRequestKind,
+  type PayoutRequestStatus,
+} from './payout-request.model.js';
+export { PortalOtpModel, type PortalOtp } from './portal-otp.model.js';
+export { PortalSessionModel, type PortalSession } from './portal-session.model.js';
 export { CHANNELS, ROLES, type Channel, type Role } from './shared.js';

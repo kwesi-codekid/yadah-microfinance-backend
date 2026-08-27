@@ -8,6 +8,8 @@ import { uploadPaths } from '../modules/uploads/uploads.openapi.js';
 import { loanPaths } from '../modules/loans/loans.openapi.js';
 import { reportPaths } from '../modules/reports/reports.openapi.js';
 import { dashboardPaths } from '../modules/dashboard/dashboard.openapi.js';
+import { collectorPaths } from '../modules/collectors/collectors.openapi.js';
+import { portalPaths } from '../modules/portal/portal.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
@@ -67,6 +69,25 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
           'series for the charts, standing alerts, and a recent-activity window. JSON only ' +
           '— exports live under Reports.',
       },
+      {
+        name: 'Collectors',
+        description:
+          "The field app's two home screens: today's round (who still owes a susu deposit) " +
+          'and the day so far across susu and savings.',
+      },
+      {
+        name: 'Customer Portal',
+        description:
+          'Customer-facing. Phone + OTP login, own accounts and history, mobile-money ' +
+          'pay-in, and withdrawal requests. Portal tokens are signed with a different key ' +
+          'from staff tokens and are rejected by every staff endpoint.',
+      },
+      {
+        name: 'Payout Requests',
+        description:
+          'The office side of customer withdrawal requests. Approving one EXECUTES the ' +
+          'withdrawal and then sends the money by Paystack transfer.',
+      },
       { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
       {
         name: 'Hire Purchase',
@@ -92,6 +113,8 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...loanPaths,
       ...reportPaths,
       ...dashboardPaths,
+      ...collectorPaths,
+      ...portalPaths,
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,
@@ -101,6 +124,9 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
     components: {
       securitySchemes: {
         bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+        // Signed with a key derived from the staff secret: a portal token can
+        // never satisfy bearerAuth, and vice versa.
+        portalAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       },
     },
   });

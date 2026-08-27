@@ -33,9 +33,10 @@ export const listAccountsQuery = pagination
     customerId: objectId.optional(),
     accountType: z.enum(SAVINGS_ACCOUNT_TYPES).optional(),
     status: z.enum(['active', 'closed']).optional(),
+    /** Current format (SV26080001) or a grandfathered 10-digit number. */
     accountNumber: z
       .string()
-      .regex(/^\d{10}$/)
+      .regex(/^(SV\d{8}|\d{10})$/, 'Expected an account number like SV26080001')
       .optional(),
     /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
     search: z.string().min(1).max(100).optional(),

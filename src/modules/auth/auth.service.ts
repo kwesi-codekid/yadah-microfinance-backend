@@ -26,6 +26,14 @@ export interface AccessTokenPayload {
   role: Role;
   /** Refresh-session family this token belongs to. */
   fam?: string;
+  /**
+   * Token audience. Absent on staff tokens issued before the customer portal
+   * existed, so undefined is read as 'staff'. Customer portal tokens are signed
+   * with a DIFFERENT key (see portal.service.ts) and additionally carry
+   * typ:'customer' — verifyAccessToken rejects them either way, so a portal
+   * token can never satisfy requireAuth and reach a staff route unscoped.
+   */
+  typ?: 'staff' | 'customer';
 }
 
 export interface AuthTokens {
@@ -76,16 +84,26 @@ function signAccessToken(user: User, familyId: string): string {
     sub: user._id.toHexString(),
     role: user.role,
     fam: familyId,
+    typ: 'staff',
   };
   return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: ACCESS_TOKEN_TTL });
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
+  let payload: AccessTokenPayload;
   try {
-    return jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
+    payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessTokenPayload;
   } catch {
     throw new AppError('INVALID_TOKEN', 'Access token is invalid or expired', 401);
   }
+  // Defence in depth. A customer token is signed with a derived key and could
+  // not verify above, but staff routes decide access from `role` alone, and a
+  // customer reaching one would be treated as UNSCOPED — so reject explicitly
+  // rather than rely on the key separation holding forever.
+  if (payload.typ === 'customer') {
+    throw new AppError('INVALID_TOKEN', 'This token is not valid for staff endpoints', 401);
+  }
+  return payload;
 }
 
 /** Creates a refresh session on the user and returns both tokens. */

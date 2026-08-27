@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
+import { assertCanActOnCustomer } from '../../lib/customer-scope.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import {
@@ -23,6 +24,7 @@ import { MIN_DEPOSIT } from '../../domain/savings.js';
 import { remainingDeposits } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import * as hp from '../hire-purchase/hp.service.js';
+import { applyTransferOutcome } from '../portal/payout-requests.service.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 import * as loans from '../loans/loans.service.js';
 import * as savings from '../savings/savings.service.js';
@@ -212,6 +214,9 @@ export async function initiateCharge(
 ): Promise<PublicCharge> {
   assertPaymentsConfigured();
   const { customerId, amount } = await resolveTarget(actor, body);
+  // The collector lock applies to money-in too: pushing a payment prompt to
+  // someone else's customer is acting on them (see lib/customer-scope.ts).
+  await assertCanActOnCustomer(actor, customerId);
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
@@ -271,9 +276,109 @@ export async function initiateCharge(
   return toPublicCharge(fresh);
 }
 
-export async function getCharge(reference: string): Promise<PublicCharge> {
+export async function getCharge(
+  actor: AccessTokenPayload,
+  reference: string,
+): Promise<PublicCharge> {
   const charge = await PaystackChargeModel.findOne({ reference });
   if (!charge) throw new AppError('NOT_FOUND', 'Charge not found', 404);
+  await assertCanActOnCustomer(actor, charge.customerId);
+  return toPublicCharge(charge);
+}
+
+/**
+ * A charge started by the customer from the portal.
+ *
+ * Ownership is the whole authorisation: the target must belong to the calling
+ * customer. Loan and hire-purchase targets are rejected the same way they are
+ * for collectors — those are office-collected products.
+ */
+export async function initiatePortalCharge(
+  customerIdHex: string,
+  body: ChargeBody,
+  requestId?: string,
+): Promise<PublicCharge> {
+  assertPaymentsConfigured();
+  const customerId = new Types.ObjectId(customerIdHex);
+  const customer = await CustomerModel.findOne({
+    _id: customerId,
+    status: 'active',
+    ...NOT_TRASHED,
+  });
+  if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+
+  // Validate the target with the same rules staff get, as an office actor so
+  // no collector scoping applies — then check the target is actually theirs.
+  const resolved = await resolveTarget({ sub: customerIdHex, role: 'admin' }, body);
+  if (!resolved.customerId.equals(customerId)) {
+    // 404, not 403: the portal must not confirm that another customer's
+    // account id exists.
+    throw new AppError('NOT_FOUND', 'Account not found', 404);
+  }
+
+  const reference = `yadah-${randomUUID()}`;
+  const charge = await PaystackChargeModel.create({
+    reference,
+    kind: body.kind,
+    targetId: body.targetId,
+    customerId,
+    amount: resolved.amount,
+    phone: body.phone,
+    provider: body.provider,
+    email: customer.email ?? `${body.phone}@yadah.local`,
+    initiatedById: customerId,
+    initiatedByRole: 'customer',
+  });
+
+  let initiation;
+  try {
+    initiation = await paystackInitiate({
+      email: charge.email,
+      amount: resolved.amount,
+      reference,
+      phone: body.phone,
+      provider: body.provider,
+    });
+  } catch (err) {
+    await PaystackChargeModel.updateOne(
+      { _id: charge._id },
+      { $set: { status: 'failed', failureReason: 'Paystack initiation failed' } },
+    );
+    throw err;
+  }
+
+  await PaystackChargeModel.updateOne(
+    { _id: charge._id },
+    {
+      $set: {
+        paystackStatus: initiation.paystackStatus,
+        ...(initiation.displayText !== null ? { displayText: initiation.displayText } : {}),
+      },
+    },
+  );
+  await audit({
+    actorId: customerIdHex,
+    action: 'payment.charge.initiate',
+    entityType: 'paystack-charge',
+    entityId: charge._id,
+    amountAfter: resolved.amount,
+    after: { kind: body.kind, source: 'portal' },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+
+  const fresh = await PaystackChargeModel.findById(charge._id);
+  return toPublicCharge(fresh ?? charge);
+}
+
+/** A customer may only read a charge against their own account. */
+export async function getPortalCharge(
+  customerIdHex: string,
+  reference: string,
+): Promise<PublicCharge> {
+  const charge = await PaystackChargeModel.findOne({ reference });
+  if (!charge?.customerId.equals(new Types.ObjectId(customerIdHex))) {
+    throw new AppError('NOT_FOUND', 'Charge not found', 404);
+  }
   return toPublicCharge(charge);
 }
 
@@ -282,11 +387,20 @@ export async function getCharge(reference: string): Promise<PublicCharge> {
  * Never throws for business-rule failures — those become executionStatus
  * 'failed' for the office to resolve (the money is already received).
  */
+/**
+ * Automated moves are recorded against this well-known actor and render as
+ * 'System' in the feed — the same one debt recovery uses.
+ */
+const SYSTEM_ACTOR_HEX = '000000000000000000000000';
+
 async function executeCharge(charge: PaystackCharge): Promise<void> {
-  const actor: AccessTokenPayload = {
-    sub: charge.initiatedById.toHexString(),
-    role: charge.initiatedByRole,
-  };
+  // A portal charge is applied by the system on the webhook's word, not by the
+  // customer — they cannot post to their own ledger. Who asked for it stays on
+  // the charge document as initiatedById/initiatedByRole.
+  const actor: AccessTokenPayload =
+    charge.initiatedByRole === 'customer'
+      ? { sub: SYSTEM_ACTOR_HEX, role: 'admin' }
+      : { sub: charge.initiatedById.toHexString(), role: charge.initiatedByRole };
   const key = `paystack:${charge.reference}`;
 
   try {
@@ -392,6 +506,19 @@ interface WebhookEvent {
 export async function handleWebhookEvent(event: WebhookEvent): Promise<{ handled: boolean }> {
   if (!event.data?.reference) return { handled: false };
 
+  // Money OUT: the settlement half of an approved payout request. Handled in
+  // the portal module, which owns the request lifecycle.
+  if (event.event === 'transfer.success') {
+    return applyTransferOutcome(event.data.reference, 'success', event.data.status ?? 'success');
+  }
+  if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+    return applyTransferOutcome(
+      event.data.reference,
+      event.event === 'transfer.reversed' ? 'reversed' : 'failed',
+      event.data.status ?? 'failed',
+    );
+  }
+
   // A declined/expired charge: close the loop so it doesn't sit pending forever.
   if (event.event === 'charge.failed') {
     const failed = await PaystackChargeModel.updateOne(
@@ -442,10 +569,15 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<{ handled
 }
 
 /** Fallback for missed webhooks: ask Paystack directly, then apply. */
-export async function verifyAndApply(reference: string): Promise<PublicCharge> {
+export async function verifyAndApply(
+  actor: AccessTokenPayload,
+  reference: string,
+): Promise<PublicCharge> {
   assertPaymentsConfigured();
   const charge = await PaystackChargeModel.findOne({ reference });
   if (!charge) throw new AppError('NOT_FOUND', 'Charge not found', 404);
+  // Applying a charge moves money into an account — same lock as initiating one.
+  await assertCanActOnCustomer(actor, charge.customerId);
 
   if (charge.executionStatus !== 'applied') {
     const verification = await verifyTransaction(reference);
@@ -480,5 +612,7 @@ export async function verifyAndApply(reference: string): Promise<PublicCharge> {
       );
     }
   }
-  return getCharge(reference);
+  const refreshed = await PaystackChargeModel.findOne({ reference });
+  if (!refreshed) throw new AppError('NOT_FOUND', 'Charge not found', 404);
+  return toPublicCharge(refreshed);
 }

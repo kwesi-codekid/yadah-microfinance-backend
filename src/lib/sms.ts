@@ -44,8 +44,11 @@ async function callGateway(to: string, text: string): Promise<GatewayResult> {
   }
 }
 
+/** Codes that are worthless once stale — never worth an SMS on late delivery. */
+const OTP_TEMPLATES = new Set(['login-otp', 'password-reset-otp', 'portal-login-otp']);
+
 async function attemptSend(doc: HydratedDocument<SmsLog>): Promise<void> {
-  if (doc.template === 'login-otp' && Date.now() - doc.createdAt.getTime() > OTP_FRESHNESS_MS) {
+  if (OTP_TEMPLATES.has(doc.template) && Date.now() - doc.createdAt.getTime() > OTP_FRESHNESS_MS) {
     doc.status = 'failed';
     doc.lastError = 'expired before send';
     await doc.save();
