@@ -7,6 +7,7 @@ import { savingsPaths } from '../modules/savings/savings.openapi.js';
 import { uploadPaths } from '../modules/uploads/uploads.openapi.js';
 import { loanPaths } from '../modules/loans/loans.openapi.js';
 import { reportPaths } from '../modules/reports/reports.openapi.js';
+import { dashboardPaths } from '../modules/dashboard/dashboard.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
@@ -59,6 +60,13 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
         description:
           'Small 1k–20k / big to 50k GHS · flat 10/20/30% by duration · escalation on original principal · office only',
       },
+      {
+        name: 'Dashboard',
+        description:
+          'Everything the office dashboard screen reads: headline KPIs, bucketed cash ' +
+          'series for the charts, standing alerts, and a recent-activity window. JSON only ' +
+          '— exports live under Reports.',
+      },
       { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
       {
         name: 'Hire Purchase',
@@ -83,6 +91,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...uploadPaths,
       ...loanPaths,
       ...reportPaths,
+      ...dashboardPaths,
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,

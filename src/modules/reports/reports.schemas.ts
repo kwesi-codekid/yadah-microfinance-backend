@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { TXN_MODULES } from '../../domain/transactions.js';
-import { exportFormat, objectId, pagination } from '../../schemas/common.js';
+import { booleanFlag, exportFormat, objectId, pagination } from '../../schemas/common.js';
 
 const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -35,6 +35,12 @@ export const transactionsQuery = pagination
     to: isoDay.optional(),
     module: z.enum(TXN_MODULES).optional(),
     customerId: objectId.optional(),
+    /**
+     * Include Paystack charges that have not been applied yet. Off by default:
+     * these rows are money that has not moved, and they are excluded from
+     * `totals` even when shown.
+     */
+    includePending: booleanFlag,
     format: exportFormat,
   })
   .check((ctx) => {

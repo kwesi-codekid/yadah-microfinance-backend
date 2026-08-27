@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { connectDb, disconnectDb } from '../../src/lib/db.js';
 import {
   CustomerModel,
+  HpAgreementModel,
   HpItemModel,
   HpSaleModel,
   LoanModel,
@@ -29,6 +30,7 @@ export async function setupDb(): Promise<void> {
       SusuAccountModel,
       SusuDepositModel,
       HpItemModel,
+      HpAgreementModel,
       HpSaleModel,
       SavingsAccountModel,
       SavingsTxnModel,

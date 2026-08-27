@@ -1,6 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
-import { generateAccountNumber, SUSU_ACCOUNT_DIGITS } from '../../lib/account-number.js';
+import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -183,14 +183,15 @@ export async function openAccount(
   for (let attempt = 0; ; attempt++) {
     try {
       account = await SusuAccountModel.create({
-        accountNumber: generateAccountNumber(SUSU_ACCOUNT_DIGITS),
+        accountNumber: await nextAccountNumber('SU'),
         customerId,
         dailyAmount,
         openedById: new Types.ObjectId(actor.sub),
       });
       break;
     } catch (err) {
-      // Rare random collision on the unique account number — regenerate.
+      // Sequential numbers shouldn't collide, but a concurrent migration or a
+      // stale counter could — take the next one rather than fail the opening.
       if (err instanceof MongoServerError && err.code === 11000 && attempt < 5) continue;
       throw err;
     }

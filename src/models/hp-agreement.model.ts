@@ -11,6 +11,11 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
  */
 export interface HpAgreement extends TrashFields {
   _id: Types.ObjectId;
+  /**
+   * `HP` + YYMM + 4-digit monthly sequence, e.g. HP26080001. Optional because
+   * agreements predating the scheme have none until the migration backfills them.
+   */
+  accountNumber?: string;
   customerId: Types.ObjectId;
   itemId: Types.ObjectId;
   itemSnapshot: {
@@ -55,6 +60,8 @@ export interface HpAgreement extends TrashFields {
 
 const hpAgreementSchema = new Schema<HpAgreement>(
   {
+    // Sparse: pre-scheme agreements carry no number until the migration runs.
+    accountNumber: { type: String, unique: true, sparse: true, match: /^HP\d{8}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     itemId: { type: Schema.Types.ObjectId, ref: 'HpItem', required: true },
     itemSnapshot: {

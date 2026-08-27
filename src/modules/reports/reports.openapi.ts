@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
-import { TXN_MODULES, TXN_TYPES } from '../../domain/transactions.js';
+import { TXN_MODULES, TXN_STATUSES, TXN_TYPES } from '../../domain/transactions.js';
 import { errorResponse, jsonResponse } from '../../openapi/shared.js';
 import { formatOnlyQuery, rangeQuery, transactionsQuery } from './reports.schemas.js';
 
@@ -20,6 +20,14 @@ export const unifiedTransaction = z
       ),
     amount: z.number().int().describe('Integer pesewas'),
     fee: z.number().int().describe('Integer pesewas (savings withdrawal / transfer fee)'),
+    status: z
+      .enum(TXN_STATUSES)
+      .describe(
+        "'completed' for every ledger row — the modules only write once money has moved. " +
+          "'pending' and 'failed' appear only when includePending=true, and only for " +
+          'Paystack charges not yet applied: pending is awaiting confirmation, failed is ' +
+          'money Paystack took that could not be posted. Neither is counted in totals.',
+      ),
     channel: z.string().nullable(),
     detail: z
       .string()
@@ -28,9 +36,24 @@ export const unifiedTransaction = z
     customerId: z.string(),
     customerName: z.string(),
     ref: z.object({
-      kind: z.enum(['susu-account', 'savings-account', 'loan', 'hp-agreement', 'transfer']),
+      kind: z.enum([
+        'susu-account',
+        'savings-account',
+        'loan',
+        'hp-agreement',
+        'hp-sale',
+        'transfer',
+      ]),
       id: z.string(),
-      accountNumber: z.string().optional().describe('Present for susu/savings accounts'),
+      accountNumber: z
+        .string()
+        .optional()
+        .describe(
+          'PREFIX + YY + MM + 4-digit monthly sequence, e.g. SU26080001 (SU susu, ' +
+            'SV savings, LN loan, HP hire purchase). Susu and savings accounts opened ' +
+            'before this scheme keep their legacy all-digit numbers (6 and 10 digits). ' +
+            'Absent on outright sales and transfers, which are not accounts.',
+        ),
     }),
     balanceAfter: z.number().int().optional().describe('Savings rows only: running balance'),
     recordedById: z.string().nullable(),
@@ -119,8 +142,11 @@ export const reportPaths: ZodOpenApiPathsObject = {
   '/reports/dashboard': {
     get: {
       tags: ['Reports'],
-      summary: 'Live dashboard metrics: today’s cash, month revenue, portfolio position',
+      deprecated: true,
+      summary: 'DEPRECATED — use GET /dashboard/summary',
       description:
+        'Kept so existing callers keep working. `GET /dashboard/summary` returns this ' +
+        'payload plus the headline `kpis` block and yesterday’s comparison figure.\n\n' +
         "Today's cash in/out by source (internal transfers excluded), month-to-date " +
         'revenue (susu commission + savings fees + outright-sale margin), and the ' +
         'live portfolio position ' +
@@ -142,7 +168,11 @@ export const reportPaths: ZodOpenApiPathsObject = {
         '(defaults to the last 30 days). Optional module and customerId filters. ' +
         'A transfer appears as its per-module legs plus the transfer row itself, all ' +
         'marked direction=internal, so totals count only real cash movement. CSV ' +
-        'export ignores pagination and is capped at 10,000 rows.' +
+        'export ignores pagination and is capped at 10,000 rows.\n\n' +
+        'Set `includePending=true` to also show Paystack charges that have not been ' +
+        'applied yet — money still in flight. Those rows carry `status: "pending"` (or ' +
+        '`"failed"` when Paystack took the money but it could not be posted) and are ' +
+        'never counted in `totals`.' +
         csvNote,
       security,
       requestParams: { query: transactionsQuery },

@@ -99,6 +99,15 @@ export function fromToIssue(v: { from?: string | undefined; to?: string | undefi
   return null;
 }
 
+/**
+ * A boolean query-string flag. `z.coerce.boolean()` is not usable here: it
+ * follows JS truthiness, so the string 'false' would parse as true.
+ */
+export const booleanFlag = z
+  .enum(['true', 'false'])
+  .default('false')
+  .transform((v) => v === 'true');
+
 /** Listing/report download format. */
 export const exportFormat = z.enum(['json', 'csv', 'xlsx']).default('json');
 export type ExportFormat = z.infer<typeof exportFormat>;

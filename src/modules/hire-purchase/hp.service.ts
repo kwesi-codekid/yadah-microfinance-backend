@@ -1,4 +1,5 @@
 import mongoose, { Types } from 'mongoose';
+import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
@@ -415,6 +416,8 @@ export async function hpEligibility(customerId: Types.ObjectId): Promise<HpEligi
 
 export interface PublicHpAgreement {
   id: string;
+  /** HP + YYMM + sequence. Absent on agreements predating the numbering scheme. */
+  accountNumber?: string;
   customerId: string;
   customerName?: string;
   item: { name: string; description?: string; sellingPrice: number };
@@ -448,6 +451,7 @@ export function remainingOn(a: HpAgreement): number {
 function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
   return {
     id: a._id.toHexString(),
+    ...(a.accountNumber !== undefined ? { accountNumber: a.accountNumber } : {}),
     customerId: a.customerId.toHexString(),
     item: {
       name: a.itemSnapshot.name,
@@ -518,6 +522,9 @@ export async function createAgreement(
   validatePricing(item.costPrice, item.sellingPrice);
   const { depositRequired, financedAmount } = computeDepositSplit(item.sellingPrice);
   const config = await getHpConfig();
+  // Reserved before the session opens — the counter must not join the money
+  // transaction (see lib/account-number.ts).
+  const accountNumber = await nextAccountNumber('HP');
 
   const session = await mongoose.startSession();
   let agreement!: HpAgreement;
@@ -535,6 +542,7 @@ export async function createAgreement(
       const [created] = await HpAgreementModel.create(
         [
           {
+            accountNumber,
             customerId: customer._id,
             itemId: item._id,
             itemSnapshot: {

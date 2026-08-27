@@ -11,6 +11,7 @@ import { savingsRouter } from './modules/savings/savings.routes.js';
 import { uploadsRouter } from './modules/uploads/uploads.routes.js';
 import { loansRouter } from './modules/loans/loans.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
+import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { hpRouter } from './modules/hire-purchase/hp.routes.js';
 import { transfersRouter } from './modules/transfers/transfers.routes.js';
 import { reconciliationRouter } from './modules/reconciliation/reconciliation.routes.js';
@@ -48,6 +49,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/uploads', uploadsRouter);
   app.use('/api/v1/loans', loansRouter);
   app.use('/api/v1/reports', reportsRouter);
+  app.use('/api/v1/dashboard', dashboardRouter);
   app.use('/api/v1/hire-purchase', hpRouter);
   app.use('/api/v1/transfers', transfersRouter);
   app.use('/api/v1/reconciliation', reconciliationRouter);

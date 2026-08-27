@@ -10,6 +10,11 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
  */
 export interface Loan extends TrashFields {
   _id: Types.ObjectId;
+  /**
+   * `LN` + YYMM + 4-digit monthly sequence, e.g. LN26080001. Optional because
+   * loans predating the scheme have none until the migration backfills them.
+   */
+  accountNumber?: string;
   customerId: Types.ObjectId;
   tier: 'small' | 'big';
   principal: number; // pesewas, never changes
@@ -36,6 +41,8 @@ export interface Loan extends TrashFields {
 
 const loanSchema = new Schema<Loan>(
   {
+    // Sparse: pre-scheme loans carry no number until the migration runs.
+    accountNumber: { type: String, unique: true, sparse: true, match: /^LN\d{8}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     tier: { type: String, enum: ['small', 'big'], required: true },
     principal: { ...moneyField, immutable: true },

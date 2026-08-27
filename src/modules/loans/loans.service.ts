@@ -1,4 +1,5 @@
 import mongoose, { Types } from 'mongoose';
+import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
@@ -87,6 +88,8 @@ export async function putLoanConfig(
 
 export interface PublicLoan {
   id: string;
+  /** LN + YYMM + sequence. Absent on loans predating the numbering scheme. */
+  accountNumber?: string;
   customerId: string;
   customerName?: string;
   tier: 'small' | 'big';
@@ -112,6 +115,7 @@ export interface PublicLoan {
 export function toPublicLoan(l: Loan): PublicLoan {
   return {
     id: l._id.toHexString(),
+    ...(l.accountNumber !== undefined ? { accountNumber: l.accountNumber } : {}),
     customerId: l.customerId.toHexString(),
     tier: l.tier,
     principal: l.principal,
@@ -293,6 +297,7 @@ export async function applyForLoan(
   const ratePercent = config.rates[durationMonths];
   const interestAmount = computeInterest(principal, ratePercent);
   const loan = await LoanModel.create({
+    accountNumber: await nextAccountNumber('LN'),
     customerId,
     tier,
     principal,

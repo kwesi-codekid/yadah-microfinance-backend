@@ -12,7 +12,7 @@ import {
   type RangeQuery,
   type TransactionsQuery,
 } from './reports.schemas.js';
-import * as dashboardService from './dashboard.service.js';
+import * as dashboardService from '../dashboard/dashboard.service.js';
 import * as reportsService from './reports.service.js';
 import * as transactionsService from './transactions.service.js';
 
@@ -25,7 +25,8 @@ reportsRouter.get('/workers', requireRole('admin'), (_req, res) => {
   res.json({ workers: workerStatuses() });
 });
 
-// JSON only — the nested payload doesn't flatten to a meaningful CSV.
+// Deprecated alias for GET /dashboard/summary, kept so anything already wired
+// to this path keeps working. New callers should use the dashboard group.
 reportsRouter.get('/dashboard', (_req, res, next) => {
   dashboardService
     .dashboardMetrics()

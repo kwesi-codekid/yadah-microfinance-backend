@@ -32,6 +32,23 @@ export type TxnModule = (typeof TXN_MODULES)[number];
 
 export type TxnDirection = 'in' | 'out' | 'internal';
 
+/**
+ * Whether the money behind a row has actually moved.
+ *
+ * Every record written by the ledger is `completed` — the modules only write
+ * once cash is in hand or a webhook has confirmed it. The other two states
+ * exist solely for Paystack charges, which live in their own collection until
+ * they are applied:
+ *   pending — initiated, Paystack has not confirmed (or is being applied now)
+ *   failed  — Paystack took the money but it could not be applied to the
+ *             target account; the office has to resolve it
+ *
+ * Only `completed` rows count towards cash totals. Pending and failed rows are
+ * opt-in (`includePending`) and never reach the dashboard's cash figures.
+ */
+export const TXN_STATUSES = ['completed', 'pending', 'failed'] as const;
+export type TxnStatus = (typeof TXN_STATUSES)[number];
+
 export function moduleOf(type: TxnType): TxnModule {
   switch (type) {
     case 'susu-deposit':

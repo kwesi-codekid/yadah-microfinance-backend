@@ -6,6 +6,7 @@ import {
   TXN_MODULES,
   type TxnDirection,
   type TxnModule,
+  type TxnStatus,
   type TxnType,
 } from '../../domain/transactions.js';
 import { susuBalance } from '../../domain/susu.js';
@@ -54,6 +55,8 @@ interface RawRow {
   detail?: string | null;
   recordedById?: Types.ObjectId | null;
   balanceAfter?: number;
+  /** Absent on ledger rows, which are completed by definition. */
+  status?: TxnStatus;
   createdAt: Date;
 }
 
@@ -64,6 +67,12 @@ export interface UnifiedTxnRow {
   direction: TxnDirection;
   amount: number; // pesewas
   fee: number; // pesewas
+  /**
+   * 'completed' for every ledger row. 'pending'/'failed' appear only when
+   * includePending is set, and only for Paystack charges that have not been
+   * applied — money that has not moved yet, so never counted in totals.
+   */
+  status: TxnStatus;
   channel: string | null;
   /** Type-specific discriminator: payout destination, repayment source, transfer route. */
   detail: string | null;
@@ -96,11 +105,16 @@ interface Branch {
  * One branch per source collection, each filtered to the window and projected
  * to the RawRow shape. Loan disbursements have no transaction document, so
  * they are synthesized from loans matched on disbursedAt.
+ *
+ * `includePending` adds unapplied Paystack charges — money that has not landed
+ * yet. Off by default, and never set for totals: including it would report
+ * cash the business does not hold.
  */
 function buildBranches(
   window: { start: Date; end: Date },
   customerId?: Types.ObjectId,
   modules?: TxnModule[],
+  includePending = false,
 ): Branch[] {
   const createdAt = { $gte: window.start, $lt: window.end };
   const byCustomer = customerId ? { customerId } : {};
@@ -304,7 +318,74 @@ function buildBranches(
     });
   }
 
+  // Charge kinds belonging to each module, so a filtered feed does not leak
+  // pending rows from modules the caller excluded.
+  const pendingKinds = [
+    ...(wanted.has('susu') ? ['susu-deposit'] : []),
+    ...(wanted.has('savings') ? ['savings-deposit'] : []),
+    ...(wanted.has('loans') ? ['loan-repayment'] : []),
+    ...(wanted.has('hire-purchase') ? ['hp-deposit', 'hp-installment', 'hp-redemption'] : []),
+  ];
+  if (includePending && pendingKinds.length > 0) {
+    branches.push({
+      coll: 'paystack-charges',
+      stages: [
+        {
+          $match: {
+            createdAt,
+            ...byCustomer,
+            kind: { $in: pendingKinds },
+            // Applied charges are already in the feed as the deposit/repayment
+            // they created — including them here would double-count.
+            $or: [
+              { status: 'pending' },
+              { status: 'success', executionStatus: { $in: ['pending', 'failed'] } },
+            ],
+          },
+        },
+        {
+          $project: {
+            // ChargeKind is a subset of TxnType, so it maps straight across.
+            type: '$kind',
+            amount: 1,
+            fee: { $literal: 0 },
+            customerId: 1,
+            refId: '$targetId',
+            refKind: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ['$kind', 'susu-deposit'] }, then: 'susu-account' },
+                  { case: { $eq: ['$kind', 'savings-deposit'] }, then: 'savings-account' },
+                  { case: { $eq: ['$kind', 'loan-repayment'] }, then: 'loan' },
+                ],
+                default: 'hp-agreement',
+              },
+            },
+            channel: { $literal: 'paystack' },
+            detail: { $literal: null },
+            // Money Paystack took but that could not be applied needs office
+            // action — it is not merely waiting.
+            status: {
+              $cond: [{ $eq: ['$executionStatus', 'failed'] }, 'failed', 'pending'],
+            },
+            recordedById: '$initiatedById',
+            createdAt: 1,
+          },
+        },
+      ],
+    });
+  }
+
   return branches;
+}
+
+/**
+ * Every money row in a window, as aggregation stages to prepend to a pipeline
+ * that runs on SusuDepositModel. Shared with the dashboard series so both read
+ * the same definition of a transaction — completed ledger rows only.
+ */
+export function buildFeedUnion(window: { start: Date; end: Date }): PipelineStage[] {
+  return unionStages(buildBranches(window));
 }
 
 /**
@@ -327,23 +408,33 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   const userIds = new Set<string>();
   const susuIds = new Set<string>();
   const savingsIds = new Set<string>();
+  const loanIds = new Set<string>();
+  const hpIds = new Set<string>();
   for (const r of raw) {
     customerIds.add(r.customerId.toHexString());
     if (r.recordedById) userIds.add(r.recordedById.toHexString());
     if (r.refKind === 'susu-account') susuIds.add(r.refId.toHexString());
     if (r.refKind === 'savings-account') savingsIds.add(r.refId.toHexString());
+    if (r.refKind === 'loan') loanIds.add(r.refId.toHexString());
+    if (r.refKind === 'hp-agreement') hpIds.add(r.refId.toHexString());
   }
 
-  const [customers, users, susuAccounts, savingsAccounts] = await Promise.all([
+  const [customers, users, susuAccounts, savingsAccounts, loans, agreements] = await Promise.all([
     CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
     UserModel.find({ _id: { $in: [...userIds] } }, { name: 1 }),
     SusuAccountModel.find({ _id: { $in: [...susuIds] } }, { accountNumber: 1 }),
     SavingsAccountModel.find({ _id: { $in: [...savingsIds] } }, { accountNumber: 1 }),
+    LoanModel.find({ _id: { $in: [...loanIds] } }, { accountNumber: 1 }),
+    HpAgreementModel.find({ _id: { $in: [...hpIds] } }, { accountNumber: 1 }),
   ]);
   const customerNames = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   const userNames = new Map(users.map((u) => [u._id.toHexString(), u.name]));
+  // Loans and HP agreements predating the numbering scheme have none — those
+  // rows simply carry no accountNumber, exactly as before.
   const accountNumbers = new Map(
-    [...susuAccounts, ...savingsAccounts].map((a) => [a._id.toHexString(), a.accountNumber]),
+    [...susuAccounts, ...savingsAccounts, ...loans, ...agreements].flatMap((a) =>
+      a.accountNumber === undefined ? [] : [[a._id.toHexString(), a.accountNumber] as const],
+    ),
   );
 
   return raw.map((r) => {
@@ -358,6 +449,7 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
       direction: directionOf(r.type, channel, detail),
       amount: r.amount,
       fee: r.fee ?? 0,
+      status: r.status ?? 'completed',
       channel,
       detail,
       customerId: r.customerId.toHexString(),
@@ -393,7 +485,13 @@ function emptyTotals(): TxnTotals {
 }
 
 interface SummaryGroup {
-  _id: { type: TxnType; channel: string | null; detail: string | null };
+  _id: {
+    type: TxnType;
+    channel: string | null;
+    detail: string | null;
+    /** Undefined on ledger rows; only pending Paystack rows carry a value. */
+    status?: TxnStatus | null;
+  };
   count: number;
   amount: number;
   fee: number;
@@ -402,6 +500,11 @@ interface SummaryGroup {
 function totalsFromGroups(groups: SummaryGroup[]): TxnTotals {
   const totals = emptyTotals();
   for (const g of groups) {
+    // Pending and failed Paystack rows are money that has not moved — they
+    // appear in the feed but must never reach a cash total.
+    if (g._id.status !== null && g._id.status !== undefined && g._id.status !== 'completed') {
+      continue;
+    }
     const direction = directionOf(g._id.type, g._id.channel, g._id.detail);
     totals[direction].count += g.count;
     totals[direction].amount += g.amount;
@@ -435,7 +538,7 @@ export async function transactionGroups(from?: string, to?: string): Promise<Txn
     ...unionStages(buildBranches(window)),
     {
       $group: {
-        _id: { type: '$type', channel: '$channel', detail: '$detail' },
+        _id: { type: '$type', channel: '$channel', detail: '$detail', status: '$status' },
         count: { $sum: 1 },
         amount: { $sum: '$amount' },
         fee: { $sum: '$fee' },
@@ -474,6 +577,7 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
     window,
     query.customerId,
     query.module ? [query.module] : undefined,
+    query.includePending,
   );
 
   const [facet] = await SusuDepositModel.aggregate<{
@@ -490,7 +594,7 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
         groups: [
           {
             $group: {
-              _id: { type: '$type', channel: '$channel', detail: '$detail' },
+              _id: { type: '$type', channel: '$channel', detail: '$detail', status: '$status' },
               count: { $sum: 1 },
               amount: { $sum: '$amount' },
               fee: { $sum: '$fee' },
@@ -521,6 +625,7 @@ export async function transactionsCsvRows(
     window,
     query.customerId,
     query.module ? [query.module] : undefined,
+    query.includePending,
   );
   const raw = await SusuDepositModel.aggregate<RawRow>([
     ...unionStages(branches),
@@ -536,6 +641,7 @@ function toCsvRow(r: UnifiedTxnRow): Record<string, unknown> {
     module: r.module,
     type: r.type,
     direction: r.direction,
+    status: r.status,
     amount: r.amount,
     fee: r.fee,
     channel: r.channel ?? '',

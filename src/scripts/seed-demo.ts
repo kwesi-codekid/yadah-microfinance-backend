@@ -13,11 +13,7 @@
  */
 import bcrypt from 'bcrypt';
 import { connectDb, disconnectDb } from '../lib/db.js';
-import {
-  generateAccountNumber,
-  SAVINGS_ACCOUNT_DIGITS,
-  SUSU_ACCOUNT_DIGITS,
-} from '../lib/account-number.js';
+import { nextAccountNumber } from '../lib/account-number.js';
 import { accraDay } from '../lib/time.js';
 import { buildSchedule, computeInterest, addMonthsClamped } from '../domain/loans.js';
 import { SUSU_CYCLE_DEPOSITS } from '../domain/susu.js';
@@ -178,7 +174,8 @@ async function seed(): Promise<void> {
     const openedAt = daysAgo(target.progress + 4);
     const [account] = await SusuAccountModel.create([
       {
-        accountNumber: generateAccountNumber(SUSU_ACCOUNT_DIGITS),
+        // Numbered by the month the account was (back)dated to, like real data.
+        accountNumber: await nextAccountNumber('SU', openedAt),
         customerId: target.customer._id,
         dailyAmount: target.daily,
         depositsCount: target.progress,
@@ -226,15 +223,15 @@ async function seed(): Promise<void> {
     customers.slice(8, 17).map((c, i) => ({ customer: c, balance: 20_000 + i * 35_000 })),
   );
   for (const [i, target] of savingsTargets.entries()) {
+    const openedDaysAgo = 40 + i;
     const [account] = await SavingsAccountModel.create([
       {
-        accountNumber: generateAccountNumber(SAVINGS_ACCOUNT_DIGITS),
+        accountNumber: await nextAccountNumber('SV', daysAgo(openedDaysAgo)),
         customerId: target.customer._id,
         balance: target.balance,
         openedById: manager!._id,
       },
     ]);
-    const openedDaysAgo = 40 + i;
     await SavingsAccountModel.updateOne(
       { _id: account!._id },
       { $set: { createdAt: daysAgo(openedDaysAgo) } },
@@ -294,6 +291,7 @@ async function seed(): Promise<void> {
     const totalDue = principal + interest;
     if (fixture.state === 'pending') {
       await LoanModel.create({
+        accountNumber: await nextAccountNumber('LN', daysAgo(1)),
         customerId: fixture.customer._id,
         tier: 'small',
         principal,
@@ -316,6 +314,7 @@ async function seed(): Promise<void> {
       fixture.state === 'arrears' ? computeInterest(principal, 30) : interest;
     const [loan] = await LoanModel.create([
       {
+        accountNumber: await nextAccountNumber('LN', start),
         customerId: fixture.customer._id,
         tier: 'small',
         principal,

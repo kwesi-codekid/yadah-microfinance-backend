@@ -8,7 +8,8 @@ import { moneyField, optionalMoneyField, trashFields, type TrashFields } from '.
  */
 export interface SusuAccount extends TrashFields {
   _id: Types.ObjectId;
-  /** 6-digit randomized account number, unique across susu accounts. */
+  /** `SU` + YYMM + 4-digit monthly sequence, e.g. SU26080001. Accounts opened
+   *  before the scheme keep their legacy 6 random digits. */
   accountNumber: string;
   customerId: Types.ObjectId;
   dailyAmount: number; // pesewas, immutable
@@ -42,7 +43,12 @@ export interface SusuAccount extends TrashFields {
 
 const susuAccountSchema = new Schema<SusuAccount>(
   {
-    accountNumber: { type: String, required: true, unique: true, match: /^\d{6}$/ },
+    accountNumber: {
+      type: String,
+      required: true,
+      unique: true,
+      match: /^(SU\d{8}|\d{6})$/,
+    },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     dailyAmount: { ...moneyField, immutable: true },
     depositsCount: { type: Number, default: 0, min: 0, max: 31 },

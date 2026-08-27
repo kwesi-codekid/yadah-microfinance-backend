@@ -37,4 +37,5 @@ export {
 export { PushSubscriptionModel, type PushSubscription } from './push-subscription.model.js';
 export { SmsLogModel, type SmsLog } from './sms-log.model.js';
 export { AuditLogModel, type AuditLog } from './audit-log.model.js';
+export { CounterModel, type Counter } from './counter.model.js';
 export { CHANNELS, ROLES, type Channel, type Role } from './shared.js';

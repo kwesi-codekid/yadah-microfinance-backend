@@ -11,7 +11,7 @@ import {
   SusuPayoutModel,
   TransferModel,
 } from '../../src/models/index.js';
-import { dashboardMetrics } from '../../src/modules/reports/dashboard.service.js';
+import { dashboardMetrics } from '../../src/modules/dashboard/dashboard.service.js';
 import { makeCustomer, setupDb, teardownDb } from './helpers.js';
 
 beforeAll(setupDb);

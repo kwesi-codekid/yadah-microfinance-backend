@@ -12,7 +12,8 @@ export type SavingsAccountType = (typeof SAVINGS_ACCOUNT_TYPES)[number];
 
 export interface SavingsAccount extends TrashFields {
   _id: Types.ObjectId;
-  /** 10-digit randomized account number, unique across savings accounts. */
+  /** `SV` + YYMM + 4-digit monthly sequence, e.g. SV26080001. Accounts opened
+   *  before the scheme keep their legacy 10 random digits. */
   accountNumber: string;
   customerId: Types.ObjectId;
   /**
@@ -32,7 +33,12 @@ export interface SavingsAccount extends TrashFields {
 
 const savingsAccountSchema = new Schema<SavingsAccount>(
   {
-    accountNumber: { type: String, required: true, unique: true, match: /^\d{10}$/ },
+    accountNumber: {
+      type: String,
+      required: true,
+      unique: true,
+      match: /^(SV\d{8}|\d{10})$/,
+    },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     accountType: { type: String, enum: SAVINGS_ACCOUNT_TYPES, default: 'standard' },
     balance: { ...moneyField, default: 0 },
