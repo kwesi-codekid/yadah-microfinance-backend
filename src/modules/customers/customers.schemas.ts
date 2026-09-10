@@ -89,32 +89,47 @@ export function phoneClashes(v: {
 }
 
 /**
+ * What each profile field means, before any wrapper. The forms take these
+ * through `clearable` below; the bulk import takes them plain, because
+ * `clearable` is a union and a union reports "Invalid input" instead of the
+ * rule that was actually broken — which is the only thing a preview screen
+ * has to say.
+ */
+export const profileRules = {
+  fullName: z.string().min(2).max(120).trim(),
+  dateOfBirth: z.coerce
+    .date()
+    .refine(
+      (d) => isAtLeastYearsOld(d, MIN_CUSTOMER_AGE_YEARS),
+      `Customer must be at least ${String(MIN_CUSTOMER_AGE_YEARS)} years old`,
+    ),
+  gender: z.enum(['male', 'female']),
+  nationality: z.string().min(2).max(60).trim(),
+  maritalStatus: z.enum(['single', 'married', 'other']),
+  residentialAddress: z.string().min(2).max(300).trim(),
+  occupation: z.string().min(2).max(120).trim(),
+};
+
+/**
  * Every optional field is `clearable`: registration and edit forms submit a
  * blank input as "" rather than omitting it, and the office must be able to
  * wipe a wrong alternate number instead of being stuck with it.
  */
-const profileFields = {
+export const profileFields = {
   // Personal
-  fullName: z.string().min(2).max(120).trim(),
-  dateOfBirth: clearable(
-    z.coerce
-      .date()
-      .refine(
-        (d) => isAtLeastYearsOld(d, MIN_CUSTOMER_AGE_YEARS),
-        `Customer must be at least ${String(MIN_CUSTOMER_AGE_YEARS)} years old`,
-      ),
-  ).optional(),
-  gender: clearable(z.enum(['male', 'female'])).optional(),
-  nationality: clearable(z.string().min(2).max(60).trim()).optional(),
-  maritalStatus: clearable(z.enum(['single', 'married', 'other'])).optional(),
+  fullName: profileRules.fullName,
+  dateOfBirth: clearable(profileRules.dateOfBirth).optional(),
+  gender: clearable(profileRules.gender).optional(),
+  nationality: clearable(profileRules.nationality).optional(),
+  maritalStatus: clearable(profileRules.maritalStatus).optional(),
   // Contact
-  residentialAddress: clearable(z.string().min(2).max(300).trim()).optional(),
+  residentialAddress: clearable(profileRules.residentialAddress).optional(),
   phone: ghanaPhone,
   altPhone: clearable(ghanaPhone).optional(),
   // Identification
   identification: clearable(identification).optional(),
   // Occupation
-  occupation: clearable(z.string().min(2).max(120).trim()).optional(),
+  occupation: clearable(profileRules.occupation).optional(),
   // Next of kin
   nextOfKin: clearable(nextOfKin).optional(),
   // Attachments — URLs minted by POST /uploads/images. The photo is required at
@@ -205,6 +220,61 @@ export type ListCustomersQuery = z.infer<typeof listCustomersQuery>;
 
 export const customerIdParams = z.object({ id: objectId });
 export type CustomerIdParams = z.infer<typeof customerIdParams>;
+
+/**
+ * One customer as a bulk import produces them. Every rule is borrowed from
+ * `profileFields`, so a spreadsheet is held to exactly what the registration
+ * form is held to — except the photo, which no column can carry.
+ */
+export const importedCustomer = z
+  .object({
+    fullName: profileRules.fullName,
+    phone: ghanaPhone,
+    dateOfBirth: profileRules.dateOfBirth.optional(),
+    gender: profileRules.gender.optional(),
+    maritalStatus: profileRules.maritalStatus.optional(),
+    nationality: profileRules.nationality.optional(),
+    occupation: profileRules.occupation.optional(),
+    residentialAddress: profileRules.residentialAddress.optional(),
+    altPhone: ghanaPhone.optional(),
+    identification: identification.optional(),
+    nextOfKin: nextOfKin.optional(),
+    assignedCollectorId: objectId,
+  })
+  .check((ctx) => {
+    for (const clash of phoneClashes({
+      phone: ctx.value.phone,
+      altPhone: ctx.value.altPhone,
+      nextOfKinPhone: ctx.value.nextOfKin?.phone,
+    })) {
+      ctx.issues.push({
+        code: 'custom',
+        message: PHONES_DISTINCT_MESSAGE,
+        path: clash === 'altPhone' ? ['altPhone'] : ['nextOfKin', 'phone'],
+        input: clash === 'altPhone' ? ctx.value.altPhone : ctx.value.nextOfKin?.phone,
+      });
+    }
+  });
+export type ImportedCustomer = z.infer<typeof importedCustomer>;
+
+/**
+ * The corrected sheet coming back from the preview. Cells stay strings — the
+ * office edits text, and the server is the one that decides what it means, so
+ * a bad cell is reported against its column instead of rejecting the request.
+ */
+export const importRowsBody = z.object({
+  rows: z
+    .array(
+      z.object({
+        /** The sheet row this came from, so a failure names the right line. */
+        row: z.number().int().min(1).optional(),
+        values: z.record(z.string(), z.string()),
+      }),
+    )
+    .min(1, 'No rows were sent'),
+});
+export type ImportRowsBody = z.infer<typeof importRowsBody>;
+export type ImportRowInput = ImportRowsBody['rows'][number];
 
 export const reassignCollectorBody = z.object({
   collectorId: objectId,

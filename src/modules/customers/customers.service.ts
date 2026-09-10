@@ -167,10 +167,26 @@ async function openCreditCounts(
 
 const ID_DOCUMENT_FIELDS = ['idDocumentFrontUrl', 'idDocumentBackUrl'] as const;
 
+/**
+ * What the service needs to register a customer. Wider than the registration
+ * route's body in one respect: the photo is optional here, because a bulk
+ * import has no column that could carry one. `POST /customers` still insists
+ * on it at its own boundary, so the counter cannot skip it.
+ */
+export type NewCustomerInput = Omit<CreateCustomerBody, 'photoUrl'> & {
+  photoUrl?: string | null;
+};
+
+export interface CreateCustomerOptions {
+  /** Skip the realtime event. A bulk import announces itself once, not per row. */
+  silent?: boolean;
+}
+
 export async function createCustomer(
   actor: AccessTokenPayload,
-  body: CreateCustomerBody,
+  body: NewCustomerInput,
   requestId?: string,
+  options: CreateCustomerOptions = {},
 ): Promise<PublicCustomer> {
   await assertActiveCollector(body.assignedCollectorId);
   const doc: Record<string, unknown> = {
@@ -198,7 +214,9 @@ export async function createCustomer(
     ...(requestId !== undefined ? { requestId } : {}),
   });
   const created = toPublicCustomer(customer);
-  emitAdminEvent('customer.created', { id: created.id, fullName: created.fullName });
+  if (!options.silent) {
+    emitAdminEvent('customer.created', { id: created.id, fullName: created.fullName });
+  }
   return created;
 }
 

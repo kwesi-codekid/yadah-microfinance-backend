@@ -1,23 +1,35 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
+import multer from 'multer';
+import { AppError } from '../../lib/errors.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireAdmin, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
-import { pagination, trashBody, type Pagination, type TrashBody } from '../../schemas/common.js';
+import { z } from 'zod';
+import {
+  exportFormat,
+  pagination,
+  trashBody,
+  type Pagination,
+  type TrashBody,
+} from '../../schemas/common.js';
 import {
   bulkReassignBody,
   createCustomerBody,
   customerIdParams,
+  importRowsBody,
   listCustomersQuery,
   reassignCollectorBody,
   updateCustomerBody,
   type BulkReassignBody,
   type CreateCustomerBody,
   type CustomerIdParams,
+  type ImportRowsBody,
   type ListCustomersQuery,
   type ReassignCollectorBody,
   type UpdateCustomerBody,
 } from './customers.schemas.js';
 import * as customersService from './customers.service.js';
+import * as customersImport from './customers.import.js';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { rangeQuery, type RangeQuery } from '../reports/reports.schemas.js';
 import { customerStatement, statementCsvRows } from '../reports/transactions.service.js';
@@ -75,6 +87,103 @@ customersRouter.post(
     customersService
       .bulkReassignCollector(getAuth(req), body, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+/* ------------------------------------------------------------ bulk import ---
+ * Registered BEFORE /:id so 'import' is never captured as a customer id.
+ *
+ * Three steps, and only the last one writes: take the template, upload the
+ * filled sheet for checking, then send back the rows the office accepted.
+ */
+
+const SHEET_TYPES = new Set([
+  'text/csv',
+  'application/csv',
+  'text/plain',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+]);
+
+const sheetUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const named = /\.(csv|xlsx)$/i.test(file.originalname);
+    if (named || SHEET_TYPES.has(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+    cb(
+      new AppError(
+        'UNSUPPORTED_FILE_TYPE',
+        'Upload a .csv or .xlsx sheet — an older .xls must be saved as .xlsx first',
+        415,
+      ),
+    );
+  },
+});
+
+/** The template is a download, so csv is the sensible default rather than json. */
+const templateQuery = z.object({ format: exportFormat });
+type TemplateQuery = z.infer<typeof templateQuery>;
+
+/** Runs multer and maps its errors into the standard envelope. */
+const acceptSheet: RequestHandler = (req, res, next) => {
+  sheetUpload.single('file')(req, res, (err?: unknown) => {
+    if (err instanceof multer.MulterError) {
+      next(
+        err.code === 'LIMIT_FILE_SIZE'
+          ? new AppError('FILE_TOO_LARGE', 'The sheet must be 5 MB or smaller', 413)
+          : new AppError('UPLOAD_ERROR', err.message, 400),
+      );
+      return;
+    }
+    next(err);
+  });
+};
+
+// The blank sheet, with the headings the importer reads and one example row.
+customersRouter.get(
+  '/import/template',
+  requireOffice,
+  validate({ query: templateQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: TemplateQuery }>(req);
+    sendExport(res, {
+      format: query.format === 'json' ? 'csv' : query.format,
+      filename: 'customer-import-template',
+      payload: null,
+      rows: customersImport.templateRows(),
+      sheet: 'Customers',
+    }).catch(next);
+  },
+);
+
+// Check an uploaded sheet. Writes nothing — the answer is what the preview
+// screen shows, cell by cell, before anyone commits to it.
+customersRouter.post('/import/preview', requireOffice, acceptSheet, (req, res, next) => {
+  if (!req.file) {
+    next(new AppError('VALIDATION_ERROR', 'A "file" field carrying the sheet is required', 400));
+    return;
+  }
+  customersImport
+    .previewImportFile(req.file)
+    .then((preview) => res.json(preview))
+    .catch(next);
+});
+
+// Register the corrected rows. Row by row: what fails comes back with why.
+customersRouter.post(
+  '/import',
+  requireOffice,
+  validate({ body: importRowsBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: ImportRowsBody }>(req);
+    customersImport
+      .importCustomers(getAuth(req), body.rows, req.id as string)
+      .then((result) => res.status(201).json(result))
       .catch(next);
   },
 );

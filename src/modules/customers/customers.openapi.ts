@@ -7,10 +7,12 @@ import { txnTotals, unifiedTransaction } from '../reports/reports.openapi.js';
 import {
   bulkReassignBody,
   createCustomerBody,
+  importRowsBody,
   listCustomersQuery,
   reassignCollectorBody,
   updateCustomerBody,
 } from './customers.schemas.js';
+import { IMPORT_COLUMNS, MAX_IMPORT_ROWS } from './customers.import.js';
 
 const publicCustomer = z
   .object({
@@ -147,7 +149,127 @@ const customerStatement = z
   })
   .meta({ id: 'CustomerStatement' });
 
+const importField = z
+  .enum(IMPORT_COLUMNS.map((c) => c.field) as [string, ...string[]])
+  .describe('The column an issue belongs to');
+
+const rowIssue = z.object({
+  field: importField.nullable().describe('Null when the fault is the row as a whole'),
+  message: z.string(),
+});
+
+const previewRow = z.object({
+  row: z.number().int().describe('The line in the sheet, so a message can name it'),
+  values: z
+    .record(z.string(), z.string())
+    .describe('Every column as text, ready to be corrected and sent back'),
+  assignedCollectorId: z
+    .string()
+    .describe('Resolved from the collector cell; empty when it matched nobody'),
+  issues: z.array(rowIssue),
+});
+
+const importPreview = z
+  .object({
+    rows: z.array(previewRow),
+    unknownHeaders: z.array(z.string()).describe('Headings that matched no column'),
+    collectors: z
+      .array(z.object({ id: z.string(), name: z.string() }))
+      .describe('Active collectors, for correcting a row that named nobody'),
+    counts: z.object({
+      total: z.number().int(),
+      ready: z.number().int(),
+      blocked: z.number().int(),
+    }),
+  })
+  .meta({ id: 'CustomerImportPreview' });
+
+const importOutcome = z
+  .object({
+    created: z.array(z.object({ row: z.number().int(), id: z.string(), fullName: z.string() })),
+    failed: z.array(z.object({ row: z.number().int(), issues: z.array(rowIssue) })),
+    counts: z.object({
+      total: z.number().int(),
+      created: z.number().int(),
+      failed: z.number().int(),
+    }),
+  })
+  .meta({ id: 'CustomerImportOutcome' });
+
+const importColumnList = IMPORT_COLUMNS.map(
+  (c) => `${c.header}${c.required ? ' (required)' : ''}`,
+).join(', ');
+
 export const customerPaths: ZodOpenApiPathsObject = {
+  '/customers/import/template': {
+    get: {
+      tags: ['Customers'],
+      summary: 'Download the blank import sheet (office only)',
+      description:
+        'Headings the importer reads, plus one example row. Columns: ' +
+        `${importColumnList}. Headings are matched on letters and digits only, so ` +
+        'case and spacing do not matter, and a few common alternatives are accepted ' +
+        '(e.g. "Mobile" for Phone). format=csv (default) or xlsx.',
+      security,
+      requestParams: { query: z.object({ format: z.enum(['csv', 'xlsx']).optional() }) },
+      responses: {
+        '200': {
+          description: 'The template',
+          content: { 'text/csv': { schema: { type: 'string' } } },
+        },
+        '403': errorResponse('FORBIDDEN — office only'),
+      },
+    },
+  },
+  '/customers/import/preview': {
+    post: {
+      tags: ['Customers'],
+      summary: 'Check a filled import sheet (office only, writes nothing)',
+      description:
+        'Multipart form with a `file` field carrying a .csv or .xlsx (max 5 MB, ' +
+        `${String(MAX_IMPORT_ROWS)} rows). Every row is held to the same rules a single ` +
+        'registration is, and the findings come back per cell so the office can correct ' +
+        'them before anything is written. Also catches what only the whole file and the ' +
+        'books can answer: a number repeated inside the sheet, or one already on a ' +
+        'customer. NOTHING IS CREATED by this call.\n\n' +
+        'A customer photo is the one thing a sheet cannot carry, so imported customers ' +
+        'arrive without one — it is added at the counter later, as the ID scans are.',
+      security,
+      requestBody: {
+        content: {
+          'multipart/form-data': {
+            schema: z.object({ file: z.string().meta({ format: 'binary' }) }),
+          },
+        },
+      },
+      responses: {
+        '200': jsonResponse('Every row, with what is wrong with it', importPreview),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '413': errorResponse('FILE_TOO_LARGE'),
+        '415': errorResponse('UNSUPPORTED_FILE_TYPE — .csv or .xlsx only'),
+        '422': errorResponse('EMPTY_FILE, NO_KNOWN_COLUMNS, TOO_MANY_ROWS, or UNREADABLE_FILE'),
+      },
+    },
+  },
+  '/customers/import': {
+    post: {
+      tags: ['Customers'],
+      summary: 'Register the corrected rows (office only)',
+      description:
+        'Takes the rows the preview returned, with whatever the office changed. Every ' +
+        'row is checked again — a preview may have sat open while somebody else took a ' +
+        'phone number — and then registered one at a time. A row that fails does not ' +
+        'stop the rest: it comes back in `failed` with its reason, ready to be corrected ' +
+        'and sent again, while the rows that succeeded are simply absent from the retry.',
+      security,
+      requestBody: jsonBody(importRowsBody),
+      responses: {
+        '201': jsonResponse('What was registered and what was not', importOutcome),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '422': errorResponse('EMPTY_IMPORT or TOO_MANY_ROWS'),
+      },
+    },
+  },
   '/customers': {
     post: {
       tags: ['Customers'],
