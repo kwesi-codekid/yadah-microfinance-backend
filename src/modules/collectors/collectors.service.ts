@@ -40,7 +40,6 @@ export interface RoundStop {
   phone: string;
   /** Where to find them, when the record has it. */
   residentialAddress?: string;
-  ghanaPostGps?: string;
   photoUrl?: string;
   susu: {
     accountId: string;
@@ -99,7 +98,6 @@ export async function collectorRound(
       fullName: 1,
       phone: 1,
       residentialAddress: 1,
-      ghanaPostGps: 1,
       photoUrl: 1,
     },
   ).sort({ fullName: 1 });
@@ -169,7 +167,6 @@ export async function collectorRound(
         ...(customer.residentialAddress !== undefined
           ? { residentialAddress: customer.residentialAddress }
           : {}),
-        ...(customer.ghanaPostGps !== undefined ? { ghanaPostGps: customer.ghanaPostGps } : {}),
         ...(customer.photoUrl !== undefined ? { photoUrl: customer.photoUrl } : {}),
         susu,
         totalStillDue,

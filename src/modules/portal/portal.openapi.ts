@@ -31,7 +31,6 @@ const profile = z
     id: z.string(),
     fullName: z.string(),
     phone: z.string(),
-    email: z.string().optional(),
     photoUrl: z.string().optional(),
     status: z.string(),
   })

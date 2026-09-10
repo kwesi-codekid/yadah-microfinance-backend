@@ -96,7 +96,7 @@ describe('paystack charges', () => {
     });
     expect(result.handled).toBe(true);
 
-    const charge = await payments.getCharge(reference);
+    const charge = await payments.getCharge(officer, reference);
     expect(charge.status).toBe('success');
     expect(charge.executionStatus).toBe('applied');
 
@@ -123,7 +123,7 @@ describe('paystack charges', () => {
       event: 'charge.success',
       data: { reference, amount: 1_000, currency: 'GHS', status: 'success' },
     });
-    const charge = await payments.getCharge(reference);
+    const charge = await payments.getCharge(officer, reference);
     expect(charge.executionStatus).toBe('failed');
     expect(await SusuDepositModel.countDocuments({ accountId })).toBe(0);
   });
@@ -136,7 +136,7 @@ describe('paystack charges', () => {
       event: 'charge.success',
       data: { reference, amount: 2_000, currency: 'GHS', status: 'success' },
     });
-    const charge = await payments.getCharge(reference);
+    const charge = await payments.getCharge(officer, reference);
     expect(charge.status).toBe('success');
     expect(charge.executionStatus).toBe('failed');
     expect(charge.failureReason).toContain('ACCOUNT_NOT_ACTIVE');

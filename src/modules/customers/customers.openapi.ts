@@ -20,25 +20,17 @@ const publicCustomer = z
     gender: z.enum(['male', 'female']).optional(),
     nationality: z.string().optional(),
     maritalStatus: z.enum(['single', 'married', 'other']).optional(),
-    mothersMaidenName: z.string().optional(),
     residentialAddress: z.string().optional(),
-    ghanaPostGps: z.string().optional(),
-    postalAddress: z.string().optional(),
     phone: z.string(),
     altPhone: z.string().optional(),
-    email: z.string().optional(),
     identification: z
       .object({
         idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id']),
         idNumber: z.string(),
-        idExpiryDate: z.iso.datetime().optional(),
-        idPlaceOfIssue: z.string().optional(),
       })
       .optional()
       .describe('Optional for susu/savings; loans require a Ghana Card'),
     occupation: z.string().optional(),
-    employerOrBusiness: z.string().optional(),
-    purposeOfAccount: z.string().optional(),
     assignedCollectorId: z
       .string()
       .optional()
@@ -55,11 +47,14 @@ const publicCustomer = z
     idDocumentFrontUrl: z
       .string()
       .optional()
-      .describe('ID front — from POST /uploads/images?kind=document'),
+      .describe(
+        'ID front — from POST /uploads/images?kind=document. Optional on the profile; ' +
+          'both sides must be on file before a loan or HP agreement can be opened',
+      ),
     idDocumentBackUrl: z
       .string()
       .optional()
-      .describe('ID back — from POST /uploads/images?kind=document'),
+      .describe('ID back — from POST /uploads/images?kind=document. Optional, as above'),
     registeredById: z.string(),
     status: z.enum(['active', 'inactive']),
     createdAt: z.iso.datetime(),
@@ -94,7 +89,6 @@ const customerStatement = z
       id: z.string(),
       fullName: z.string(),
       phone: z.string(),
-      email: z.string().nullable(),
       residentialAddress: z.string().nullable(),
     }),
     period: z.object({ from: z.string(), to: z.string() }),
@@ -160,8 +154,9 @@ export const customerPaths: ZodOpenApiPathsObject = {
       summary: 'Register a customer (office only)',
       description:
         'Account creation happens at the office — collectors cannot create customers. ' +
-        'The customer photo and both ID document images (front and back) are required — ' +
-        'upload them via POST /uploads/images first. Phone numbers are accepted as ' +
+        'The customer photo is required — upload it via POST /uploads/images first. The ' +
+        'ID document images (front and back) are optional here, but no loan or hire-purchase ' +
+        'agreement can be opened until both are on file. Phone numbers are accepted as ' +
         '0241234567, +233241234567 or 233241234567 (spaces, dashes and brackets are ' +
         'ignored) and always stored as the local 0-prefixed form; mobile prefixes only. ' +
         'Optional fields may be submitted blank ("" or null) and are simply omitted. ' +
@@ -286,8 +281,10 @@ export const customerPaths: ZodOpenApiPathsObject = {
       summary: 'Update customer profile (office only)',
       description:
         'Inactive customers cannot be edited — reactivate first. Optional fields accept ' +
-        '"" or null to CLEAR them; omit a field to leave it unchanged. assignedCollectorId ' +
-        'is ignored here — use PATCH /customers/{id}/collector (admin only).',
+        '"" or null to CLEAR them; omit a field to leave it unchanged. The ID document ' +
+        'images clear the same way, except while the customer has an open loan or ' +
+        'hire-purchase agreement (ID_DOCUMENT_IN_USE) — replacing a scan is always fine. ' +
+        'assignedCollectorId is ignored here — use PATCH /customers/{id}/collector (admin only).',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateCustomerBody),
@@ -295,7 +292,9 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Updated customer', customerResult),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('PHONE_TAKEN, ID_TAKEN, or CUSTOMER_INACTIVE'),
-        '422': errorResponse('PHONES_NOT_DISTINCT'),
+        '422': errorResponse(
+          'PHONES_NOT_DISTINCT, or ID_DOCUMENT_IN_USE — details: { loans, hirePurchase }',
+        ),
       },
     },
   },

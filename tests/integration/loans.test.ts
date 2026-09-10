@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import { LoanModel, SusuAccountModel } from '../../src/models/index.js';
+import { CustomerModel, LoanModel, SusuAccountModel } from '../../src/models/index.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
@@ -17,6 +17,39 @@ async function activeLoan(customerId: Types.ObjectId): Promise<Types.ObjectId> {
   await loans.approveLoan(officer, loanId);
   return loanId;
 }
+
+describe('the ID document gate', () => {
+  it('refuses an application until both scans are on the profile', async () => {
+    const customerId = await makeCustomer(true, undefined, { withIdDocument: false });
+    await expect(loans.applyForLoan(officer, customerId, 100_000, 3)).rejects.toMatchObject({
+      code: 'ID_DOCUMENT_REQUIRED',
+    });
+    const summary = await loans.eligibilitySummary(customerId);
+    expect(summary.customer.hasIdDocument).toBe(false);
+    expect(summary.customer.hasGhanaCard).toBe(true);
+  });
+
+  it('checks the Ghana Card first — the older rule still names itself', async () => {
+    const customerId = await makeCustomer(false, undefined, { withIdDocument: false });
+    await expect(loans.applyForLoan(officer, customerId, 100_000, 3)).rejects.toMatchObject({
+      code: 'GHANA_CARD_REQUIRED',
+    });
+  });
+
+  it('refuses approval when the scans are gone by decision time', async () => {
+    // Unreachable through the API — the profile refuses to drop the scans while
+    // the application is open — but an application predating the rule can be.
+    const customerId = await makeCustomer(true);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3);
+    await CustomerModel.updateOne(
+      { _id: customerId },
+      { $unset: { idDocumentFrontUrl: '', idDocumentBackUrl: '' } },
+    );
+    await expect(loans.approveLoan(officer, new Types.ObjectId(applied.id))).rejects.toMatchObject({
+      code: 'ID_DOCUMENT_REQUIRED',
+    });
+  });
+});
 
 describe('loan repayment via susu closure (WBS 7.2)', () => {
   it('closes the account and applies the payout in one transaction', async () => {

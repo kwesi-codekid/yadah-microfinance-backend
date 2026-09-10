@@ -16,8 +16,6 @@ export const ID_TYPES = ['ghana-card', 'passport', 'drivers-license', 'voter-id'
 export interface CustomerIdentification {
   idType: (typeof ID_TYPES)[number];
   idNumber: string;
-  idExpiryDate?: Date;
-  idPlaceOfIssue?: string;
 }
 
 export interface NextOfKin {
@@ -35,21 +33,14 @@ export interface Customer extends TrashFields {
   gender?: (typeof GENDERS)[number];
   nationality?: string;
   maritalStatus?: (typeof MARITAL_STATUSES)[number];
-  mothersMaidenName?: string;
   // Contact
   residentialAddress?: string;
-  /** GhanaPost GPS digital address, e.g. WR-123-4567. */
-  ghanaPostGps?: string;
-  postalAddress?: string;
   phone: string;
   altPhone?: string;
-  email?: string;
   // Identification (Ghana Card required at loan application, service-level)
   identification?: CustomerIdentification;
   // Occupation
   occupation?: string;
-  employerOrBusiness?: string;
-  purposeOfAccount?: string;
   // Next of kin
   nextOfKin?: NextOfKin;
   // Attachments (URLs from the uploads endpoint)
@@ -73,8 +64,6 @@ const identificationSchema = new Schema<CustomerIdentification>(
   {
     idType: { type: String, enum: ID_TYPES, required: true },
     idNumber: { type: String, required: true, trim: true },
-    idExpiryDate: { type: Date },
-    idPlaceOfIssue: { type: String, trim: true },
   },
   { _id: false },
 );
@@ -96,20 +85,14 @@ const customerSchema = new Schema<Customer>(
     gender: { type: String, enum: GENDERS },
     nationality: { type: String, trim: true },
     maritalStatus: { type: String, enum: MARITAL_STATUSES },
-    mothersMaidenName: { type: String, trim: true },
 
     residentialAddress: { type: String, trim: true },
-    ghanaPostGps: { type: String, trim: true, uppercase: true },
-    postalAddress: { type: String, trim: true },
     phone: { type: String, required: true, unique: true },
     altPhone: { type: String },
-    email: { type: String, lowercase: true, trim: true },
 
     identification: { type: identificationSchema },
 
     occupation: { type: String, trim: true },
-    employerOrBusiness: { type: String, trim: true },
-    purposeOfAccount: { type: String, trim: true },
 
     nextOfKin: { type: nextOfKinSchema },
 

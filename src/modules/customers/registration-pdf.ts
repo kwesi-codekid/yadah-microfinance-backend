@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { BRAND } from '../../lib/brand.js';
+import { hasIdDocument } from '../../lib/id-document.js';
 import type { Customer } from '../../models/index.js';
 
 /**
@@ -8,6 +9,14 @@ import type { Customer } from '../../models/index.js';
  * fetched from Cloudinary at render time; any fetch problem degrades to a
  * placeholder box — the PDF itself never fails because of an image.
  */
+
+/** What the paper form says about the scans — one side alone is not an ID on file. */
+function idDocumentImagesLine(customer: Customer): string | undefined {
+  if (hasIdDocument(customer)) return 'On file (front and back)';
+  if (customer.idDocumentFrontUrl) return 'Front only';
+  if (customer.idDocumentBackUrl) return 'Back only';
+  return undefined;
+}
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4 portrait, points
@@ -172,31 +181,21 @@ export async function buildRegistrationFormPdf(
     ['Gender', customer.gender],
     ['Nationality', customer.nationality],
     ['Marital status', customer.maritalStatus],
-    ["Mother's maiden name", customer.mothersMaidenName],
   ]);
 
   section('Contact', [
     ['Residential address', customer.residentialAddress],
-    ['GhanaPost GPS', customer.ghanaPostGps],
-    ['Postal address', customer.postalAddress],
     ['Phone', customer.phone],
     ['Alternate phone', customer.altPhone],
-    ['Email', customer.email],
   ]);
 
   section('Identification', [
     ['ID type', customer.identification?.idType],
     ['ID number', customer.identification?.idNumber],
-    ['Expiry date', formatDate(customer.identification?.idExpiryDate)],
-    ['Place of issue', customer.identification?.idPlaceOfIssue],
-    ['ID document images', customer.idDocumentFrontUrl ? 'On file (front and back)' : undefined],
+    ['ID document images', idDocumentImagesLine(customer)],
   ]);
 
-  section('Occupation', [
-    ['Occupation', customer.occupation],
-    ['Employer / business', customer.employerOrBusiness],
-    ['Purpose of account', customer.purposeOfAccount],
-  ]);
+  section('Occupation', [['Occupation', customer.occupation]]);
 
   section('Next of kin', [
     ['Full name', customer.nextOfKin?.fullName],

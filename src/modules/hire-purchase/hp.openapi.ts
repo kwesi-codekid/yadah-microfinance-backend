@@ -366,8 +366,9 @@ export const hpPaths: ZodOpenApiPathsObject = {
       tags: ['Hire Purchase'],
       summary: 'HP eligibility summary',
       description:
-        'Requires an active susu or savings account, ≥3 months saving history, no active loan ' +
-        '(loans and HP block each other), and no open HP agreement.',
+        'Requires both sides of the ID document on the profile, an active susu or savings ' +
+        'account, ≥3 months saving history, no active loan (loans and HP block each other), ' +
+        'and no open HP agreement. Each unmet condition is listed in `reasons`.',
       security,
       requestParams: { path: z.object({ customerId: z.string() }) },
       responses: {
@@ -457,14 +458,15 @@ export const hpPaths: ZodOpenApiPathsObject = {
       tags: ['Hire Purchase'],
       summary: 'Restore an agreement from the trash',
       description:
-        'Restoring a pending agreement re-reserves a unit of its item — refused if the item is out of stock.',
+        'Restoring a pending agreement re-checks the ID document rule and re-reserves a unit ' +
+        'of its item — refused if the item is out of stock.',
       security,
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('Restored', agreementResult),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('NOT_TRASHED'),
-        '422': errorResponse('OUT_OF_STOCK'),
+        '422': errorResponse('OUT_OF_STOCK or ID_DOCUMENT_REQUIRED'),
       },
     },
   },

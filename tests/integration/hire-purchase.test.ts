@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { HpItemModel, SusuDepositModel } from '../../src/models/index.js';
+import { ID_DOCUMENT_REQUIRED_MESSAGE } from '../../src/lib/id-document.js';
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
@@ -13,8 +14,11 @@ afterAll(teardownDb);
 const officer = asOfficer();
 
 /** Customer with an active susu account and 4 months of backdated history. */
-async function makeEligibleCustomer(withGhanaCard = false): Promise<Types.ObjectId> {
-  const customerId = await makeCustomer(withGhanaCard);
+async function makeEligibleCustomer(
+  withGhanaCard = false,
+  options: { withIdDocument?: boolean } = {},
+): Promise<Types.ObjectId> {
+  const customerId = await makeCustomer(withGhanaCard, undefined, options);
   const account = await susu.openAccount(officer, customerId, 1_000);
   await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5_000, randomUUID(), 'cash');
   await SusuDepositModel.updateMany(
@@ -34,6 +38,26 @@ async function makeItem(stock: number): Promise<Types.ObjectId> {
   });
   return new Types.ObjectId(item.id);
 }
+
+describe('the ID document gate', () => {
+  it('names the missing scans as a reason and refuses to sign', async () => {
+    const customerId = await makeEligibleCustomer(false, { withIdDocument: false });
+    const summary = await hp.hpEligibility(customerId);
+    expect(summary.hasIdDocument).toBe(false);
+    expect(summary.eligible).toBe(false);
+    expect(summary.reasons).toEqual([ID_DOCUMENT_REQUIRED_MESSAGE]);
+
+    const itemId = await makeItem(1);
+    await expect(
+      hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 }),
+    ).rejects.toMatchObject({
+      code: 'NOT_ELIGIBLE',
+      details: { reasons: [ID_DOCUMENT_REQUIRED_MESSAGE] },
+    });
+    // The unit was never taken off the shelf.
+    expect((await HpItemModel.findById(itemId))?.quantityInStock).toBe(1);
+  });
+});
 
 describe('hire purchase transactions (Stage A)', () => {
   it('two customers racing for the last unit: exactly one agreement signs', async () => {

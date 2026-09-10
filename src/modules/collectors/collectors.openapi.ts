@@ -12,7 +12,6 @@ const roundStop = z
     customerName: z.string(),
     phone: z.string(),
     residentialAddress: z.string().optional(),
-    ghanaPostGps: z.string().optional(),
     photoUrl: z.string().optional(),
     susu: z.array(
       z.object({

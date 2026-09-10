@@ -87,7 +87,14 @@ export const loanPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse(
           'Summary',
           z.object({
-            customer: z.object({ id: z.string(), fullName: z.string(), hasGhanaCard: z.boolean() }),
+            customer: z.object({
+              id: z.string(),
+              fullName: z.string(),
+              hasGhanaCard: z.boolean(),
+              hasIdDocument: z
+                .boolean()
+                .describe('Both sides of the ID uploaded — required to apply and to approve'),
+            }),
             firstActivityAt: z.iso.datetime().nullable(),
             monthsOfHistory: z.number().int(),
             susu: z.object({
@@ -109,8 +116,9 @@ export const loanPaths: ZodOpenApiPathsObject = {
       tags: ['Loans'],
       summary: 'Apply for a loan (office records the application)',
       description:
-        'Tiers: small 1,000–20,000, big to 50,000 GHS. Requires a Ghana Card on the ' +
-        'profile. One open loan per customer — a second application is always ' +
+        'Tiers: small 1,000–20,000, big to 50,000 GHS. Requires a Ghana Card and both ' +
+        'sides of the ID document on the profile (ID_DOCUMENT_REQUIRED; checked again at ' +
+        'approval). One open loan per customer — a second application is always ' +
         'refused. Big tier requires a previous small loan repaid on time.',
       security,
       requestBody: jsonBody(applyBody),
@@ -118,7 +126,8 @@ export const loanPaths: ZodOpenApiPathsObject = {
         '201': jsonResponse('Application recorded (pending)', loanResult),
         '409': errorResponse('LOAN_EXISTS — customer already has an open loan'),
         '422': errorResponse(
-          'GHANA_CARD_REQUIRED, PRINCIPAL_OUT_OF_RANGE, BIG_TIER_LOCKED, or CUSTOMER_INACTIVE',
+          'GHANA_CARD_REQUIRED, ID_DOCUMENT_REQUIRED, PRINCIPAL_OUT_OF_RANGE, BIG_TIER_LOCKED, ' +
+            'or CUSTOMER_INACTIVE',
         ),
       },
     },
@@ -221,14 +230,15 @@ export const loanPaths: ZodOpenApiPathsObject = {
       tags: ['Loans'],
       summary: 'Restore a loan application from the trash',
       description:
-        'A pending application re-checks the one-open-loan rule before restoring; ' +
-        'rejected applications restore unconditionally.',
+        'A pending application re-checks the one-open-loan rule and the ID document rule ' +
+        'before restoring; rejected applications restore unconditionally.',
       security,
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('Restored', loanResult),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('NOT_TRASHED, or LOAN_EXISTS — customer already has an open loan'),
+        '422': errorResponse('ID_DOCUMENT_REQUIRED'),
       },
     },
   },
@@ -245,6 +255,7 @@ export const loanPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse('Approved and active', loanResult),
         '409': errorResponse('NOT_PENDING'),
+        '422': errorResponse('ID_DOCUMENT_REQUIRED — both sides of the ID must be on the profile'),
       },
     },
   },

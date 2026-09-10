@@ -122,14 +122,14 @@ describe('editing a customer — the demo bugs', () => {
     }
   });
 
-  it('lets the office clear a next-of-kin phone and an email', () => {
+  it('lets the office clear a next-of-kin phone and an occupation', () => {
     const result = updateCustomerBody.safeParse({
-      email: '',
+      occupation: '',
       nextOfKin: { fullName: 'Kofi Mensah', phone: '', relationship: '' },
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.email).toBeNull();
+      expect(result.data.occupation).toBeNull();
       expect(result.data.nextOfKin?.phone).toBeNull();
     }
   });
@@ -167,7 +167,6 @@ describe('registering a customer with blank optional inputs', () => {
   it('accepts a form that submits empty strings for untouched fields', () => {
     const result = createCustomerBody.safeParse({
       ...validBody,
-      email: '',
       altPhone: '',
       occupation: '',
       nationality: '',
@@ -203,5 +202,43 @@ describe('collector assignment', () => {
     if (result.success) {
       expect((result.data as Record<string, unknown>).assignedCollectorId).toBeUndefined();
     }
+  });
+});
+
+describe('the ID document is optional on the profile', () => {
+  it('registers a customer with neither side of the ID uploaded', () => {
+    const { idDocumentFrontUrl: _front, idDocumentBackUrl: _back, ...noScans } = validBody;
+    const result = createCustomerBody.safeParse(noScans);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.idDocumentFrontUrl).toBeUndefined();
+      expect(result.data.idDocumentBackUrl).toBeUndefined();
+    }
+  });
+
+  it('reads the blank fields a registration form submits as "no scan"', () => {
+    const result = createCustomerBody.safeParse({
+      ...validBody,
+      idDocumentFrontUrl: '',
+      idDocumentBackUrl: '',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.idDocumentFrontUrl).toBeNull();
+  });
+
+  it('still requires the customer photo', () => {
+    const { photoUrl: _photo, ...noPhoto } = validBody;
+    expect(createCustomerBody.safeParse(noPhoto).success).toBe(false);
+  });
+
+  it('lets an edit clear a scan, and still refuses a URL from elsewhere', () => {
+    for (const cleared of ['', null]) {
+      const result = updateCustomerBody.safeParse({ idDocumentBackUrl: cleared });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.idDocumentBackUrl).toBeNull();
+    }
+    expect(
+      updateCustomerBody.safeParse({ idDocumentBackUrl: 'https://example.com/back.jpg' }).success,
+    ).toBe(false);
   });
 });

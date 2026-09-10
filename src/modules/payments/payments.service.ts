@@ -207,6 +207,16 @@ async function resolveTarget(
   }
 }
 
+/**
+ * Paystack insists on an email address. The customer profile no longer carries
+ * one, so every charge is stamped with a synthetic address built from the
+ * paying number. Nothing is ever delivered to it — the customer hears about the
+ * charge through the prompt on their handset and the SMS that follows.
+ */
+function chargeEmail(phone: string): string {
+  return `${phone}@yadah.local`;
+}
+
 export async function initiateCharge(
   actor: AccessTokenPayload,
   body: ChargeBody,
@@ -229,8 +239,7 @@ export async function initiateCharge(
     amount,
     phone: body.phone,
     provider: body.provider,
-    // Paystack requires an email; not every customer has one.
-    email: customer.email ?? `${body.phone}@yadah.local`,
+    email: chargeEmail(body.phone),
     initiatedById: new Types.ObjectId(actor.sub),
     initiatedByRole: actor.role,
   });
@@ -325,7 +334,7 @@ export async function initiatePortalCharge(
     amount: resolved.amount,
     phone: body.phone,
     provider: body.provider,
-    email: customer.email ?? `${body.phone}@yadah.local`,
+    email: chargeEmail(body.phone),
     initiatedById: customerId,
     initiatedByRole: 'customer',
   });

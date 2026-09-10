@@ -103,7 +103,7 @@ describe('collector scope lock', () => {
   });
 
   it('refuses a savings deposit onto another collector’s customer', async () => {
-    const account = await savings.openAccount(
+    const { account } = await savings.openAccount(
       officer,
       bobCustomer,
       undefined,

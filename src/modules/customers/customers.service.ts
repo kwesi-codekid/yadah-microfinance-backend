@@ -40,16 +40,10 @@ const SCALAR_FIELDS = [
   'gender',
   'nationality',
   'maritalStatus',
-  'mothersMaidenName',
   'residentialAddress',
-  'ghanaPostGps',
-  'postalAddress',
   'phone',
   'altPhone',
-  'email',
   'occupation',
-  'employerOrBusiness',
-  'purposeOfAccount',
   'photoUrl',
   'idDocumentFrontUrl',
   'idDocumentBackUrl',
@@ -64,17 +58,11 @@ export interface PublicCustomer {
   gender?: string;
   nationality?: string;
   maritalStatus?: string;
-  mothersMaidenName?: string;
   residentialAddress?: string;
-  ghanaPostGps?: string;
-  postalAddress?: string;
   phone: string;
   altPhone?: string;
-  email?: string;
   identification?: CustomerIdentification;
   occupation?: string;
-  employerOrBusiness?: string;
-  purposeOfAccount?: string;
   nextOfKin?: NextOfKin;
   photoUrl?: string;
   idDocumentFrontUrl?: string;
@@ -113,12 +101,10 @@ export function toCustomerExportRow(item: PublicCustomer): Record<string, unknow
     fullName: item.fullName,
     phone: item.phone,
     altPhone: item.altPhone ?? null,
-    email: item.email ?? null,
     gender: item.gender ?? null,
     dateOfBirth: item.dateOfBirth ?? null,
     nationality: item.nationality ?? null,
     residentialAddress: item.residentialAddress ?? null,
-    ghanaPostGps: item.ghanaPostGps ?? null,
     occupation: item.occupation ?? null,
     idType: item.identification?.idType ?? null,
     idNumber: item.identification?.idNumber ?? null,
@@ -154,6 +140,32 @@ async function assertActiveCollector(collectorId: Types.ObjectId): Promise<void>
     );
   }
 }
+
+/** Loan states in which the customer is "on a loan" — from application to settlement. */
+const OPEN_LOAN_STATUSES = ['pending', 'approved', 'active', 'arrears'] as const;
+/** Agreement states in which the customer is "on hire purchase". */
+const OPEN_HP_STATUSES = ['pending', 'active', 'in-arrears', 'repossessed'] as const;
+
+/** Open loans and hire-purchase agreements — the credit the ID document backs. */
+async function openCreditCounts(
+  customerId: Types.ObjectId,
+): Promise<{ loans: number; hirePurchase: number }> {
+  const [loans, hirePurchase] = await Promise.all([
+    LoanModel.countDocuments({
+      customerId,
+      ...NOT_TRASHED,
+      status: { $in: OPEN_LOAN_STATUSES },
+    }),
+    HpAgreementModel.countDocuments({
+      customerId,
+      ...NOT_TRASHED,
+      status: { $in: OPEN_HP_STATUSES },
+    }),
+  ]);
+  return { loans, hirePurchase };
+}
+
+const ID_DOCUMENT_FIELDS = ['idDocumentFrontUrl', 'idDocumentBackUrl'] as const;
 
 export async function createCustomer(
   actor: AccessTokenPayload,
@@ -277,6 +289,24 @@ export async function updateCustomer(
   });
   if (clashes.length > 0) {
     throw new AppError('PHONES_NOT_DISTINCT', PHONES_DISTINCT_MESSAGE, 422, { fields: clashes });
+  }
+
+  // The ID document is what any open loan or hire-purchase agreement was
+  // written against, so it stays on file for as long as one is running. A
+  // scan may be replaced by a fresh upload; it may not be taken away.
+  const removesIdDocument = ID_DOCUMENT_FIELDS.some(
+    (key) => patch[key] === null && customer[key] !== undefined,
+  );
+  if (removesIdDocument) {
+    const credit = await openCreditCounts(id);
+    if (credit.loans + credit.hirePurchase > 0) {
+      throw new AppError(
+        'ID_DOCUMENT_IN_USE',
+        'The ID document cannot be removed while this customer has an open loan or hire-purchase agreement',
+        422,
+        credit,
+      );
+    }
   }
 
   const before: Record<string, unknown> = {};
@@ -518,23 +548,14 @@ export async function trashCustomer(
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
   // A customer can only go to the trash once every product tie is severed.
-  const [susu, savings, loans, hirePurchase] = await Promise.all([
+  const [susu, savings, { loans, hirePurchase }] = await Promise.all([
     SusuAccountModel.countDocuments({
       customerId: id,
       ...NOT_TRASHED,
       status: { $in: ['active', 'completed', 'pending-payout'] },
     }),
     SavingsAccountModel.countDocuments({ customerId: id, ...NOT_TRASHED, status: 'active' }),
-    LoanModel.countDocuments({
-      customerId: id,
-      ...NOT_TRASHED,
-      status: { $in: ['pending', 'approved', 'active', 'arrears'] },
-    }),
-    HpAgreementModel.countDocuments({
-      customerId: id,
-      ...NOT_TRASHED,
-      status: { $in: ['pending', 'active', 'in-arrears', 'repossessed'] },
-    }),
+    openCreditCounts(id),
   ]);
   if (susu + savings + loans + hirePurchase > 0) {
     throw new AppError(

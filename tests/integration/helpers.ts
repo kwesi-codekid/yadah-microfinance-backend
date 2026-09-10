@@ -64,12 +64,17 @@ export function asOfficer(): AccessTokenPayload {
   return { sub: new Types.ObjectId().toHexString(), role: 'admin' };
 }
 
+let collectorPhoneCounter = 0;
+
 /** A collector actor plus the user record the scope lock resolves against. */
 export async function makeCollector(name = 'Field Collector'): Promise<AccessTokenPayload> {
+  collectorPhoneCounter += 1;
   const user = await UserModel.create({
     name,
     username: `collector-${new Types.ObjectId().toHexString()}`,
-    phone: '0244000000',
+    // Unique per call: `users.phone` carries a unique index, so a fixed number
+    // lets only the first collector in a file be created.
+    phone: `0244${String(100000 + collectorPhoneCounter)}`,
     role: 'collector',
     status: 'active',
     passwordHash: 'x'.repeat(60),
@@ -79,16 +84,33 @@ export async function makeCollector(name = 'Field Collector'): Promise<AccessTok
 
 let phoneCounter = 100;
 
+/** Where the uploads endpoint mints image URLs — the only host the schemas accept. */
+export const CLOUDINARY = 'https://res.cloudinary.com/demo/image/upload';
+
+/**
+ * A registered customer with the photo and both ID scans on file, as the
+ * office normally leaves them. Pass `withIdDocument: false` for the profile
+ * that cannot open credit yet.
+ */
 export async function makeCustomer(
   withGhanaCard = false,
   assignedCollectorId?: Types.ObjectId,
+  options: { withIdDocument?: boolean } = {},
 ): Promise<Types.ObjectId> {
   phoneCounter += 1;
+  const withIdDocument = options.withIdDocument ?? true;
   const customer = await CustomerModel.create({
     fullName: `Test Customer ${String(phoneCounter)}`,
     phone: `05000${String(phoneCounter).padStart(5, '0')}`,
     registeredById: new Types.ObjectId(),
     status: 'active',
+    photoUrl: `${CLOUDINARY}/photo.jpg`,
+    ...(withIdDocument
+      ? {
+          idDocumentFrontUrl: `${CLOUDINARY}/front.jpg`,
+          idDocumentBackUrl: `${CLOUDINARY}/back.jpg`,
+        }
+      : {}),
     ...(assignedCollectorId ? { assignedCollectorId } : {}),
     ...(withGhanaCard
       ? {

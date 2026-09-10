@@ -8,6 +8,11 @@ import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { EXPORT_MAX_ROWS } from '../../lib/exports.js';
+import {
+  ID_DOCUMENT_REQUIRED_MESSAGE,
+  hasIdDocument,
+  idDocumentRequired,
+} from '../../lib/id-document.js';
 import { addMonthsClamped, allocateRepayment, buildSchedule } from '../../domain/loans.js';
 import {
   HP_ELIGIBILITY_MIN_MONTHS,
@@ -361,6 +366,8 @@ export async function putHpConfig(
 
 export interface HpEligibility {
   customer: { id: string; fullName: string };
+  /** Both sides of the ID uploaded — required before an agreement can be signed. */
+  hasIdDocument: boolean;
   hasActiveSusuOrSavings: boolean;
   firstActivityAt: Date | null;
   monthsOfHistory: number;
@@ -393,6 +400,7 @@ export async function hpEligibility(customerId: Types.ObjectId): Promise<HpEligi
     : 0;
 
   const reasons: string[] = [];
+  if (!hasIdDocument(customer)) reasons.push(ID_DOCUMENT_REQUIRED_MESSAGE);
   if (!activeSusu && !activeSavings) reasons.push('No active susu or savings account');
   if (monthsOfHistory < HP_ELIGIBILITY_MIN_MONTHS) {
     reasons.push(`Saving history under ${String(HP_ELIGIBILITY_MIN_MONTHS)} months`);
@@ -402,6 +410,7 @@ export async function hpEligibility(customerId: Types.ObjectId): Promise<HpEligi
 
   return {
     customer: { id: customer._id.toHexString(), fullName: customer.fullName },
+    hasIdDocument: hasIdDocument(customer),
     hasActiveSusuOrSavings: Boolean(activeSusu ?? activeSavings),
     firstActivityAt,
     monthsOfHistory,
@@ -1401,6 +1410,10 @@ export async function restoreHpAgreement(
   }
 
   if (agreement.status === 'pending') {
+    // Re-opening an application: the ID rule holds as it did at signing, and
+    // the scans may have been cleared while the agreement sat in the trash.
+    const customer = await CustomerModel.findById(agreement.customerId);
+    if (customer && !hasIdDocument(customer)) throw idDocumentRequired();
     // A pending agreement holds a unit of the item — re-reserve it with the
     // same stock guard as signing.
     const session = await mongoose.startSession();

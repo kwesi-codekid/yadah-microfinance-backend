@@ -13,12 +13,6 @@ import {
   voterIdNumber,
 } from '../../schemas/common.js';
 
-/** GhanaPost GPS digital address, e.g. WR-123-4567 or GA-1834-5678. */
-export const ghanaPostGps = z
-  .string()
-  .regex(/^[A-Z]{2}-\d{3,4}-\d{4}$/i, 'Expected a GhanaPost address like WR-123-4567')
-  .transform((v) => v.toUpperCase());
-
 const idNumberRules: Record<
   'ghana-card' | 'passport' | 'drivers-license' | 'voter-id',
   { schema: z.ZodType<string>; message: string }
@@ -39,8 +33,6 @@ export const identification = z
   .object({
     idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id']),
     idNumber: z.string().min(3).max(30).trim(),
-    idExpiryDate: clearable(z.coerce.date()).optional(),
-    idPlaceOfIssue: clearable(z.string().min(2).max(100).trim()).optional(),
   })
   .check((ctx) => {
     const rule = idNumberRules[ctx.value.idType];
@@ -99,7 +91,7 @@ export function phoneClashes(v: {
 /**
  * Every optional field is `clearable`: registration and edit forms submit a
  * blank input as "" rather than omitting it, and the office must be able to
- * wipe a wrong alternate number or email instead of being stuck with it.
+ * wipe a wrong alternate number instead of being stuck with it.
  */
 const profileFields = {
   // Personal
@@ -115,28 +107,28 @@ const profileFields = {
   gender: clearable(z.enum(['male', 'female'])).optional(),
   nationality: clearable(z.string().min(2).max(60).trim()).optional(),
   maritalStatus: clearable(z.enum(['single', 'married', 'other'])).optional(),
-  mothersMaidenName: clearable(z.string().min(2).max(120).trim()).optional(),
   // Contact
   residentialAddress: clearable(z.string().min(2).max(300).trim()).optional(),
-  ghanaPostGps: clearable(ghanaPostGps).optional(),
-  postalAddress: clearable(z.string().min(2).max(300).trim()).optional(),
   phone: ghanaPhone,
   altPhone: clearable(ghanaPhone).optional(),
-  email: clearable(z.email()).optional(),
   // Identification
   identification: clearable(identification).optional(),
   // Occupation
   occupation: clearable(z.string().min(2).max(120).trim()).optional(),
-  employerOrBusiness: clearable(z.string().min(2).max(120).trim()).optional(),
-  purposeOfAccount: clearable(z.string().min(2).max(200).trim()).optional(),
   // Next of kin
   nextOfKin: clearable(nextOfKin).optional(),
-  // Attachments — required at registration; URLs minted by POST /uploads/images
+  // Attachments — URLs minted by POST /uploads/images. The photo is required at
+  // registration. The ID document is optional on the profile (client decision,
+  // 10 Sep 2026) but gates credit: no loan or hire-purchase agreement opens
+  // without both sides on file, and the service refuses to clear either side
+  // while one is running (see lib/id-document.ts).
   photoUrl: uploadedImageUrl.describe('Customer photo — from POST /uploads/images'),
-  idDocumentFrontUrl: uploadedImageUrl.describe(
-    'ID front — from POST /uploads/images?kind=document',
-  ),
-  idDocumentBackUrl: uploadedImageUrl.describe('ID back — from POST /uploads/images?kind=document'),
+  idDocumentFrontUrl: clearable(uploadedImageUrl)
+    .optional()
+    .describe('ID front — from POST /uploads/images?kind=document; "" or null clears it'),
+  idDocumentBackUrl: clearable(uploadedImageUrl)
+    .optional()
+    .describe('ID back — from POST /uploads/images?kind=document; "" or null clears it'),
 };
 
 export const createCustomerBody = z

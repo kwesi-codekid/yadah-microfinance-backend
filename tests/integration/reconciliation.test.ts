@@ -40,7 +40,7 @@ describe('expected cash for a day', () => {
     await collectSusu(collector, 2_000); // 2,000 susu
 
     const customerId = await makeCustomer(false, new Types.ObjectId(collector.sub));
-    const account = await savings.openAccount(
+    const { account } = await savings.openAccount(
       officer,
       customerId,
       undefined,

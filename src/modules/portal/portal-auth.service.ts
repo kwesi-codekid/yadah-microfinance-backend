@@ -52,7 +52,6 @@ export interface PortalProfile {
   id: string;
   fullName: string;
   phone: string;
-  email?: string;
   photoUrl?: string;
   status: string;
 }
@@ -103,7 +102,6 @@ function toPortalProfile(c: {
   _id: Types.ObjectId;
   fullName: string;
   phone: string;
-  email?: string;
   photoUrl?: string;
   status: string;
 }): PortalProfile {
@@ -111,7 +109,6 @@ function toPortalProfile(c: {
     id: c._id.toHexString(),
     fullName: c.fullName,
     phone: c.phone,
-    ...(c.email !== undefined ? { email: c.email } : {}),
     ...(c.photoUrl !== undefined ? { photoUrl: c.photoUrl } : {}),
     status: c.status,
   };

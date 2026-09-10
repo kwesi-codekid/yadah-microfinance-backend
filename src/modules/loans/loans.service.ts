@@ -6,6 +6,7 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
+import { hasIdDocument, idDocumentRequired } from '../../lib/id-document.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
   CustomerModel,
@@ -167,7 +168,7 @@ const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
 // ---------------------------------------------------------------- eligibility
 
 export interface EligibilitySummary {
-  customer: { id: string; fullName: string; hasGhanaCard: boolean };
+  customer: { id: string; fullName: string; hasGhanaCard: boolean; hasIdDocument: boolean };
   firstActivityAt: Date | null;
   monthsOfHistory: number;
   susu: { accounts: number; activeAccounts: number; totalDeposited: number };
@@ -215,6 +216,7 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
       id: customer._id.toHexString(),
       fullName: customer.fullName,
       hasGhanaCard: customer.identification?.idType === 'ghana-card',
+      hasIdDocument: hasIdDocument(customer),
     },
     firstActivityAt,
     monthsOfHistory,
@@ -253,6 +255,9 @@ export async function applyForLoan(
       422,
     );
   }
+  // Both sides of the ID must be uploaded before any credit opens — and the
+  // customer service refuses to remove them while this loan stays open.
+  if (!hasIdDocument(customer)) throw idDocumentRequired();
 
   // One open loan per customer — always refused, no exception paths (rule 7).
   const open = await LoanModel.findOne({
@@ -342,6 +347,9 @@ export async function approveLoan(
     throw new AppError('NOT_PENDING', `Loan is ${pre.status}, not pending`, 409);
   }
   const customer = await CustomerModel.findById(pre.customerId);
+  // Money leaves here, so the ID rule is checked again — an application that
+  // predates it, or one restored from the trash, must not slip through.
+  if (customer && !hasIdDocument(customer)) throw idDocumentRequired();
 
   const config = await getLoanConfig();
   const now = new Date();
@@ -1071,6 +1079,9 @@ export async function restoreLoan(
     if (open) {
       throw new AppError('LOAN_EXISTS', 'Customer already has a pending or active loan', 409);
     }
+    // The scans may have been cleared while the application sat in the trash.
+    const customer = await CustomerModel.findById(pre.customerId);
+    if (customer && !hasIdDocument(customer)) throw idDocumentRequired();
   }
 
   const loan = await LoanModel.findOneAndUpdate(

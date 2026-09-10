@@ -131,7 +131,6 @@ async function seed(): Promise<void> {
     nationality: 'Ghanaian',
     occupation: 'Market trader',
     residentialAddress: 'Esiama Main Market',
-    ghanaPostGps: 'WR-123-4567',
     identification: { idType: 'ghana-card', idNumber: 'GHA-100000001-1' },
     assignedCollectorId: col1!._id,
     registeredById: manager!._id,

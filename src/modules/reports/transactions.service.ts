@@ -663,7 +663,6 @@ export interface CustomerStatement {
     id: string;
     fullName: string;
     phone: string;
-    email: string | null;
     residentialAddress: string | null;
   };
   period: { from: string; to: string };
@@ -779,7 +778,6 @@ export async function customerStatement(
       id: customer._id.toHexString(),
       fullName: customer.fullName,
       phone: customer.phone,
-      email: customer.email ?? null,
       residentialAddress: customer.residentialAddress ?? null,
     },
     period: { from: window.from, to: window.to },
