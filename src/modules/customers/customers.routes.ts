@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import multer from 'multer';
 import { AppError } from '../../lib/errors.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireAdmin, requireOffice } from '../../middleware/rbac.js';
+import { requireAdmin, requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { z } from 'zod';
 import {
@@ -37,10 +37,11 @@ import { customerStatement, statementCsvRows } from '../reports/transactions.ser
 export const customersRouter = Router();
 customersRouter.use(requireAuth);
 
-// Office only — client rule: account creation happens at the office, never in the field.
+// The counter, not the field: registration happens where the person is
+// standing, which is a teller's job as much as a manager's.
 customersRouter.post(
   '/',
-  requireOffice,
+  requireCounter,
   validate({ body: createCustomerBody }),
   (req, res, next) => {
     const { body } = getValidated<{ body: CreateCustomerBody }>(req);
@@ -206,9 +207,10 @@ customersRouter.get('/:id', validate({ params: customerIdParams }), (req, res, n
 });
 
 // Printable registration form (office only — full PII, same gate as /statement).
+// Printed at the desk while the customer is there, so the counter prints it.
 customersRouter.get(
   '/:id/registration-form',
-  requireOffice,
+  requireCounter,
   validate({ params: customerIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
@@ -222,9 +224,10 @@ customersRouter.get(
 );
 
 // Statement of account: all products + unified transaction history for a period.
+// Asked for across the counter more often than anywhere else.
 customersRouter.get(
   '/:id/statement',
-  requireOffice,
+  requireCounter,
   validate({ params: customerIdParams, query: rangeQuery }),
   (req, res, next) => {
     const { params, query } = getValidated<{ params: CustomerIdParams; query: RangeQuery }>(req);
@@ -248,9 +251,10 @@ customersRouter.get(
   },
 );
 
+// Whoever may register a customer may fix what they typed.
 customersRouter.patch(
   '/:id',
-  requireOffice,
+  requireCounter,
   validate({ params: customerIdParams, body: updateCustomerBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: CustomerIdParams; body: UpdateCustomerBody }>(

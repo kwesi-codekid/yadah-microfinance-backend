@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ghanaPhone } from '../../schemas/common.js';
+import { ROLES } from '../../models/shared.js';
 
 export const username = z
   .string()
@@ -57,7 +58,8 @@ export const publicUserResponse = z
     username: z.string(),
     phone: z.string(),
     email: z.string().optional(),
-    role: z.enum(['admin', 'manager', 'collector']),
+    // From the one list of roles, so the published spec cannot fall behind it.
+    role: z.enum(ROLES),
   })
   .meta({ id: 'PublicUser' });
 

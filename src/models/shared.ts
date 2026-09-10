@@ -18,7 +18,12 @@ export const optionalMoneyField = { ...moneyField, required: false } as const;
 export const CHANNELS = ['cash', 'paystack', 'momo', 'transfer'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
-export const ROLES = ['admin', 'manager', 'collector'] as const;
+/**
+ * `teller` is the counter: unscoped like the office, because anyone may walk
+ * up, but junior like a collector, because deciding is not their job. That
+ * combination is why role alone stopped being enough — see middleware/rbac.ts.
+ */
+export const ROLES = ['admin', 'manager', 'teller', 'collector'] as const;
 export type Role = (typeof ROLES)[number];
 
 /**

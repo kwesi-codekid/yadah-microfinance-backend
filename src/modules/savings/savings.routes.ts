@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   accountIdParams,
@@ -28,9 +28,10 @@ import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 export const savingsRouter = Router();
 savingsRouter.use(requireAuth);
 
+// Opened at the counter, like the susu book beside it.
 savingsRouter.post(
   '/accounts',
-  requireOffice,
+  requireCounter,
   validate({ body: openAccountBody }),
   (req, res, next) => {
     const { body } = getValidated<{ body: OpenAccountBody }>(req);
@@ -228,9 +229,11 @@ savingsRouter.post(
 );
 
 // Withdrawals are processed at the office only.
+// Money out across the counter. The API already fences it — one a day, capped
+// at what is available, flat fee — so a teller cannot exceed the rules.
 savingsRouter.post(
   '/accounts/:id/withdrawals',
-  requireOffice,
+  requireCounter,
   validate({ params: accountIdParams, body: withdrawalBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawalBody }>(req);
@@ -243,7 +246,7 @@ savingsRouter.post(
 
 savingsRouter.post(
   '/accounts/:id/close',
-  requireOffice,
+  requireCounter,
   validate({ params: accountIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: AccountIdParams }>(req);

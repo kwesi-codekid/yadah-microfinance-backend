@@ -3,7 +3,10 @@
  *
  * Three clients share this API and they are NOT interchangeable:
  *
- *   Office app     — admin and manager tokens. Everything not listed below.
+ *   Office app     — admin, manager and teller tokens. Everything not listed
+ *                    below. A teller reaches a subset of it: the counter gates
+ *                    (`requireCounter`) let them serve whoever is standing
+ *                    there, while the decisions stay behind `requireOffice`.
  *   Collector app  — collector tokens. Exactly the operations in COLLECTOR_APP.
  *   Customer portal— customer tokens, a different signing key entirely. Every
  *                    /portal route, tagged `Customer Portal`.

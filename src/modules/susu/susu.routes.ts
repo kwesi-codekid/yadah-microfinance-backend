@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { trashBody, type TrashBody } from '../../schemas/common.js';
 import {
@@ -37,9 +37,10 @@ import * as susuService from './susu.service.js';
 export const susuRouter = Router();
 susuRouter.use(requireAuth);
 
+// Opened where the customer is standing, so the counter opens it.
 susuRouter.post(
   '/accounts',
-  requireOffice,
+  requireCounter,
   validate({ body: openAccountBody }),
   (req, res, next) => {
     const { body } = getValidated<{ body: OpenAccountBody }>(req);
@@ -229,9 +230,10 @@ susuRouter.post('/collect-all', validate({ body: collectAllBody }), (req, res, n
 // Withdrawals are processed at the office only (rule 7).
 // Take part of the balance and leave the account running (office only —
 // withdrawals happen at the office, same as closures).
+// Money out across the counter — a teller's job (client decision, 10 Sep 2026).
 susuRouter.post(
   '/accounts/:id/withdraw',
-  requireOffice,
+  requireCounter,
   validate({ params: accountIdParams, body: partialWithdrawalBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{
@@ -247,7 +249,7 @@ susuRouter.post(
 
 susuRouter.post(
   '/accounts/:id/close',
-  requireOffice,
+  requireCounter,
   validate({ params: accountIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: AccountIdParams }>(req);
@@ -302,7 +304,7 @@ susuRouter.post(
 // Cash disbursement of a pending-payout balance (office only).
 susuRouter.post(
   '/accounts/:id/payout',
-  requireOffice,
+  requireCounter,
   validate({ params: accountIdParams, body: payoutBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: AccountIdParams; body: PayoutBody }>(req);

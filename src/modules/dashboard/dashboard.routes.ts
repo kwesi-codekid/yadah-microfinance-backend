@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { listTransactions } from '../reports/transactions.service.js';
 import * as alertsService from './alerts.service.js';
@@ -28,7 +28,10 @@ import {
  * reason).
  */
 export const dashboardRouter = Router();
-dashboardRouter.use(requireAuth, requireOffice);
+// Read-only figures about money the counter itself handles, so the counter
+// may see them. A collector still gets their own day instead, from
+// /collectors/me/day, which is scoped to them.
+dashboardRouter.use(requireAuth, requireCounter);
 
 dashboardRouter.get('/summary', (_req, res, next) => {
   dashboardService

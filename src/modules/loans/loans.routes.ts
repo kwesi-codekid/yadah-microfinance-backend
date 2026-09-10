@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   applyBody,
@@ -31,7 +31,12 @@ import * as loansService from './loans.service.js';
 
 // Loans are office territory throughout (admin ≡ manager for now).
 export const loansRouter = Router();
-loansRouter.use(requireAuth, requireOffice);
+/**
+ * The counter may take a repayment and print a receipt; everything that
+ * decides a loan — applying, approving, rejecting, the rates themselves, and
+ * the trash — says `requireOffice` on its own line below.
+ */
+loansRouter.use(requireAuth, requireCounter);
 
 loansRouter.get('/config', (_req, res, next) => {
   loansService
@@ -40,7 +45,7 @@ loansRouter.get('/config', (_req, res, next) => {
     .catch(next);
 });
 
-loansRouter.put('/config', validate({ body: putConfigBody }), (req, res, next) => {
+loansRouter.put('/config', requireOffice, validate({ body: putConfigBody }), (req, res, next) => {
   const { body } = getValidated<{ body: PutConfigBody }>(req);
   loansService
     .putLoanConfig(getAuth(req), body, req.id as string)
@@ -50,6 +55,7 @@ loansRouter.put('/config', validate({ body: putConfigBody }), (req, res, next) =
 
 loansRouter.get(
   '/eligibility/:customerId',
+  requireOffice,
   validate({ params: customerIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
@@ -60,19 +66,24 @@ loansRouter.get(
   },
 );
 
-loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next) => {
-  const { body } = getValidated<{ body: ApplyBody }>(req);
-  loansService
-    .applyForLoan(
-      getAuth(req),
-      body.customerId,
-      body.principal,
-      body.durationMonths,
-      req.id as string,
-    )
-    .then((loan) => res.status(201).json({ loan }))
-    .catch(next);
-});
+loansRouter.post(
+  '/applications',
+  requireOffice,
+  validate({ body: applyBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: ApplyBody }>(req);
+    loansService
+      .applyForLoan(
+        getAuth(req),
+        body.customerId,
+        body.principal,
+        body.durationMonths,
+        req.id as string,
+      )
+      .then((loan) => res.status(201).json({ loan }))
+      .catch(next);
+  },
+);
 
 loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListLoansQuery }>(req);
@@ -99,7 +110,7 @@ loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
 });
 
 // Registered BEFORE '/:id' so 'trash' is never captured as a loan id.
-loansRouter.get('/trash', validate({ query: loanTrashQuery }), (req, res, next) => {
+loansRouter.get('/trash', requireOffice, validate({ query: loanTrashQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: LoanTrashQuery }>(req);
   loansService
     .listLoanTrash(query)
@@ -117,6 +128,7 @@ loansRouter.get('/:id', validate({ params: loanIdParams }), (req, res, next) => 
 
 loansRouter.delete(
   '/:id',
+  requireOffice,
   validate({ params: loanIdParams, body: trashBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: LoanIdParams; body: TrashBody }>(req);
@@ -127,24 +139,35 @@ loansRouter.delete(
   },
 );
 
-loansRouter.post('/:id/restore', validate({ params: loanIdParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: LoanIdParams }>(req);
-  loansService
-    .restoreLoan(getAuth(req), params.id, req.id as string)
-    .then((loan) => res.json({ loan }))
-    .catch(next);
-});
+loansRouter.post(
+  '/:id/restore',
+  requireOffice,
+  validate({ params: loanIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: LoanIdParams }>(req);
+    loansService
+      .restoreLoan(getAuth(req), params.id, req.id as string)
+      .then((loan) => res.json({ loan }))
+      .catch(next);
+  },
+);
 
-loansRouter.post('/:id/approve', validate({ params: loanIdParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: LoanIdParams }>(req);
-  loansService
-    .approveLoan(getAuth(req), params.id, req.id as string)
-    .then((loan) => res.json({ loan }))
-    .catch(next);
-});
+loansRouter.post(
+  '/:id/approve',
+  requireOffice,
+  validate({ params: loanIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: LoanIdParams }>(req);
+    loansService
+      .approveLoan(getAuth(req), params.id, req.id as string)
+      .then((loan) => res.json({ loan }))
+      .catch(next);
+  },
+);
 
 loansRouter.post(
   '/:id/reject',
+  requireOffice,
   validate({ params: loanIdParams, body: rejectBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: LoanIdParams; body: RejectBody }>(req);

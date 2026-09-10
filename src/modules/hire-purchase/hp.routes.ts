@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   adjustStockBody,
@@ -49,7 +49,12 @@ import * as hp from './hp.service.js';
 
 // Hire purchase is office territory throughout (admin ≡ manager).
 export const hpRouter = Router();
-hpRouter.use(requireAuth, requireOffice);
+/**
+ * The counter rings up a sale and takes a payment against an agreement.
+ * Everything that decides — signing, rejecting, repossessing, the shelf
+ * itself, the rates, and the trash — says `requireOffice` on its own line.
+ */
+hpRouter.use(requireAuth, requireCounter);
 
 // ---- outright sales (counter / POS)
 //
@@ -105,6 +110,7 @@ hpRouter.get('/sales/:id/receipt', validate({ params: idParams }), (req, res, ne
 // Reverses a sale rung up in error: stock back, revenue off, row retained.
 hpRouter.post(
   '/sales/:id/void',
+  requireOffice,
   validate({ params: idParams, body: voidSaleBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: VoidSaleBody }>(req);
@@ -116,7 +122,7 @@ hpRouter.post(
 
 // ---- inventory
 
-hpRouter.post('/items', validate({ body: createItemBody }), (req, res, next) => {
+hpRouter.post('/items', requireOffice, validate({ body: createItemBody }), (req, res, next) => {
   const { body } = getValidated<{ body: CreateItemBody }>(req);
   hp.createItem(getAuth(req), body, req.id as string)
     .then((item) => res.status(201).json({ item }))
@@ -146,29 +152,45 @@ hpRouter.get('/items', validate({ query: listItemsQuery }), (req, res, next) => 
 });
 
 // Registered before the /items/:id routes so 'trash' is never read as an id.
-hpRouter.get('/items/trash', validate({ query: trashListQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: TrashListQuery }>(req);
-  hp.listHpItemTrash(query)
-    .then((list) => res.json(list))
-    .catch(next);
-});
+hpRouter.get(
+  '/items/trash',
+  requireOffice,
+  validate({ query: trashListQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: TrashListQuery }>(req);
+    hp.listHpItemTrash(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
 
-hpRouter.delete('/items/:id', validate({ params: idParams, body: trashBody }), (req, res, next) => {
-  const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
-  hp.trashHpItem(getAuth(req), params.id, body.reason, req.id as string)
-    .then((item) => res.json({ item }))
-    .catch(next);
-});
+hpRouter.delete(
+  '/items/:id',
+  requireOffice,
+  validate({ params: idParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
+    hp.trashHpItem(getAuth(req), params.id, body.reason, req.id as string)
+      .then((item) => res.json({ item }))
+      .catch(next);
+  },
+);
 
-hpRouter.post('/items/:id/restore', validate({ params: idParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: IdParams }>(req);
-  hp.restoreHpItem(getAuth(req), params.id, req.id as string)
-    .then((item) => res.json({ item }))
-    .catch(next);
-});
+hpRouter.post(
+  '/items/:id/restore',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    hp.restoreHpItem(getAuth(req), params.id, req.id as string)
+      .then((item) => res.json({ item }))
+      .catch(next);
+  },
+);
 
 hpRouter.patch(
   '/items/:id',
+  requireOffice,
   validate({ params: idParams, body: updateItemBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: UpdateItemBody }>(req);
@@ -180,6 +202,7 @@ hpRouter.patch(
 
 hpRouter.post(
   '/items/:id/adjust-stock',
+  requireOffice,
   validate({ params: idParams, body: adjustStockBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: AdjustStockBody }>(req);
@@ -197,7 +220,7 @@ hpRouter.get('/config', (_req, res, next) => {
     .catch(next);
 });
 
-hpRouter.put('/config', validate({ body: putConfigBody }), (req, res, next) => {
+hpRouter.put('/config', requireOffice, validate({ body: putConfigBody }), (req, res, next) => {
   const { body } = getValidated<{ body: PutConfigBody }>(req);
   hp.putHpConfig(getAuth(req), body.interestRatePercent, req.id as string)
     .then((config) => res.json({ config }))
@@ -208,6 +231,7 @@ hpRouter.put('/config', validate({ body: putConfigBody }), (req, res, next) => {
 
 hpRouter.get(
   '/eligibility/:customerId',
+  requireOffice,
   validate({ params: customerIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
@@ -219,12 +243,17 @@ hpRouter.get(
 
 // ---- agreements
 
-hpRouter.post('/agreements', validate({ body: createAgreementBody }), (req, res, next) => {
-  const { body } = getValidated<{ body: CreateAgreementBody }>(req);
-  hp.createAgreement(getAuth(req), body, req.id as string)
-    .then((agreement) => res.status(201).json({ agreement }))
-    .catch(next);
-});
+hpRouter.post(
+  '/agreements',
+  requireOffice,
+  validate({ body: createAgreementBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: CreateAgreementBody }>(req);
+    hp.createAgreement(getAuth(req), body, req.id as string)
+      .then((agreement) => res.status(201).json({ agreement }))
+      .catch(next);
+  },
+);
 
 hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListAgreementsQuery }>(req);
@@ -255,15 +284,21 @@ hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res,
 });
 
 // Registered before the /agreements/:id routes so 'trash' is never read as an id.
-hpRouter.get('/agreements/trash', validate({ query: trashListQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: TrashListQuery }>(req);
-  hp.listHpAgreementTrash(query)
-    .then((list) => res.json(list))
-    .catch(next);
-});
+hpRouter.get(
+  '/agreements/trash',
+  requireOffice,
+  validate({ query: trashListQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: TrashListQuery }>(req);
+    hp.listHpAgreementTrash(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
 
 hpRouter.delete(
   '/agreements/:id',
+  requireOffice,
   validate({ params: idParams, body: trashBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
@@ -273,12 +308,17 @@ hpRouter.delete(
   },
 );
 
-hpRouter.post('/agreements/:id/restore', validate({ params: idParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: IdParams }>(req);
-  hp.restoreHpAgreement(getAuth(req), params.id, req.id as string)
-    .then((agreement) => res.json({ agreement }))
-    .catch(next);
-});
+hpRouter.post(
+  '/agreements/:id/restore',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    hp.restoreHpAgreement(getAuth(req), params.id, req.id as string)
+      .then((agreement) => res.json({ agreement }))
+      .catch(next);
+  },
+);
 
 hpRouter.get('/agreements/:id', validate({ params: idParams }), (req, res, next) => {
   const { params } = getValidated<{ params: IdParams }>(req);
@@ -307,6 +347,7 @@ hpRouter.post(
 
 hpRouter.post(
   '/agreements/:id/reject',
+  requireOffice,
   validate({ params: idParams, body: reasonBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: ReasonBody }>(req);
@@ -345,15 +386,21 @@ hpRouter.post(
   },
 );
 
-hpRouter.post('/agreements/:id/mark-arrears', validate({ params: idParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: IdParams }>(req);
-  hp.markArrears(getAuth(req), params.id, req.id as string)
-    .then((agreement) => res.json({ agreement }))
-    .catch(next);
-});
+hpRouter.post(
+  '/agreements/:id/mark-arrears',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    hp.markArrears(getAuth(req), params.id, req.id as string)
+      .then((agreement) => res.json({ agreement }))
+      .catch(next);
+  },
+);
 
 hpRouter.post(
   '/agreements/:id/repossess',
+  requireOffice,
   validate({ params: idParams, body: reasonBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: ReasonBody }>(req);
@@ -365,6 +412,7 @@ hpRouter.post(
 
 hpRouter.post(
   '/agreements/:id/forfeit',
+  requireOffice,
   validate({ params: idParams, body: forfeitBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: IdParams; body: ForfeitBody }>(req);

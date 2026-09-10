@@ -14,7 +14,10 @@ import { buildOpenApiDocument } from './document.js';
  */
 
 const MODULES_DIR = 'src/modules';
-const STAFF_GUARDS = ['requireOffice', 'requireAdmin', 'requireRole'];
+// Every gate that admits staff but not a collector. `requireCounter` belongs
+// here: it opens a route to the counter — admin, manager, teller — and a
+// collector is scoped to their own round instead.
+const STAFF_GUARDS = ['requireCounter', 'requireOffice', 'requireAdmin', 'requireRole'];
 
 /**
  * Every `METHOD /path` reachable with a collector token, read from the route

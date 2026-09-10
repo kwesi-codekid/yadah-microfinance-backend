@@ -8,8 +8,9 @@ import {
   pagination,
 } from '../../schemas/common.js';
 import { passwordField, username } from '../auth/auth.schemas.js';
+import { ROLES } from '../../models/shared.js';
 
-const ROLE = z.enum(['admin', 'manager', 'collector']);
+const ROLE = z.enum(ROLES);
 const STATUS = z.enum(['active', 'disabled']);
 
 export const createUserBody = z.object({
