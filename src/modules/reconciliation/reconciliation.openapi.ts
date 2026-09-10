@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
+import { ROLES } from '../../models/shared.js';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
   confirmDayBody,
@@ -28,6 +29,12 @@ const reconciliation = z
     id: z.string(),
     collectorId: z.string(),
     collectorName: z.string().optional(),
+    collectorRole: z
+      .enum(ROLES)
+      .optional()
+      .describe(
+        'What the person who declared the day does here. The handover runs one rank at a time: a teller counts in a collector, the office counts in a teller.',
+      ),
     accraDay: z.string(),
     expectedAmount: z.number().int().describe('What the system says was collected in cash'),
     expectedBreakdown: z.object({ susu: z.number().int(), savings: z.number().int() }),

@@ -53,9 +53,9 @@ loansRouter.put('/config', requireOffice, validate({ body: putConfigBody }), (re
     .catch(next);
 });
 
+// Read by the application form the moment a customer is picked.
 loansRouter.get(
   '/eligibility/:customerId',
-  requireOffice,
   validate({ params: customerIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
@@ -66,24 +66,21 @@ loansRouter.get(
   },
 );
 
-loansRouter.post(
-  '/applications',
-  requireOffice,
-  validate({ body: applyBody }),
-  (req, res, next) => {
-    const { body } = getValidated<{ body: ApplyBody }>(req);
-    loansService
-      .applyForLoan(
-        getAuth(req),
-        body.customerId,
-        body.principal,
-        body.durationMonths,
-        req.id as string,
-      )
-      .then((loan) => res.status(201).json({ loan }))
-      .catch(next);
-  },
-);
+// The counter may take an application; nothing is disbursed until a manager
+// approves it below, which is what makes that safe.
+loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: ApplyBody }>(req);
+  loansService
+    .applyForLoan(
+      getAuth(req),
+      body.customerId,
+      body.principal,
+      body.durationMonths,
+      req.id as string,
+    )
+    .then((loan) => res.status(201).json({ loan }))
+    .catch(next);
+});
 
 loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListLoansQuery }>(req);

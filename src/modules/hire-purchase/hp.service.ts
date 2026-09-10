@@ -56,7 +56,13 @@ import type {
 } from './hp.schemas.js';
 
 /** Agreement states that count as "customer has an open HP" (blocks loans too). */
-export const OPEN_HP_STATUSES = ['pending', 'active', 'in-arrears', 'repossessed'] as const;
+export const OPEN_HP_STATUSES = [
+  'awaiting-approval',
+  'pending',
+  'active',
+  'in-arrears',
+  'repossessed',
+] as const;
 const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
 
 // ---------------------------------------------------------------- items
@@ -564,6 +570,10 @@ export async function createAgreement(
             financedAmount,
             durationMonths: body.durationMonths,
             interestRatePercent: config.interestRatePercent,
+            // A teller may sign one at the counter, but it does not stand until
+            // a manager says so. Signed by the office, it stands at once — they
+            // are the ones who would have approved it.
+            status: actor.role === 'teller' ? 'awaiting-approval' : 'pending',
             createdById: new Types.ObjectId(actor.sub),
           },
         ],
@@ -592,15 +602,19 @@ export async function createAgreement(
     await session.endSession();
   }
 
-  await enqueueSms({
-    to: customer.phone,
-    template: 'hp-signed',
-    message:
-      `Yadah: hire purchase for ${item.name} created. ` +
-      `Deposit due: ${formatGhs(depositRequired)}. The item is released once the deposit is paid.`,
-    relatedEntityType: 'hp-agreement',
-    relatedEntityId: agreement._id,
-  });
+  // Nothing is promised to the customer until it stands: one still waiting on
+  // a manager gets its message when it is approved, not now.
+  if (agreement.status === 'pending') {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'hp-signed',
+      message:
+        `Yadah: hire purchase for ${item.name} created. ` +
+        `Deposit due: ${formatGhs(depositRequired)}. The item is released once the deposit is paid.`,
+      relatedEntityType: 'hp-agreement',
+      relatedEntityId: agreement._id,
+    });
+  }
   emitAdminEvent('hp.agreement.created', {
     id: agreement._id.toHexString(),
     customerId: customer._id.toHexString(),
@@ -628,6 +642,13 @@ export async function recordDeposit(
 
   const pre = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (pre.status === 'awaiting-approval') {
+    throw new AppError(
+      'NOT_APPROVED',
+      'This agreement is waiting on a manager — it cannot take a deposit yet',
+      422,
+    );
+  }
   if (pre.status !== 'pending') {
     throw new AppError('NOT_PENDING', `Agreement is ${pre.status} — deposit not applicable`, 422);
   }
@@ -730,6 +751,66 @@ export async function recordDeposit(
   return { agreement: toPublicAgreement(after), replayed: false };
 }
 
+/**
+ * A manager letting a counter-signed agreement stand.
+ *
+ * The unit came off the shelf when it was signed and stays reserved through
+ * this, so approving moves nothing but the status — the item is released to
+ * the customer later, when the deposit is paid.
+ */
+export async function approveAgreement(
+  actor: AccessTokenPayload,
+  agreementId: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicHpAgreement> {
+  const pre = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
+  if (!pre) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  if (pre.status !== 'awaiting-approval') {
+    throw new AppError(
+      'NOT_AWAITING_APPROVAL',
+      `Agreement is ${pre.status}, not waiting on approval`,
+      409,
+    );
+  }
+
+  const agreement = await HpAgreementModel.findOneAndUpdate(
+    { _id: agreementId, status: 'awaiting-approval' },
+    { $set: { status: 'pending' } },
+    { returnDocument: 'after' },
+  );
+  if (!agreement) {
+    throw new AppError('CONFLICT', 'Agreement changed concurrently — retry', 409);
+  }
+
+  await audit({
+    actorId: actor.sub,
+    action: 'hp.agreement.approve',
+    entityType: 'hp-agreement',
+    entityId: agreement._id,
+    before: { status: 'awaiting-approval' },
+    after: { status: 'pending' },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+
+  const customer = await CustomerModel.findById(agreement.customerId);
+  if (customer) {
+    await enqueueSms({
+      to: customer.phone,
+      template: 'hp-signed',
+      message:
+        `Yadah: your hire purchase for ${agreement.itemSnapshot.name} is approved. ` +
+        `Deposit due: ${formatGhs(agreement.depositRequired)}. The item is released once it is paid.`,
+      relatedEntityType: 'hp-agreement',
+      relatedEntityId: agreement._id,
+    });
+  }
+  emitAdminEvent('hp.agreement.approved', {
+    id: agreement._id.toHexString(),
+    item: agreement.itemSnapshot.name,
+  });
+  return toPublicAgreement(agreement);
+}
+
 export async function rejectAgreement(
   actor: AccessTokenPayload,
   agreementId: Types.ObjectId,
@@ -738,7 +819,8 @@ export async function rejectAgreement(
 ): Promise<PublicHpAgreement> {
   const pre = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
-  if (pre.status !== 'pending') {
+  // One a manager has not yet let stand can be turned down just as one they have.
+  if (pre.status !== 'pending' && pre.status !== 'awaiting-approval') {
     throw new AppError('NOT_PENDING', `Agreement is ${pre.status}`, 409);
   }
 
@@ -746,7 +828,8 @@ export async function rejectAgreement(
   try {
     await session.withTransaction(async () => {
       const upd = await HpAgreementModel.updateOne(
-        { _id: agreementId, status: 'pending' },
+        // Whichever side of approval it was on when it was turned down.
+        { _id: agreementId, status: { $in: ['pending', 'awaiting-approval'] } },
         { $set: { status: 'rejected', rejectionReason: reason, closedAt: new Date() } },
         { session },
       );
@@ -1309,7 +1392,11 @@ export async function trashHpAgreement(
   const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
   const payments = await HpPaymentModel.countDocuments({ agreementId });
-  if ((agreement.status !== 'pending' && agreement.status !== 'rejected') || payments > 0) {
+  const trashable =
+    agreement.status === 'pending' ||
+    agreement.status === 'awaiting-approval' ||
+    agreement.status === 'rejected';
+  if (!trashable || payments > 0) {
     throw new AppError(
       'CANNOT_TRASH',
       'Only unpaid pending or rejected agreements can be moved to the trash',
@@ -1323,7 +1410,7 @@ export async function trashHpAgreement(
     ...(reason !== undefined ? { deleteReason: reason } : {}),
   };
 
-  if (agreement.status === 'pending') {
+  if (agreement.status === 'pending' || agreement.status === 'awaiting-approval') {
     // Stock decremented at signing and the item never left the shop —
     // restock atomically with the trashing (mirrors reject).
     const session = await mongoose.startSession();
@@ -1409,7 +1496,7 @@ export async function restoreHpAgreement(
     throw new AppError('NOT_TRASHED', 'Agreement is not in the trash', 409);
   }
 
-  if (agreement.status === 'pending') {
+  if (agreement.status === 'pending' || agreement.status === 'awaiting-approval') {
     // Re-opening an application: the ID rule holds as it did at signing, and
     // the scans may have been cleared while the agreement sat in the trash.
     const customer = await CustomerModel.findById(agreement.customerId);

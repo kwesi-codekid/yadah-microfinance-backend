@@ -12,7 +12,7 @@ import {
   UserModel,
   type Reconciliation,
 } from '../../models/index.js';
-import { NOT_TRASHED } from '../../models/shared.js';
+import { NOT_TRASHED, type Role } from '../../models/shared.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type {
   ConfirmDayBody,
@@ -39,6 +39,15 @@ export interface PublicReconciliation {
   id: string;
   collectorId: string;
   collectorName?: string;
+  /**
+   * What the person who declared this day does here.
+   *
+   * The handover chain runs one rank at a time — a teller counts in a
+   * collector's day, the office counts in a teller's — so whoever is looking at
+   * a row needs to know whose day it is before they can be offered the count.
+   * Hydrated alongside the name, from the same read.
+   */
+  collectorRole?: Role;
   accraDay: string;
   expectedAmount: number;
   expectedBreakdown: { susu: number; savings: number };
@@ -175,8 +184,14 @@ export async function declareDay(
   body: DeclareDayBody,
   requestId?: string,
 ): Promise<PublicReconciliation> {
-  if (actor.role !== 'collector') {
-    throw new AppError('FORBIDDEN', 'Only a collector can close their own day', 403);
+  // Both ends of the chain close a day of their own: the collector's round,
+  // and the teller's till. The office receives, and has no day to declare.
+  if (actor.role !== 'collector' && actor.role !== 'teller') {
+    throw new AppError(
+      'FORBIDDEN',
+      'Only somebody who handled cash closes a day — a collector or a teller',
+      403,
+    );
   }
   const collectorId = new Types.ObjectId(actor.sub);
   const day = body.accraDay ?? todayInAccra();
@@ -263,7 +278,24 @@ export async function confirmDay(
     throw new AppError('ALREADY_RECONCILED', 'This day has already been reconciled', 409);
   }
   if (record.collectorId.equals(actor.sub)) {
-    throw new AppError('SELF_RECEIPT', 'A collector cannot confirm receipt of their own cash', 403);
+    throw new AppError('SELF_RECEIPT', 'Nobody confirms receipt of their own cash', 403);
+  }
+
+  /**
+   * The chain the cash actually walks (client decision, 10 Sep 2026): a
+   * collector hands to a teller, and a teller hands to the office. So a teller
+   * may count in a collector's day but not another teller's — their own day is
+   * counted by a manager, the same way the collector's is counted by them.
+   */
+  if (actor.role === 'teller') {
+    const declarer = await UserModel.findById(record.collectorId).select('role');
+    if (declarer?.role !== 'collector') {
+      throw new AppError(
+        'NOT_YOUR_HANDOVER',
+        'A teller counts in a collector’s day. This one is counted in by a manager.',
+        403,
+      );
+    }
   }
 
   // Recomputed here, not reused from declaration: a deposit may have been
@@ -343,12 +375,13 @@ export interface ReconciliationList {
 
 async function withCollectorNames(rows: Reconciliation[]): Promise<PublicReconciliation[]> {
   const ids = [...new Set(rows.map((r) => r.collectorId.toHexString()))];
-  const users = await UserModel.find({ _id: { $in: ids } }, { name: 1 });
-  const names = new Map(users.map((u) => [u._id.toHexString(), u.name]));
+  const users = await UserModel.find({ _id: { $in: ids } }, { name: 1, role: 1 });
+  const who = new Map(users.map((u) => [u._id.toHexString(), u]));
   return rows.map((r) => {
     const item = toPublicReconciliation(r);
-    const name = names.get(item.collectorId);
-    return name === undefined ? item : { ...item, collectorName: name };
+    const user = who.get(item.collectorId);
+    if (!user) return item;
+    return { ...item, collectorName: user.name, collectorRole: user.role };
   });
 }
 

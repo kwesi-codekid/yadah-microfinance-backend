@@ -231,7 +231,6 @@ hpRouter.put('/config', requireOffice, validate({ body: putConfigBody }), (req, 
 
 hpRouter.get(
   '/eligibility/:customerId',
-  requireOffice,
   validate({ params: customerIdParams }),
   (req, res, next) => {
     const { params } = getValidated<{ params: CustomerIdParams }>(req);
@@ -243,17 +242,13 @@ hpRouter.get(
 
 // ---- agreements
 
-hpRouter.post(
-  '/agreements',
-  requireOffice,
-  validate({ body: createAgreementBody }),
-  (req, res, next) => {
-    const { body } = getValidated<{ body: CreateAgreementBody }>(req);
-    hp.createAgreement(getAuth(req), body, req.id as string)
-      .then((agreement) => res.status(201).json({ agreement }))
-      .catch(next);
-  },
-);
+// The counter may sign one; it waits on a manager unless the office signed it.
+hpRouter.post('/agreements', validate({ body: createAgreementBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: CreateAgreementBody }>(req);
+  hp.createAgreement(getAuth(req), body, req.id as string)
+    .then((agreement) => res.status(201).json({ agreement }))
+    .catch(next);
+});
 
 hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListAgreementsQuery }>(req);
@@ -341,6 +336,19 @@ hpRouter.post(
       req.id as string,
     )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// A manager letting a counter-signed agreement stand.
+hpRouter.post(
+  '/agreements/:id/approve',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    hp.approveAgreement(getAuth(req), params.id, req.id as string)
+      .then((agreement) => res.json({ agreement }))
       .catch(next);
   },
 );

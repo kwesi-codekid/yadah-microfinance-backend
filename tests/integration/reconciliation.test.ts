@@ -6,7 +6,14 @@ import * as recon from '../../src/modules/reconciliation/reconciliation.service.
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import { accraDay } from '../../src/lib/time.js';
-import { asOfficer, makeCollector, makeCustomer, setupDb, teardownDb } from './helpers.js';
+import {
+  asOfficer,
+  makeCollector,
+  makeCustomer,
+  makeTeller,
+  setupDb,
+  teardownDb,
+} from './helpers.js';
 import type { AccessTokenPayload } from '../../src/modules/auth/auth.service.js';
 
 beforeAll(setupDb);
@@ -34,6 +41,66 @@ async function collectSusu(collector: AccessTokenPayload, daily: number, days = 
  * + savings deposits only — loans and hire purchase are collected at the
  * office. A shortage is recorded and reported, never blocked.
  */
+/**
+ * Who counts in whose day (client decision, 10 Sep 2026). The cash walks a
+ * chain: a collector hands to a teller, a teller hands to the office. Nobody
+ * counts in their own.
+ */
+describe('the handover chain', () => {
+  it('lets a teller count in a collector’s day', async () => {
+    const teller = await makeTeller();
+    const collector = await makeCollector('Chain Collector');
+    await collectSusu(collector, 3_000);
+    const declared = await recon.declareDay(collector, { accraDay: today, declaredAmount: 3_000 });
+
+    const done = await recon.confirmDay(teller, new Types.ObjectId(declared.id), {
+      receivedAmount: 3_000,
+    });
+    expect(done.status).toBe('reconciled');
+    expect(done.receivedById).toBe(teller.sub);
+  });
+
+  it('refuses a teller the day another teller declared — that one is the office’s', async () => {
+    const first = await makeTeller('First Teller');
+    const second = await makeTeller('Second Teller');
+    const declared = await recon.declareDay(first, { accraDay: today, declaredAmount: 0 });
+
+    await expect(
+      recon.confirmDay(second, new Types.ObjectId(declared.id), { receivedAmount: 0 }),
+    ).rejects.toMatchObject({ code: 'NOT_YOUR_HANDOVER' });
+
+    // The office counts that one in.
+    const done = await recon.confirmDay(officer, new Types.ObjectId(declared.id), {
+      receivedAmount: 0,
+    });
+    expect(done.status).toBe('reconciled');
+  });
+
+  it('never lets anyone count in their own day', async () => {
+    const teller = await makeTeller('Self Teller');
+    const declared = await recon.declareDay(teller, { accraDay: today, declaredAmount: 0 });
+    await expect(
+      recon.confirmDay(teller, new Types.ObjectId(declared.id), { receivedAmount: 0 }),
+    ).rejects.toMatchObject({ code: 'SELF_RECEIPT' });
+  });
+
+  it('says whose day each row is, so the screen can offer the count to the right person', async () => {
+    // Without this the counter cannot tell a collector's handover from another
+    // teller's, and would have to draw the confirm control for both and let
+    // the API refuse half of them.
+    const teller = await makeTeller('Labelled Teller');
+    const collector = await makeCollector('Labelled Collector');
+    await recon.declareDay(teller, { accraDay: today, declaredAmount: 0 });
+    await recon.declareDay(collector, { accraDay: today, declaredAmount: 0 });
+
+    const list = await recon.listReconciliations(officer, { page: 1, limit: 100 });
+    const roleOf = (sub: string) => list.items.find((r) => r.collectorId === sub)?.collectorRole;
+
+    expect(roleOf(teller.sub)).toBe('teller');
+    expect(roleOf(collector.sub)).toBe('collector');
+  });
+});
+
 describe('expected cash for a day', () => {
   it('adds up cash susu and savings deposits taken by that collector', async () => {
     const collector = await makeCollector();

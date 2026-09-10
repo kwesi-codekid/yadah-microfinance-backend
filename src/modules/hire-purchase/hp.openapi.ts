@@ -61,6 +61,7 @@ const hpAgreement = z
       .describe('totalPayable minus payments (deposit excluded); 0 before activation'),
     totalPaid: z.number().int(),
     status: z.enum([
+      'awaiting-approval',
       'pending',
       'rejected',
       'active',
@@ -488,14 +489,38 @@ export const hpPaths: ZodOpenApiPathsObject = {
           'Replay of an earlier request',
           z.object({ agreement: hpAgreement, replayed: z.boolean() }),
         ),
-        '422': errorResponse('DEPOSIT_MISMATCH (details.required) or NOT_PENDING'),
+        '422': errorResponse(
+          'DEPOSIT_MISMATCH (details.required), NOT_PENDING, or NOT_APPROVED ' +
+            'while the agreement is still awaiting-approval',
+        ),
+      },
+    },
+  },
+  '/hire-purchase/agreements/{id}/approve': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Let a counter-signed agreement stand (office only)',
+      description:
+        'An agreement signed by a teller is created awaiting-approval: the unit is ' +
+        'reserved but no deposit may be taken and the customer has not been told the ' +
+        'terms. Approving moves it to pending — where an office-signed agreement ' +
+        'starts — and sends the signing SMS. Refused with NOT_AWAITING_APPROVAL for ' +
+        'an agreement in any other state.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Approved; now pending its deposit', agreementResult),
+        '409': errorResponse('NOT_AWAITING_APPROVAL'),
       },
     },
   },
   '/hire-purchase/agreements/{id}/reject': {
     post: {
       tags: ['Hire Purchase'],
-      summary: 'Reject a pending agreement (restores stock)',
+      summary: 'Reject an agreement before its deposit (restores stock)',
+      description:
+        'Takes an agreement that is pending or awaiting-approval. Nothing has been ' +
+        'paid in either state and the unit goes back on the shelf either way.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(reasonBody),

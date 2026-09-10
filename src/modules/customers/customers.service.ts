@@ -144,7 +144,13 @@ async function assertActiveCollector(collectorId: Types.ObjectId): Promise<void>
 /** Loan states in which the customer is "on a loan" — from application to settlement. */
 const OPEN_LOAN_STATUSES = ['pending', 'approved', 'active', 'arrears'] as const;
 /** Agreement states in which the customer is "on hire purchase". */
-const OPEN_HP_STATUSES = ['pending', 'active', 'in-arrears', 'repossessed'] as const;
+const OPEN_HP_STATUSES = [
+  'awaiting-approval',
+  'pending',
+  'active',
+  'in-arrears',
+  'repossessed',
+] as const;
 
 /** Open loans and hire-purchase agreements — the credit the ID document backs. */
 async function openCreditCounts(

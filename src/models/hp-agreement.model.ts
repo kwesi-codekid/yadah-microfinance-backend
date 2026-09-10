@@ -37,6 +37,8 @@ export interface HpAgreement extends TrashFields {
   totalPayable?: number;
   totalPaid: number; // deposit + installments + redemption payments
   status:
+    /** Signed at the counter by a teller, waiting on a manager to let it stand. */
+    | 'awaiting-approval'
     | 'pending'
     | 'rejected'
     | 'active'
@@ -86,6 +88,7 @@ const hpAgreementSchema = new Schema<HpAgreement>(
     status: {
       type: String,
       enum: [
+        'awaiting-approval',
         'pending',
         'rejected',
         'active',

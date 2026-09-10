@@ -107,7 +107,10 @@ const THE_COUNTER = [
   'POST /savings/accounts/{id}/withdrawals',
   'POST /savings/accounts/{id}/close',
 
-  // Loans and hire purchase: take the money, never decide the thing.
+  // Loans and hire purchase: take the application and the money, but never
+  // decide the thing — both need a manager before they take effect.
+  'POST /loans/applications',
+  'POST /hire-purchase/agreements',
   'POST /loans/{id}/repayments',
   'POST /loans/{id}/repayments/susu-closure',
   'POST /hire-purchase/sales',
@@ -115,19 +118,25 @@ const THE_COUNTER = [
   'POST /hire-purchase/agreements/{id}/payments',
   'POST /hire-purchase/agreements/{id}/redeem',
 
-  // The day's figures, and declaring the till at the end of it.
+  // The day's figures, declaring the till at the end of it, and counting in
+  // what a collector hands over. Which days a teller may count in is narrowed
+  // in the service, not the gate: collectors' only, never their own.
   'GET /dashboard/summary',
+  'GET /dashboard/series',
+  'GET /dashboard/efficiency',
+  'GET /dashboard/alerts',
+  'GET /dashboard/recent-transactions',
   'POST /reconciliation/declare',
+  'POST /reconciliation/{id}/confirm',
 ] as const;
 
 /** Deciding, correcting, and the company's own books. Not the counter's. */
 const NOT_THE_COUNTER = [
   // Credit is decided by a person senior to whoever holds the cash.
-  'POST /loans/applications',
   'POST /loans/{id}/approve',
   'POST /loans/{id}/reject',
   'PUT /loans/config',
-  'POST /hire-purchase/agreements',
+  'POST /hire-purchase/agreements/{id}/approve',
   'POST /hire-purchase/agreements/{id}/reject',
   'POST /hire-purchase/agreements/{id}/repossess',
   'POST /hire-purchase/agreements/{id}/forfeit',
@@ -158,9 +167,8 @@ const NOT_THE_COUNTER = [
   'GET /reports/dashboard',
   'POST /users',
 
-  // Counting somebody else's declared cash is supervision, not counter work.
+  // The variance report across the whole branch is supervision.
   'GET /reconciliation/variances',
-  'POST /reconciliation/{id}/confirm',
 ] as const;
 
 describe('what a teller can reach', () => {

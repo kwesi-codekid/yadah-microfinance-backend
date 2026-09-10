@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireOffice } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   confirmDayBody,
@@ -108,10 +108,16 @@ reconciliationRouter.get('/:id', validate({ params: reconciliationIdParams }), (
     .catch(next);
 });
 
-// Step 2 — the office receiver confirms what was actually turned in.
+/**
+ * Step 2 — whoever the cash was handed to counts it in.
+ *
+ * The gate is the counter, not the office, because a collector hands their day
+ * to a teller. Which days a teller may count in is narrowed in the service:
+ * collectors' only, never another teller's and never their own.
+ */
 reconciliationRouter.post(
   '/:id/confirm',
-  requireOffice,
+  requireCounter,
   validate({ params: reconciliationIdParams, body: confirmDayBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{

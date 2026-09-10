@@ -64,6 +64,20 @@ export function asOfficer(): AccessTokenPayload {
   return { sub: new Types.ObjectId().toHexString(), role: 'admin' };
 }
 
+/** A teller actor plus the user record their role is read from. */
+export async function makeTeller(name = 'Counter Teller'): Promise<AccessTokenPayload> {
+  collectorPhoneCounter += 1;
+  const user = await UserModel.create({
+    name,
+    username: `teller-${new Types.ObjectId().toHexString()}`,
+    phone: `0247${String(100000 + collectorPhoneCounter)}`,
+    role: 'teller',
+    status: 'active',
+    passwordHash: 'x'.repeat(60),
+  });
+  return { sub: user._id.toHexString(), role: 'teller' };
+}
+
 let collectorPhoneCounter = 0;
 
 /** A collector actor plus the user record the scope lock resolves against. */

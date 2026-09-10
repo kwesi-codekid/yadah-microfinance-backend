@@ -145,6 +145,7 @@ export const listAgreementsQuery = pagination
     customerId: objectId.optional(),
     status: z
       .enum([
+        'awaiting-approval',
         'pending',
         'rejected',
         'active',
