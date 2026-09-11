@@ -10,6 +10,8 @@ export const NOTIFICATION_TYPES = [
   'susu.deposit',
   'susu.withdrawal',
   'susu.payout',
+  /** A payment filled a cycle and the remainder opened a new account. */
+  'susu.carry-forward',
   'savings.deposit',
   'savings.withdrawal',
   'customer.reassigned',

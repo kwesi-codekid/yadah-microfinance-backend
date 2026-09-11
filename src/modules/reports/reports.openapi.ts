@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
-import { TXN_MODULES, TXN_STATUSES, TXN_TYPES } from '../../domain/transactions.js';
+import {
+  RECORDED_BY_KINDS,
+  TXN_MODULES,
+  TXN_STATUSES,
+  TXN_TYPES,
+} from '../../domain/transactions.js';
 import { errorResponse, jsonResponse } from '../../openapi/shared.js';
-import { formatOnlyQuery, rangeQuery, transactionsQuery } from './reports.schemas.js';
+import { rangeQuery, transactionsQuery } from './reports.schemas.js';
 
 const security = [{ bearerAuth: [] }];
 const csvNote = ' Pass format=csv for a downloadable CSV.';
@@ -19,7 +24,15 @@ export const unifiedTransaction = z
           '(money moved between the same customer’s products) — excluded from cash totals.',
       ),
     amount: z.number().int().describe('Integer pesewas'),
-    fee: z.number().int().describe('Integer pesewas (savings withdrawal / transfer fee)'),
+    fee: z
+      .number()
+      .int()
+      .describe(
+        'Integer pesewas. The charge taken on this row: a savings withdrawal or ' +
+          'closure fee, or the one-day commission charged when a susu account was ' +
+          'stopped. A staged susu payout carries it on the instalment that stopped ' +
+          'the account and zero on every later one, so it is never counted twice.',
+      ),
     status: z
       .enum(TXN_STATUSES)
       .describe(
@@ -57,7 +70,17 @@ export const unifiedTransaction = z
     }),
     balanceAfter: z.number().int().optional().describe('Savings rows only: running balance'),
     recordedById: z.string().nullable(),
-    recordedByName: z.string().nullable().describe("'System' for automated debt-recovery moves"),
+    recordedByName: z
+      .string()
+      .nullable()
+      .describe("'System' for automated moves; null when the record named no actor"),
+    recordedByKind: z
+      .enum(RECORDED_BY_KINDS)
+      .describe(
+        'Which directory recordedById belongs to: staff is a User id, customer is a ' +
+          'Customer id (a portal payment the customer made themselves), system is an ' +
+          'automated debt-recovery move, unknown means the source record named nobody.',
+      ),
     createdAt: z.iso.datetime(),
   })
   .meta({ id: 'UnifiedTransaction' });
@@ -67,7 +90,10 @@ export const txnTotals = z
     in: z.object({ count: z.number().int(), amount: z.number().int() }),
     out: z.object({ count: z.number().int(), amount: z.number().int() }),
     internal: z.object({ count: z.number().int(), amount: z.number().int() }),
-    feesCollected: z.number().int().describe('Savings withdrawal/closure fees in the range'),
+    feesCollected: z
+      .number()
+      .int()
+      .describe('Charges kept in the range: savings fees plus susu closing commissions'),
   })
   .meta({ id: 'TransactionTotals' });
 
@@ -196,9 +222,14 @@ export const reportPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Reports'],
       summary: 'All open loans with remaining balances and days overdue',
-      description: 'Active and arrears loans, soonest due first.' + csvNote,
+      description:
+        'Active and arrears loans, soonest due first. Optional from/to narrow it to ' +
+        'loans DISBURSED in that range — how much was put out in a period and what is ' +
+        'still owed on it. Unlike the other report windows, omitting them means the ' +
+        'whole book rather than the last 30 days.' +
+        csvNote,
       security,
-      requestParams: { query: formatOnlyQuery },
+      requestParams: { query: rangeQuery },
       responses: { '200': jsonResponse('Report', z.unknown()) },
     },
   },
@@ -206,8 +237,12 @@ export const reportPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Reports'],
       summary: 'Arrears aging buckets (1–30 / 31–90 / 90+ days)',
+      description:
+        'Optional from/to narrow it to loans disbursed in that range; omitting them ' +
+        'ages the whole book.' +
+        csvNote,
       security,
-      requestParams: { query: formatOnlyQuery },
+      requestParams: { query: rangeQuery },
       responses: { '200': jsonResponse('Report', z.unknown()) },
     },
   },

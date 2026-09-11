@@ -1,4 +1,10 @@
 import { Schema, model, type Types } from 'mongoose';
+import {
+  accountNumberPattern,
+  CYCLE_MONTHS,
+  LEGACY_SUSU_PATTERN,
+  type CycleMonth,
+} from '../lib/account-number.js';
 import { moneyField, optionalMoneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
@@ -8,9 +14,20 @@ import { moneyField, optionalMoneyField, trashFields, type TrashFields } from '.
  */
 export interface SusuAccount extends TrashFields {
   _id: Types.ObjectId;
-  /** `SU` + YYMM + 4-digit monthly sequence, e.g. SU26080001. Accounts opened
-   *  before the scheme keep their legacy 6 random digits. */
+  /** `SU` + YYMM + 4-digit monthly sequence + `-MMM` cycle month, e.g.
+   *  SU26090005-SEP. Accounts opened before the cycle month have no suffix;
+   *  accounts opened before the scheme keep their legacy 6 random digits. */
   accountNumber: string;
+  /**
+   * The month this cycle is *called*, which the counter picks when opening
+   * and which need not be the month the number was issued in — a cycle
+   * started on 28 August for a customer who thinks of it as September is
+   * opened as SEP. Immutable, like dailyAmount: it is printed on the
+   * customer's receipt the moment the account exists.
+   *
+   * Absent on every account opened before the suffix existed.
+   */
+  cycleMonth?: CycleMonth;
   customerId: Types.ObjectId;
   dailyAmount: number; // pesewas, immutable
   depositsCount: number; // 0..31, denormalized from susu-deposits
@@ -30,6 +47,12 @@ export interface SusuAccount extends TrashFields {
    */
   status: 'active' | 'completed' | 'pending-payout' | 'closed' | 'terminated';
   openedById: Types.ObjectId;
+  /**
+   * Set when this account exists because a payment overflowed the cycle of
+   * another one — the customer handed over more than the old cycle could hold,
+   * and the remainder had to go somewhere.
+   */
+  carriedFromAccountId?: Types.ObjectId;
   closedById?: Types.ObjectId;
   closedAt?: Date;
   /** Set when the account stops: payout = totalDeposited − commission (1 × dailyAmount). */
@@ -47,8 +70,12 @@ const susuAccountSchema = new Schema<SusuAccount>(
       type: String,
       required: true,
       unique: true,
-      match: /^(SU\d{8}|\d{6})$/,
+      // Built from the shared pattern so the suffix rule is stated once.
+      match: new RegExp(
+        `(?:${accountNumberPattern('SU').source})|(?:${LEGACY_SUSU_PATTERN.source})`,
+      ),
     },
+    cycleMonth: { type: String, enum: CYCLE_MONTHS, immutable: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     dailyAmount: { ...moneyField, immutable: true },
     depositsCount: { type: Number, default: 0, min: 0, max: 31 },
@@ -60,6 +87,7 @@ const susuAccountSchema = new Schema<SusuAccount>(
       default: 'active',
     },
     openedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    carriedFromAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
     closedById: { type: Schema.Types.ObjectId, ref: 'User' },
     closedAt: { type: Date },
     commissionAmount: optionalMoneyField,

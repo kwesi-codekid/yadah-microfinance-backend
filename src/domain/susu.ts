@@ -119,3 +119,75 @@ export function remainingDeposits(depositsCount: number): number {
   }
   return SUSU_CYCLE_DEPOSITS - depositsCount;
 }
+
+/**
+ * How many follow-on accounts one payment may open.
+ *
+ * One. The real case is a catch-up that overshoots the end of a cycle by a few
+ * days. A single payment worth more than two full cycles is far likelier a
+ * typo at the counter — 6200000 keyed for 62000 — than cash somebody actually
+ * handed over, and quietly opening three accounts on a typo is worse than
+ * refusing it and asking. The split below still returns a list, so raising
+ * this is a one-constant change.
+ */
+export const SUSU_MAX_CARRY_ACCOUNTS = 1;
+
+export interface CycleAllocation {
+  /** 0 is the account the payment was recorded against; 1.. are new accounts. */
+  index: number;
+  daysCovered: number;
+  /** 1-based position within that account's own 31-day cycle. */
+  seqStart: number;
+  seqEnd: number;
+  /** True when this chunk lands exactly on day 31 of its account. */
+  completesCycle: boolean;
+}
+
+/**
+ * Split a payment that runs past the end of a cycle.
+ *
+ * The first chunk fills the account it was paid into up to 31 days; each
+ * further chunk is a fresh 31-day cycle in a new account. Every chunk
+ * therefore satisfies the deposit model's 1..31 bounds on its own, with no
+ * schema change — a 40-day payment against an account with 5 days paid splits
+ * [26, 14], not [26, 31, 14].
+ *
+ * The chunks always sum to `daysCovered`. That invariant is the money rule,
+ * and the caller re-checks it against the cash before committing.
+ */
+export function splitAcrossCycles(depositsCount: number, daysCovered: number): CycleAllocation[] {
+  const first = remainingDeposits(depositsCount);
+  if (!Number.isInteger(daysCovered) || daysCovered < 1) {
+    throw new Error(`daysCovered must be a positive integer, got ${String(daysCovered)}`);
+  }
+  if (first === 0) {
+    // An account at 31 is 'completed', never 'active', so the service refuses
+    // it well before here. Guard anyway rather than emit a zero-day chunk.
+    throw new Error('the cycle is already full — nothing can be recorded against it');
+  }
+
+  const out: CycleAllocation[] = [];
+  let left = daysCovered;
+  let index = 0;
+  while (left > 0) {
+    const capacity = index === 0 ? first : SUSU_CYCLE_DEPOSITS;
+    const take = Math.min(left, capacity);
+    const seqStart = index === 0 ? depositsCount + 1 : 1;
+    const seqEnd = seqStart + take - 1;
+    out.push({
+      index,
+      daysCovered: take,
+      seqStart,
+      seqEnd,
+      completesCycle: seqEnd === SUSU_CYCLE_DEPOSITS,
+    });
+    left -= take;
+    index += 1;
+  }
+  return out;
+}
+
+/** Follow-on accounts a split implies. Zero on the ordinary path. */
+export function carriedAccountCount(allocations: CycleAllocation[]): number {
+  return Math.max(0, allocations.length - 1);
+}

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   accountNumberPattern,
+  bareAccountNumber,
+  CYCLE_MONTHS,
+  cycleMonthFrom,
+  cycleMonthOf,
   accountPeriodKey,
   counterKey,
   formatAccountNumber,
@@ -74,5 +78,51 @@ describe('counterKey', () => {
     // Different product or different month means a different, independent counter.
     expect(counterKey('SV', '2608')).not.toBe(counterKey('SU', '2608'));
     expect(counterKey('SU', '2609')).not.toBe(counterKey('SU', '2608'));
+  });
+});
+
+describe('cycle months', () => {
+  it('names the month a date falls in', () => {
+    expect(cycleMonthOf(new Date('2026-09-11T00:00:00.000Z'))).toBe('SEP');
+    expect(cycleMonthOf(new Date('2026-01-01T00:00:00.000Z'))).toBe('JAN');
+    expect(cycleMonthOf(new Date('2026-12-31T23:59:59.000Z'))).toBe('DEC');
+  });
+
+  it('covers the calendar exactly once', () => {
+    expect(CYCLE_MONTHS).toHaveLength(12);
+    expect(new Set(CYCLE_MONTHS).size).toBe(12);
+  });
+});
+
+describe('susu cycle-month suffix', () => {
+  it('appends the chosen month', () => {
+    expect(formatAccountNumber('SU', '2609', 5, 'SEP')).toBe('SU26090005-SEP');
+  });
+
+  it('lets the cycle month differ from the issue month', () => {
+    // Opened on 28 August for a cycle the customer calls September.
+    expect(formatAccountNumber('SU', '2608', 12, 'SEP')).toBe('SU26080012-SEP');
+  });
+
+  it('refuses a cycle month on any other product', () => {
+    expect(() => formatAccountNumber('SV', '2609', 5, 'SEP')).toThrow();
+    expect(() => formatAccountNumber('LN', '2609', 5, 'SEP')).toThrow();
+  });
+
+  it('validates suffixed and unsuffixed susu numbers alike', () => {
+    expect(accountNumberPattern('SU').test('SU26090005-SEP')).toBe(true);
+    expect(accountNumberPattern('SU').test('SU26090005')).toBe(true);
+    expect(accountNumberPattern('SU').test('SU26090005-SEPT')).toBe(false);
+    expect(accountNumberPattern('SU').test('SU26090005-XYZ')).toBe(false);
+    expect(accountNumberPattern('SV').test('SV26090005-SEP')).toBe(false);
+  });
+
+  it('reads the number back apart', () => {
+    expect(bareAccountNumber('SU26090005-SEP')).toBe('SU26090005');
+    expect(bareAccountNumber('SU26090005')).toBe('SU26090005');
+    expect(bareAccountNumber('123456')).toBe('123456');
+    expect(cycleMonthFrom('SU26090005-SEP')).toBe('SEP');
+    expect(cycleMonthFrom('SU26090005')).toBeUndefined();
+    expect(cycleMonthFrom('SU26090005-NOPE')).toBeUndefined();
   });
 });

@@ -1,5 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
+import { recordPriceChanges } from './hp-pricing.service.js';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
@@ -125,7 +126,7 @@ function toPublicItem(i: HpItem, names: Map<string, string>): PublicHpItem {
 }
 
 /** One item with its labels named. */
-async function publicItem(i: HpItem): Promise<PublicHpItem> {
+export async function publicItem(i: HpItem): Promise<PublicHpItem> {
   return toPublicItem(i, await labelNamesFor([i]));
 }
 
@@ -233,6 +234,8 @@ export async function updateItem(
   const item = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!item) throw new AppError('NOT_FOUND', 'Item not found', 404);
 
+  const costBefore = item.costPrice;
+  const sellingBefore = item.sellingPrice;
   const before: Record<string, unknown> = {};
   const after: Record<string, unknown> = {};
   for (const key of ['name', 'description', 'costPrice', 'sellingPrice', 'status'] as const) {
@@ -260,6 +263,20 @@ export async function updateItem(
   }
   validatePricing(item.costPrice, item.sellingPrice);
   await item.save();
+
+  // Editing the shelf is one of the three ways a price can move (the others
+  // are a delivery and the bulk importer), and all three leave a trace — a
+  // number that changed with nothing to point at afterwards is the whole
+  // problem the history exists to solve.
+  await recordPriceChanges(
+    actor,
+    item._id,
+    [
+      { kind: 'cost', previous: costBefore, current: item.costPrice },
+      { kind: 'selling', previous: sellingBefore, current: item.sellingPrice },
+    ],
+    { reason: 'Edited on the item' },
+  );
 
   if (Object.keys(after).length > 0) {
     await audit({

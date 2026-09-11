@@ -10,7 +10,7 @@ import { NOT_TRASHED } from '../../models/shared.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 import { commissionEarned } from '../reports/reports.service.js';
 import { cashPosition } from './cash.service.js';
-import { accruedExpenses, expensesByCategory } from './expenses.service.js';
+import { accruedExpenses, expensesByCategory } from '../expenses/expenses.service.js';
 import { assetPositionAt, capitalAt, depreciationExpense } from './fixed-assets.service.js';
 import { interestEarned } from './income.service.js';
 

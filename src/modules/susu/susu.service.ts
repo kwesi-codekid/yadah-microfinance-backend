@@ -1,6 +1,11 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
-import { nextAccountNumber } from '../../lib/account-number.js';
+import {
+  bareAccountNumber,
+  cycleMonthOf,
+  nextAccountNumber,
+  type CycleMonth,
+} from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -21,10 +26,13 @@ import {
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
   SUSU_CYCLE_DEPOSITS,
+  SUSU_MAX_CARRY_ACCOUNTS,
+  carriedAccountCount,
   computeClosure,
   computePartialWithdrawal,
   maxPartialWithdrawal,
   remainingDeposits,
+  splitAcrossCycles,
   susuBalance,
 } from '../../domain/susu.js';
 import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
@@ -58,6 +66,10 @@ export interface PublicSusuAccount {
   /** What may be withdrawn today, keeping one day back for the commission. */
   availableToWithdraw: number;
   status: 'active' | 'completed' | 'pending-payout' | 'closed' | 'terminated';
+  /** The month this cycle is called. Absent on accounts opened before it existed. */
+  cycleMonth?: CycleMonth;
+  /** Set when this cycle exists because another one overflowed into it. */
+  carriedFromAccountId?: string;
   commissionAmount?: number;
   payoutAmount?: number;
   /** Undisbursed value awaiting withdrawal (pending-payout accounts). */
@@ -83,6 +95,10 @@ export function toPublicAccount(a: SusuAccount): PublicSusuAccount {
     // already committed to payout.
     availableToWithdraw: open ? maxPartialWithdrawal(balance, a.dailyAmount) : 0,
     status: a.status,
+    ...(a.cycleMonth !== undefined ? { cycleMonth: a.cycleMonth } : {}),
+    ...(a.carriedFromAccountId
+      ? { carriedFromAccountId: a.carriedFromAccountId.toHexString() }
+      : {}),
     ...(a.commissionAmount !== undefined ? { commissionAmount: a.commissionAmount } : {}),
     ...(a.payoutAmount !== undefined ? { payoutAmount: a.payoutAmount } : {}),
     payoutRemaining: a.payoutRemaining,
@@ -98,6 +114,7 @@ export function toSusuAccountExportRow(item: PublicSusuAccount): Record<string, 
     accountNumber: item.accountNumber,
     customerName: item.customerName ?? '',
     customerId: item.customerId,
+    cycleMonth: item.cycleMonth ?? '',
     dailyAmount: item.dailyAmount,
     depositsCount: item.depositsCount,
     cycleTarget: item.cycleTarget,
@@ -124,6 +141,11 @@ export interface PublicDeposit {
   seqEnd: number;
   channel: string;
   collectAllBatchId?: string;
+  /** The other half of a payment that ran past the end of this cycle. */
+  carriedToDepositId?: string;
+  carriedToAccountId?: string;
+  carriedFromDepositId?: string;
+  carriedFromAccountId?: string;
   createdAt: Date;
 }
 
@@ -153,6 +175,14 @@ function toPublicDeposit(d: SusuDeposit): PublicDeposit {
     seqEnd: d.seqEnd,
     channel: d.channel,
     ...(d.collectAllBatchId ? { collectAllBatchId: d.collectAllBatchId.toHexString() } : {}),
+    ...(d.carriedToDepositId ? { carriedToDepositId: d.carriedToDepositId.toHexString() } : {}),
+    ...(d.carriedToAccountId ? { carriedToAccountId: d.carriedToAccountId.toHexString() } : {}),
+    ...(d.carriedFromDepositId
+      ? { carriedFromDepositId: d.carriedFromDepositId.toHexString() }
+      : {}),
+    ...(d.carriedFromAccountId
+      ? { carriedFromAccountId: d.carriedFromAccountId.toHexString() }
+      : {}),
     createdAt: d.createdAt,
   };
 }
@@ -167,10 +197,20 @@ async function loadCustomer(customerId: Types.ObjectId): Promise<Customer> {
 
 // ---------------------------------------------------------------- accounts
 
+/**
+ * Open a cycle.
+ *
+ * `cycleMonth` is what the customer's account is *called* — the `-SEP` on
+ * SU26090005-SEP — and defaults to the month we are actually in. It is
+ * allowed to differ from the month the number was issued in, because a cycle
+ * opened in the last days of August for a customer who thinks of it as their
+ * September savings is a September cycle to everyone but the calendar.
+ */
 export async function openAccount(
   actor: AccessTokenPayload,
   customerId: Types.ObjectId,
   dailyAmount: number,
+  cycleMonth: CycleMonth = cycleMonthOf(),
   requestId?: string,
 ): Promise<PublicSusuAccount> {
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
@@ -183,9 +223,10 @@ export async function openAccount(
   for (let attempt = 0; ; attempt++) {
     try {
       account = await SusuAccountModel.create({
-        accountNumber: await nextAccountNumber('SU'),
+        accountNumber: await nextAccountNumber('SU', new Date(), cycleMonth),
         customerId,
         dailyAmount,
+        cycleMonth,
         openedById: new Types.ObjectId(actor.sub),
       });
       break;
@@ -202,7 +243,7 @@ export async function openAccount(
     action: 'susu.account.open',
     entityType: 'susu-account',
     entityId: account._id,
-    after: { dailyAmount, customerId: customerId.toHexString() },
+    after: { dailyAmount, cycleMonth, customerId: customerId.toHexString() },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   emitAdminEvent('susu.account.opened', {
@@ -211,6 +252,7 @@ export async function openAccount(
     customerId: customerId.toHexString(),
     customerName: customer.fullName,
     dailyAmount,
+    cycleMonth,
   });
   return toPublicAccount(account);
 }
@@ -229,7 +271,13 @@ export async function listAccounts(
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
-  if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
+  if (query.accountNumber !== undefined) {
+    // A customer quoting SU26090005 means SU26090005-SEP; the cycle month is
+    // part of the number but not part of what anyone reads back over a phone.
+    const bare = bareAccountNumber(query.accountNumber);
+    filter.accountNumber =
+      bare === query.accountNumber ? { $regex: `^${bare}(?:-[A-Z]{3})?$` } : query.accountNumber;
+  }
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
 
@@ -237,8 +285,12 @@ export async function listAccounts(
   if (query.search !== undefined) {
     const customerIds = await fuzzyCustomerIds(query.search);
     const or: Record<string, unknown>[] = [{ customerId: { $in: customerIds } }];
-    if (/^\d{2,6}$/.test(query.search)) {
-      or.push({ accountNumber: { $regex: `^${query.search}` } });
+    // Legacy numbers are bare digits; current ones start SU. Both are matched
+    // as a prefix, and the cycle-month suffix is dropped first so that a
+    // customer quoting SU26090005 still finds SU26090005-SEP.
+    const term = bareAccountNumber(query.search.trim()).toUpperCase();
+    if (/^(?:\d{2,6}|SU\d{0,8})$/.test(term)) {
+      or.push({ accountNumber: { $regex: `^${term}` } });
     }
     filter.$or = or;
   }
@@ -304,13 +356,98 @@ export async function listAccountDeposits(
 
 // ---------------------------------------------------------------- deposits
 
-export interface DepositResult {
+export interface DepositLeg {
   deposit: PublicDeposit;
   account: PublicSusuAccount;
+  /** True when this leg's account was opened by this very payment. */
+  carried: boolean;
+}
+
+export interface DepositResult {
+  /**
+   * The leg recorded against the account the request named. Kept at the top
+   * level, unchanged, so every existing caller and receipt still reads the
+   * same two fields; a carried payment simply has more in `legs`.
+   */
+  deposit: PublicDeposit;
+  account: PublicSusuAccount;
+  /** Every leg of this payment, oldest first. Longer than one only on a carry. */
+  legs: DepositLeg[];
+  /** The whole of what the customer handed over, across all legs. */
+  totalAmount: number;
+  /** Accounts this payment had to open. Empty on the ordinary path. */
+  openedAccounts: PublicSusuAccount[];
   /** True when this response replays an earlier identical request. */
   replayed: boolean;
 }
 
+/** The idempotency key a carried leg is written under, derived from the first. */
+function carryKey(idempotencyKey: string, index: number): string {
+  return `${idempotencyKey}#carry${String(index)}`;
+}
+
+/** Assemble the response from the deposit rows, whether fresh or replayed. */
+async function buildDepositResult(
+  legDocs: SusuDeposit[],
+  replayed: boolean,
+): Promise<DepositResult> {
+  const accounts = await SusuAccountModel.find({
+    _id: { $in: legDocs.map((d) => d.accountId) },
+  });
+  const byId = new Map(accounts.map((a) => [a._id.toHexString(), a]));
+  const legs: DepositLeg[] = legDocs.map((d) => {
+    const account = byId.get(d.accountId.toHexString());
+    if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+    return {
+      deposit: toPublicDeposit(d),
+      account: toPublicAccount(account),
+      carried: d.carriedFromDepositId !== undefined,
+    };
+  });
+  const head = legs[0];
+  if (!head) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+  return {
+    deposit: head.deposit,
+    account: head.account,
+    legs,
+    totalAmount: legDocs.reduce((sum, d) => sum + d.amount, 0),
+    openedAccounts: legs.filter((l) => l.carried).map((l) => l.account),
+    replayed,
+  };
+}
+
+/** A result with only the leg in hand — the correction paths never carry. */
+function singleLegResult(deposit: SusuDeposit, account: SusuAccount): DepositResult {
+  const leg: DepositLeg = {
+    deposit: toPublicDeposit(deposit),
+    account: toPublicAccount(account),
+    carried: false,
+  };
+  return {
+    deposit: leg.deposit,
+    account: leg.account,
+    legs: [leg],
+    totalAmount: deposit.amount,
+    openedAccounts: [],
+    replayed: false,
+  };
+}
+
+/**
+ * Record a collection against a cycle, carrying any overflow into a new one.
+ *
+ * A susu cycle holds exactly 31 days. A catch-up payment that runs past the
+ * end of the cycle it was paid into used to be refused outright, which left
+ * the collector holding cash they could not book. It is now split: the days
+ * that fit finish the current cycle, and the remainder opens a fresh account
+ * for the same customer, at the same immutable daily amount, numbered with the
+ * CURRENT month's suffix — the new cycle starts now, whatever the old one was
+ * called.
+ *
+ * The split is pure (`splitAcrossCycles`) and the total is re-checked against
+ * the cash before the transaction commits: this is a ledger, and a split that
+ * loses a pesewa is worse than a refusal.
+ */
 export async function recordDeposit(
   actor: AccessTokenPayload,
   accountId: Types.ObjectId,
@@ -320,22 +457,23 @@ export async function recordDeposit(
   requestId?: string,
 ): Promise<DepositResult> {
   // Replay of a retried mobile request → return the original, write nothing.
-  const existing = await SusuDepositModel.findOne({ idempotencyKey });
-  if (existing) {
-    if (existing.deletedAt) {
+  // A carried payment wrote several rows under derived keys, so all of them
+  // have to come back, or a retry would look like it lost money.
+  const prior = await SusuDepositModel.find({
+    $or: [
+      { idempotencyKey },
+      { idempotencyKey: { $regex: `^${escapeRegex(idempotencyKey)}#carry` } },
+    ],
+  }).sort({ createdAt: 1, _id: 1 });
+  if (prior.length > 0) {
+    if (prior.some((d) => d.deletedAt)) {
       throw new AppError(
         'CONFLICT',
         'The original deposit was moved to the trash — use a new idempotency key',
         409,
       );
     }
-    const account = await SusuAccountModel.findById(existing.accountId);
-    if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-    return {
-      deposit: toPublicDeposit(existing),
-      account: toPublicAccount(account),
-      replayed: true,
-    };
+    return buildDepositResult(prior, true);
   }
 
   const accountPre = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
@@ -353,115 +491,291 @@ export async function recordDeposit(
   const daysCovered = amount / accountPre.dailyAmount;
   const customer = await loadCustomer(accountPre.customerId);
 
-  const session = await mongoose.startSession();
-  let deposit!: SusuDeposit;
-  try {
-    await session.withTransaction(async () => {
-      const account = await SusuAccountModel.findOne({
-        _id: accountId,
-        status: 'active',
-        ...NOT_TRASHED,
-      }).session(session);
-      if (!account) {
-        throw new AppError(
-          'ACCOUNT_NOT_ACTIVE',
-          'Deposits are only allowed on active accounts',
-          422,
-        );
-      }
-      const remaining = remainingDeposits(account.depositsCount);
-      if (daysCovered > remaining) {
-        throw new AppError(
-          'EXCEEDS_REMAINING',
-          `Only ${String(remaining)} deposit day(s) remain in this cycle`,
-          422,
-          { remaining },
-        );
-      }
-
-      const completed = account.depositsCount + daysCovered === SUSU_CYCLE_DEPOSITS;
-
-      // Optimistic concurrency: the counters must not have moved since we read them.
-      const upd = await SusuAccountModel.updateOne(
-        { _id: account._id, status: 'active', depositsCount: account.depositsCount },
-        {
-          $inc: { depositsCount: daysCovered, totalDeposited: amount },
-          ...(completed ? { $set: { status: 'completed' } } : {}),
-        },
-        { session },
-      );
-      if (upd.modifiedCount !== 1) {
-        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
-      }
-
-      const [created] = await SusuDepositModel.create(
-        [
-          {
-            accountId: account._id,
-            customerId: account.customerId,
-            collectorId: new Types.ObjectId(actor.sub),
-            amount,
-            daysCovered,
-            seqStart: account.depositsCount + 1,
-            seqEnd: account.depositsCount + daysCovered,
-            channel,
-            idempotencyKey,
-          },
-        ],
-        { session },
-      );
-      deposit = created as SusuDeposit;
-
-      await audit(
-        {
-          actorId: actor.sub,
-          action: 'susu.deposit.record',
-          entityType: 'susu-account',
-          entityId: account._id,
-          amountBefore: account.totalDeposited,
-          amountAfter: account.totalDeposited + amount,
-          after: {
-            daysCovered,
-            seq: `${String(account.depositsCount + 1)}-${String(account.depositsCount + daysCovered)}`,
-          },
-          ...(requestId !== undefined ? { requestId } : {}),
-        },
-        session,
-      );
-    });
-  } finally {
-    await session.endSession();
+  const plan = splitAcrossCycles(accountPre.depositsCount, daysCovered);
+  const wouldOpen = carriedAccountCount(plan);
+  if (wouldOpen > SUSU_MAX_CARRY_ACCOUNTS) {
+    throw new AppError(
+      'EXCEEDS_CARRY_LIMIT',
+      `That is ${String(daysCovered)} days at once, which would open ` +
+        `${String(wouldOpen)} new accounts — check the amount, or record it as ` +
+        `separate deposits`,
+      422,
+      {
+        daysCovered,
+        remaining: remainingDeposits(accountPre.depositsCount),
+        wouldOpen,
+        maxCarryAccounts: SUSU_MAX_CARRY_ACCOUNTS,
+      },
+    );
   }
 
-  const reloaded = await SusuAccountModel.findById(accountId);
-  if (!reloaded) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  const accountAfter = reloaded;
+  // Numbers are reserved BEFORE the session opens: the counter deliberately
+  // runs outside any caller transaction (see counter.model.ts). If the
+  // transaction below aborts, the reserved numbers are simply never used and
+  // the monthly sequence has a gap — account numbers are identifiers, not a
+  // ledger, so that is harmless.
+  //
+  // The cycle month is today's, not the parent account's: the carried cycle
+  // begins now.
+  const month = cycleMonthOf();
+  let reserved = await Promise.all(
+    Array.from({ length: wouldOpen }, () => nextAccountNumber('SU', new Date(), month)),
+  );
 
-  // Post-commit, fire-and-forget: receipt + live feed.
+  let legDocs: SusuDeposit[] = [];
+  for (let attempt = 0; ; attempt++) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        legDocs = [];
+        const account = await SusuAccountModel.findOne({
+          _id: accountId,
+          status: 'active',
+          ...NOT_TRASHED,
+        }).session(session);
+        if (!account) {
+          throw new AppError(
+            'ACCOUNT_NOT_ACTIVE',
+            'Deposits are only allowed on active accounts',
+            422,
+          );
+        }
+
+        // Re-derive inside the transaction: a concurrent deposit may have moved
+        // the count, which changes where the cycle boundary falls.
+        const live = splitAcrossCycles(account.depositsCount, daysCovered);
+        if (live.length !== plan.length) {
+          throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+        }
+        const head = live[0];
+        if (!head) throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+
+        const headAmount = head.daysCovered * account.dailyAmount;
+        // Optimistic concurrency: the counters must not have moved since we read them.
+        const upd = await SusuAccountModel.updateOne(
+          { _id: account._id, status: 'active', depositsCount: account.depositsCount },
+          {
+            $inc: { depositsCount: head.daysCovered, totalDeposited: headAmount },
+            ...(head.completesCycle ? { $set: { status: 'completed' } } : {}),
+          },
+          { session },
+        );
+        if (upd.modifiedCount !== 1) {
+          throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+        }
+
+        const [created] = await SusuDepositModel.create(
+          [
+            {
+              accountId: account._id,
+              customerId: account.customerId,
+              collectorId: new Types.ObjectId(actor.sub),
+              amount: headAmount,
+              daysCovered: head.daysCovered,
+              seqStart: head.seqStart,
+              seqEnd: head.seqEnd,
+              channel,
+              idempotencyKey,
+            },
+          ],
+          { session },
+        );
+        const first = created as SusuDeposit;
+        legDocs.push(first);
+
+        await audit(
+          {
+            actorId: actor.sub,
+            action: 'susu.deposit.record',
+            entityType: 'susu-account',
+            entityId: account._id,
+            amountBefore: account.totalDeposited,
+            amountAfter: account.totalDeposited + headAmount,
+            after: {
+              daysCovered: head.daysCovered,
+              seq: `${String(head.seqStart)}-${String(head.seqEnd)}`,
+              ...(live.length > 1 ? { carriedDays: daysCovered - head.daysCovered } : {}),
+            },
+            ...(requestId !== undefined ? { requestId } : {}),
+          },
+          session,
+        );
+
+        // The overflow: one new cycle per remaining chunk, each recorded and
+        // linked back to the half it came from.
+        let parentAccountId = account._id;
+        let parentDeposit = first;
+        for (const chunk of live.slice(1)) {
+          const chunkAmount = chunk.daysCovered * account.dailyAmount;
+          const accountNumber = reserved[chunk.index - 1];
+          if (accountNumber === undefined) {
+            throw new AppError('INTERNAL_ERROR', 'No account number was reserved', 500);
+          }
+          const [openedDoc] = await SusuAccountModel.create(
+            [
+              {
+                accountNumber,
+                customerId: account.customerId,
+                // Immutable and inherited: this is the same arrangement
+                // continuing, not a renegotiation.
+                dailyAmount: account.dailyAmount,
+                cycleMonth: month,
+                openedById: new Types.ObjectId(actor.sub),
+                depositsCount: chunk.daysCovered,
+                totalDeposited: chunkAmount,
+                status: chunk.completesCycle ? 'completed' : 'active',
+                carriedFromAccountId: parentAccountId,
+              },
+            ],
+            { session },
+          );
+          const opened = openedDoc as SusuAccount;
+          const [carriedDoc] = await SusuDepositModel.create(
+            [
+              {
+                accountId: opened._id,
+                customerId: account.customerId,
+                collectorId: new Types.ObjectId(actor.sub),
+                amount: chunkAmount,
+                daysCovered: chunk.daysCovered,
+                seqStart: chunk.seqStart,
+                seqEnd: chunk.seqEnd,
+                channel,
+                idempotencyKey: carryKey(idempotencyKey, chunk.index),
+                carriedFromDepositId: parentDeposit._id,
+                carriedFromAccountId: parentAccountId,
+              },
+            ],
+            { session },
+          );
+          const carried = carriedDoc as SusuDeposit;
+          await SusuDepositModel.updateOne(
+            { _id: parentDeposit._id },
+            { $set: { carriedToDepositId: carried._id, carriedToAccountId: opened._id } },
+            { session },
+          );
+          // Mirror the write onto the in-memory document: it is the one the
+          // response is built from, and a caller that cannot see the link
+          // cannot offer the customer the other half of their own payment.
+          parentDeposit.carriedToDepositId = carried._id;
+          parentDeposit.carriedToAccountId = opened._id;
+          legDocs.push(carried);
+
+          await audit(
+            {
+              actorId: actor.sub,
+              action: 'susu.account.open',
+              entityType: 'susu-account',
+              entityId: opened._id,
+              after: {
+                dailyAmount: account.dailyAmount,
+                cycleMonth: month,
+                customerId: account.customerId.toHexString(),
+                carriedFromAccountId: parentAccountId.toHexString(),
+                carriedDays: chunk.daysCovered,
+                reason: 'carry-forward',
+              },
+              ...(requestId !== undefined ? { requestId } : {}),
+            },
+            session,
+          );
+          await audit(
+            {
+              actorId: actor.sub,
+              action: 'susu.deposit.record',
+              entityType: 'susu-account',
+              entityId: opened._id,
+              amountBefore: 0,
+              amountAfter: chunkAmount,
+              after: {
+                daysCovered: chunk.daysCovered,
+                seq: `${String(chunk.seqStart)}-${String(chunk.seqEnd)}`,
+                carriedFromDepositId: parentDeposit._id.toHexString(),
+              },
+              ...(requestId !== undefined ? { requestId } : {}),
+            },
+            session,
+          );
+          parentAccountId = opened._id;
+          parentDeposit = carried;
+        }
+
+        // Money conservation, checked before the commit. A split that does not
+        // add up to the cash in hand must never reach the database.
+        const written = legDocs.reduce((sum, d) => sum + d.amount, 0);
+        if (written !== amount) {
+          throw new AppError('INTERNAL_ERROR', 'Deposit split did not conserve the amount', 500);
+        }
+      });
+      break;
+    } catch (err) {
+      // Sequential numbers should not collide, but a stale counter after a
+      // migration could — mint fresh ones and replay the whole transaction.
+      if (err instanceof MongoServerError && err.code === 11000 && attempt < 3) {
+        reserved = await Promise.all(
+          reserved.map(() => nextAccountNumber('SU', new Date(), month)),
+        );
+        continue;
+      }
+      throw err;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  const result = await buildDepositResult(legDocs, false);
+  const opened = result.openedAccounts;
+
+  // Post-commit, fire-and-forget: receipt + live feed. One message however
+  // many accounts the payment touched — the gateway allowance is finite, and
+  // two texts about one payment read as two payments.
+  const tail =
+    opened.length === 0
+      ? `Progress: ${String(result.deposit.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)}. ` +
+        `Total saved: ${formatGhs(result.account.totalDeposited)}.`
+      : `Cycle ${result.account.accountNumber} is now complete; the balance started ` +
+        `new acct ${opened.map((a) => a.accountNumber).join(', ')}.`;
   await enqueueSms({
     to: customer.phone,
     template: 'susu-deposit-receipt',
     message:
-      `Yadah: ${formatGhs(deposit.amount)} received on susu acct ${accountAfter.accountNumber}. ` +
-      `Progress: ${String(deposit.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)}. ` +
-      `Total saved: ${formatGhs(accountAfter.totalDeposited)}.`,
+      `Yadah: ${formatGhs(result.totalAmount)} received on susu acct ` +
+      `${result.account.accountNumber}. ${tail}`,
     relatedEntityType: 'susu-deposit',
-    relatedEntityId: deposit._id,
+    relatedEntityId: new Types.ObjectId(result.deposit.id),
   });
   emitAdminEvent('susu.deposit.recorded', {
     accountId: accountId.toHexString(),
     customerId: customer._id.toHexString(),
     customerName: customer.fullName,
-    amount: deposit.amount,
-    progress: `${String(deposit.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)}`,
-    completed: accountAfter.status === 'completed',
+    amount: result.totalAmount,
+    progress: `${String(result.deposit.seqEnd)}/${String(SUSU_CYCLE_DEPOSITS)}`,
+    completed: result.account.status === 'completed',
+    ...(opened.length > 0
+      ? { carriedTo: opened.map((a) => ({ id: a.id, accountNumber: a.accountNumber })) }
+      : {}),
   });
+  // Opening an account is normally a counter act; a collector reaching this
+  // path has caused one in the field, so the office is told rather than left
+  // to find it in the list.
+  if (opened.length > 0) {
+    notifyOffice({
+      type: 'susu.carry-forward',
+      title: 'Susu cycle carried forward',
+      body:
+        `${customer.fullName} paid ${formatGhs(result.totalAmount)} on ` +
+        `${result.account.accountNumber}, which filled the cycle. The balance opened ` +
+        `${opened.map((a) => a.accountNumber).join(', ')}.`,
+      data: {
+        entity: 'susu-account',
+        accountId: opened[0]?.id ?? accountId.toHexString(),
+        carriedFromAccountId: accountId.toHexString(),
+        amount: result.totalAmount,
+      },
+    });
+  }
 
-  return {
-    deposit: toPublicDeposit(deposit),
-    account: toPublicAccount(accountAfter),
-    replayed: false,
-  };
+  return result;
 }
 
 // ---------------------------------------------------------------- collect-all
@@ -714,21 +1028,26 @@ export async function closeAccount(
 
       // The cash disbursement itself — without this row an office closure
       // would be invisible in the unified transactions feed.
-      if (payout > 0) {
-        await SusuPayoutModel.create(
-          [
-            {
-              accountId: account._id,
-              customerId: account.customerId,
-              amount: payout,
-              destination: 'cash',
-              recordedById: new Types.ObjectId(actor.sub),
-              idempotencyKey: `close:${account._id.toHexString()}`,
-            },
-          ],
-          { session },
-        );
-      }
+      //
+      // Written even when the payout is zero, which happens whenever someone
+      // withdraws the maximum and then closes: one day's amount is reserved
+      // for exactly this commission, so `balance === dailyAmount` leaves
+      // nothing to hand over. The commission was still charged, and a charge
+      // that appears on no row is a charge nobody can audit.
+      await SusuPayoutModel.create(
+        [
+          {
+            accountId: account._id,
+            customerId: account.customerId,
+            amount: payout,
+            destination: 'cash',
+            commissionAmount: commission,
+            recordedById: new Types.ObjectId(actor.sub),
+            idempotencyKey: `close:${account._id.toHexString()}`,
+          },
+        ],
+        { session },
+      );
 
       await audit(
         {
@@ -898,6 +1217,10 @@ export async function withdrawPartial(
             amount,
             kind: 'partial-withdrawal',
             destination: 'cash',
+            // Never charged here: the commission is one cycle-day's amount,
+            // taken once, when the account stops. One day stays reserved so
+            // it is still collectible then.
+            commissionAmount: 0,
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
           },
@@ -1042,6 +1365,9 @@ export async function terminateAccount(
               customerId: account.customerId,
               amount: refund,
               destination: 'cash',
+              // A termination is the no-commission exit: the balance never
+              // covered one day, so the whole of it goes back.
+              commissionAmount: 0,
               recordedById: new Types.ObjectId(actor.sub),
               idempotencyKey: `terminate:${account._id.toHexString()}`,
             },
@@ -1169,6 +1495,9 @@ export async function payoutPending(
             customerId: pre.customerId,
             amount: payAmount,
             destination: 'cash',
+            // The commission was charged when the account stopped, on the row
+            // that stopped it. An instalment must never charge it again.
+            commissionAmount: 0,
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
           },
@@ -1491,6 +1820,20 @@ function assertCorrectable(account: SusuAccount, deposit: SusuDeposit): void {
       { seqEnd: deposit.seqEnd, depositsCount: account.depositsCount },
     );
   }
+  // Half of a payment that overflowed into a new cycle. Editing or removing
+  // one half alone would leave the other half of the same cash on an account
+  // it was never paid into; the carried half has to go first.
+  if (deposit.carriedToDepositId) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'This payment carried into a new account — remove the carried deposit there first',
+      422,
+      {
+        carriedToAccountId: deposit.carriedToAccountId?.toHexString(),
+        carriedToDepositId: deposit.carriedToDepositId.toHexString(),
+      },
+    );
+  }
 }
 
 export async function trashDeposit(
@@ -1540,6 +1883,16 @@ export async function trashDeposit(
       );
       if (depositUpd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Deposit changed concurrently — retry', 409);
+      }
+      // Removing the carried half releases the half it came from: otherwise
+      // the parent stays permanently uncorrectable, pointing at a deposit that
+      // is no longer on the books.
+      if (deposit.carriedFromDepositId) {
+        await SusuDepositModel.updateOne(
+          { _id: deposit.carriedFromDepositId },
+          { $unset: { carriedToDepositId: '', carriedToAccountId: '' } },
+          { session },
+        );
       }
       await audit(
         {
@@ -1630,6 +1983,15 @@ export async function restoreDeposit(
       if (depositUpd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Deposit changed concurrently — retry', 409);
       }
+      // Restoring the carried half re-links the half it came from, so the two
+      // are paired again and the parent is protected from a lone correction.
+      if (deposit.carriedFromDepositId) {
+        await SusuDepositModel.updateOne(
+          { _id: deposit.carriedFromDepositId },
+          { $set: { carriedToDepositId: deposit._id, carriedToAccountId: deposit.accountId } },
+          { session },
+        );
+      }
       await audit(
         {
           actorId: actor.sub,
@@ -1714,13 +2076,7 @@ export async function updateDeposit(
       { remaining },
     );
   }
-  if (dayDelta === 0 && amount === deposit.amount) {
-    return {
-      deposit: toPublicDeposit(deposit),
-      account: toPublicAccount(account),
-      replayed: false,
-    };
-  }
+  if (dayDelta === 0 && amount === deposit.amount) return singleLegResult(deposit, account);
 
   const newCount = account.depositsCount + dayDelta;
   const session = await mongoose.startSession();
@@ -1792,11 +2148,7 @@ export async function updateDeposit(
     amountAfter: amount,
     depositsCount: afterAccount.depositsCount,
   });
-  return {
-    deposit: toPublicDeposit(afterDeposit),
-    account: toPublicAccount(afterAccount),
-    replayed: false,
-  };
+  return singleLegResult(afterDeposit, afterAccount);
 }
 
 // ---------------------------------------------------------------- receipts

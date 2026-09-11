@@ -1,20 +1,15 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
-import { EXPENSE_CATEGORIES, EXPENSE_STATUSES } from '../../models/index.js';
 import { errorResponse, jsonResponse } from '../../openapi/shared.js';
 import {
   asOfQuery,
   balanceSheetQuery,
   createCapitalEntryBody,
   createCashAccountBody,
-  createExpenseBody,
   createFixedAssetBody,
   disposeFixedAssetBody,
-  listExpensesQuery,
   listFixedAssetsQuery,
-  payExpenseBody,
   profitLossQuery,
-  rejectExpenseBody,
 } from './accounting.schemas.js';
 
 const security = [{ bearerAuth: [] }];
@@ -27,27 +22,6 @@ const pdfNote =
   'section total, and numbered notes to the accounts.';
 
 const money = z.number().int().describe('Integer pesewas');
-
-const expense = z
-  .object({
-    id: z.string(),
-    category: z.enum(EXPENSE_CATEGORIES),
-    description: z.string(),
-    amount: money,
-    payee: z.string().optional(),
-    incurredOn: z.string().describe('The day the COST belongs to, not necessarily the payment day'),
-    status: z.enum(EXPENSE_STATUSES),
-    cashAccountId: z.string().optional().describe('Set at payment'),
-    paidOn: z.string().optional(),
-    recordedById: z.string(),
-    recordedByName: z.string().optional(),
-    approvedById: z.string().optional(),
-    approvedByName: z.string().optional(),
-    rejectionReason: z.string().optional(),
-    receiptUrl: z.string().optional(),
-    createdAt: z.iso.datetime(),
-  })
-  .meta({ id: 'Expense' });
 
 const balanceSheet = z
   .object({
@@ -161,66 +135,6 @@ export const accountingPaths: ZodOpenApiPathsObject = {
       security,
       requestParams: { query: asOfQuery },
       responses: { '200': jsonResponse('Cash position', z.unknown()) },
-    },
-  },
-  '/accounting/expenses': {
-    post: {
-      tags,
-      summary: 'Record an expense',
-      description:
-        'Records a cost. It does NOT move money — only POST /expenses/{id}/pay does that, ' +
-        'which is why paying is the only step that names an account.\n\n' +
-        '`incurredOn` is the day the COST belongs to, which is not always the day it is ' +
-        'paid: August salaries settled in September are an August cost.',
-      security,
-      requestBody: { content: { 'application/json': { schema: createExpenseBody } } },
-      responses: { '201': jsonResponse('Recorded', z.object({ expense })) },
-    },
-    get: {
-      tags,
-      summary: 'Expenses, filtered by category, status, account or date' + csvNote,
-      security,
-      requestParams: { query: listExpensesQuery },
-      responses: { '200': jsonResponse('Expenses', z.unknown()) },
-    },
-  },
-  '/accounting/expenses/{id}/approve': {
-    post: {
-      tags,
-      summary: 'Approve a pending expense',
-      description:
-        'Rejected if the approver is the person who recorded it — self-approval would make ' +
-        'the step meaningless.',
-      security,
-      responses: {
-        '200': jsonResponse('Approved', z.object({ expense })),
-        '403': errorResponse('You recorded this expense; someone else must approve it'),
-        '409': errorResponse('Already decided'),
-      },
-    },
-  },
-  '/accounting/expenses/{id}/reject': {
-    post: {
-      tags,
-      summary: 'Reject a pending expense',
-      security,
-      requestBody: { content: { 'application/json': { schema: rejectExpenseBody } } },
-      responses: { '200': jsonResponse('Rejected', z.object({ expense })) },
-    },
-  },
-  '/accounting/expenses/{id}/pay': {
-    post: {
-      tags,
-      summary: 'Pay an approved expense from a named account',
-      description:
-        'The only step that moves money. Until it runs, the expense sits as a liability on ' +
-        'the balance sheet, which is what keeps the cash position honest.',
-      security,
-      requestBody: { content: { 'application/json': { schema: payExpenseBody } } },
-      responses: {
-        '200': jsonResponse('Paid', z.object({ expense })),
-        '422': errorResponse('Not approved, or dated before the account opened'),
-      },
     },
   },
   '/accounting/fixed-assets': {

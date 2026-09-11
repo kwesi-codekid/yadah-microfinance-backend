@@ -18,6 +18,18 @@ export interface SusuDeposit extends TrashFields {
   channel: Channel;
   /** Groups deposits recorded by one collect-all transaction. */
   collectAllBatchId?: Types.ObjectId;
+  /**
+   * Carry-forward: when one payment runs past the end of a cycle, the
+   * remainder opens a new account and is recorded there. Both halves point at
+   * each other, and each stores the sibling's ACCOUNT id as well as its
+   * deposit id — every screen that links to the other half needs
+   * `/susu/{accountId}/deposits/{depositId}`, and storing only the deposit id
+   * would force a join on every read of a deposit list.
+   */
+  carriedToDepositId?: Types.ObjectId;
+  carriedToAccountId?: Types.ObjectId;
+  carriedFromDepositId?: Types.ObjectId;
+  carriedFromAccountId?: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -34,6 +46,10 @@ const susuDepositSchema = new Schema<SusuDeposit>(
     seqEnd: { type: Number, required: true, min: 1, max: 31 },
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     collectAllBatchId: { type: Schema.Types.ObjectId },
+    carriedToDepositId: { type: Schema.Types.ObjectId, ref: 'SusuDeposit' },
+    carriedToAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
+    carriedFromDepositId: { type: Schema.Types.ObjectId, ref: 'SusuDeposit' },
+    carriedFromAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
     idempotencyKey: { type: String },
     ...trashFields,
   },

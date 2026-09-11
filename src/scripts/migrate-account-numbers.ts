@@ -78,7 +78,10 @@ async function backfill(
     const number = doc.accountNumber;
     if (!number) continue;
     const period = number.slice(2, 6);
-    const seq = Number(number.slice(6));
+    // Bounded slice: a susu number may carry a `-MMM` cycle-month tail, and
+    // Number('0005-SEP') is NaN, which would drop the number from the seed
+    // and let the counter hand it out a second time.
+    const seq = Number(number.slice(6, 10));
     if (Number.isFinite(seq)) seqByPeriod.set(period, Math.max(seqByPeriod.get(period) ?? 0, seq));
   }
 

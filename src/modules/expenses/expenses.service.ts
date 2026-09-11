@@ -3,16 +3,19 @@ import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
 import { escapeRegex } from '../../lib/fuzzy.js';
 import { accraDay } from '../../lib/time.js';
-import { ExpenseModel, UserModel, type Expense } from '../../models/index.js';
-import { NOT_TRASHED } from '../../models/shared.js';
-import { getAccountOrThrow } from './cash.service.js';
+import { ExpenseModel, UserModel, type Expense, type ExpenseCategory } from '../../models/index.js';
+import { NOT_TRASHED, requireDeletedAt } from '../../models/shared.js';
+import { getAccountOrThrow } from '../accounting/cash.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type {
+  AttachReceiptBody,
   CreateExpenseBody,
+  ExpenseSummaryQuery,
   ListExpensesQuery,
   PayExpenseBody,
+  TrashListQuery,
   UpdateExpenseBody,
-} from './accounting.schemas.js';
+} from './expenses.schemas.js';
 
 /**
  * Money the business spends on itself: recorded → approved → paid.
@@ -22,6 +25,17 @@ import type {
  * the drawer. Editing is allowed only while pending — once someone has
  * approved an amount, changing it behind them would make the approval
  * meaningless.
+ *
+ * Recording is counter work: petty cash is spent by whoever is at the counter,
+ * and a book only the office can reach is a book that gets written up days
+ * late from a pocketful of receipts. Deciding and paying stay with the office,
+ * and nobody approves their own spending.
+ *
+ * This is its own module rather than part of accounting because the two are
+ * used by different people at different times — the counter records an expense
+ * the moment it happens; the accounting statements are read at month end. The
+ * balance sheet still reads `expensesByCategory` and `accruedExpenses` from
+ * here, which are the only two functions it needs.
  */
 
 export interface PublicExpense {
@@ -375,5 +389,211 @@ export function toExpenseExportRow(e: PublicExpense): Record<string, unknown> {
     recordedBy: e.recordedByName ?? '',
     approvedBy: e.approvedByName ?? '',
     reference: e.reference ?? '',
+  };
+}
+
+// ---------------------------------------------------------------- one expense
+
+export async function getExpense(id: Types.ObjectId): Promise<PublicExpense> {
+  const expense = await ExpenseModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!expense) throw new AppError('NOT_FOUND', 'Expense not found', 404);
+  return toPublicExpense(expense, await withNames([expense]));
+}
+
+/**
+ * Attach or replace the receipt photograph.
+ *
+ * Separate from editing because it is allowed at any status: a receipt turning
+ * up after an expense was approved is the ordinary case, and refusing it would
+ * mean the record is worse for being on time.
+ */
+export async function attachReceipt(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  body: AttachReceiptBody,
+  requestId?: string,
+): Promise<PublicExpense> {
+  const expense = await ExpenseModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!expense) throw new AppError('NOT_FOUND', 'Expense not found', 404);
+  const before = expense.receiptUrl;
+  expense.receiptUrl = body.receiptUrl;
+  await expense.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'expense.attach-receipt',
+    entityType: 'expense',
+    entityId: expense._id,
+    ...(before !== undefined ? { before: { receiptUrl: before } } : {}),
+    after: { receiptUrl: body.receiptUrl },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  return toPublicExpense(expense, await withNames([expense]));
+}
+
+// ---------------------------------------------------------------- summary
+
+export interface ExpenseSummary {
+  from: string | null;
+  to: string | null;
+  /** Every non-rejected expense in the period — what the business actually spent. */
+  totalAmount: number;
+  totalCount: number;
+  byCategory: { category: ExpenseCategory; count: number; amount: number }[];
+  /** Broken out so the office can see what is still waiting on them. */
+  byStatus: { status: string; count: number; amount: number }[];
+  /** Incurred but not yet paid, within the period. */
+  outstandingAmount: number;
+}
+
+/**
+ * What was spent in a period, by category and by status.
+ *
+ * Dated by `incurredOn` like the profit and loss, so the two agree: a cost
+ * belongs to the month it was incurred, not the month somebody got round to
+ * settling it. Rejected expenses are left out of the totals — they are not
+ * costs — but kept in the status breakdown so the count still adds up.
+ */
+export async function expenseSummary(query: ExpenseSummaryQuery): Promise<ExpenseSummary> {
+  const incurredOn =
+    query.from !== undefined || query.to !== undefined
+      ? {
+          ...(query.from !== undefined ? { $gte: query.from } : {}),
+          ...(query.to !== undefined ? { $lte: query.to } : {}),
+        }
+      : undefined;
+  const match = { ...(incurredOn ? { incurredOn } : {}), ...NOT_TRASHED };
+
+  const [byCategory, byStatus] = await Promise.all([
+    ExpenseModel.aggregate<{ _id: ExpenseCategory; count: number; amount: number }>([
+      { $match: { ...match, status: { $ne: 'rejected' } } },
+      { $group: { _id: '$category', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+      { $sort: { amount: -1 } },
+    ]),
+    ExpenseModel.aggregate<{ _id: string; count: number; amount: number }>([
+      { $match: match },
+      { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+    ]),
+  ]);
+
+  const outstanding = byStatus
+    .filter((s) => s._id === 'pending' || s._id === 'approved')
+    .reduce((sum, s) => sum + s.amount, 0);
+
+  return {
+    from: query.from ?? null,
+    to: query.to ?? null,
+    totalAmount: byCategory.reduce((sum, c) => sum + c.amount, 0),
+    totalCount: byCategory.reduce((sum, c) => sum + c.count, 0),
+    byCategory: byCategory.map((c) => ({
+      category: c._id,
+      count: c.count,
+      amount: c.amount,
+    })),
+    byStatus: byStatus.map((s) => ({ status: s._id, count: s.count, amount: s.amount })),
+    outstandingAmount: outstanding,
+  };
+}
+
+// ---------------------------------------------------------------- trash
+
+export interface TrashedExpense extends PublicExpense {
+  deletedAt: Date;
+  deletedById?: string;
+  deleteReason?: string;
+}
+
+function toTrashedExpense(e: Expense, names?: Map<string, string>): TrashedExpense {
+  return {
+    ...toPublicExpense(e, names),
+    deletedAt: requireDeletedAt(e.deletedAt),
+    ...(e.deletedById !== undefined ? { deletedById: e.deletedById.toHexString() } : {}),
+    ...(e.deleteReason !== undefined ? { deleteReason: e.deleteReason } : {}),
+  };
+}
+
+/**
+ * Bin an expense. Pending or rejected only.
+ *
+ * An approved expense is already a liability on the balance sheet and a paid
+ * one has already moved cash; removing either would silently restate a period
+ * that may have been read and acted on. The way to undo those is a correcting
+ * entry, not a disappearance.
+ */
+export async function trashExpense(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  reason: string | undefined,
+  requestId?: string,
+): Promise<TrashedExpense> {
+  const expense = await ExpenseModel.findOne({ _id: id, ...NOT_TRASHED });
+  if (!expense) throw new AppError('NOT_FOUND', 'Expense not found', 404);
+  if (expense.status === 'approved' || expense.status === 'paid') {
+    throw new AppError(
+      'CANNOT_TRASH',
+      `This expense is ${expense.status} and is already on the books — record a correcting entry instead`,
+      422,
+    );
+  }
+
+  expense.deletedAt = new Date();
+  expense.deletedById = new Types.ObjectId(actor.sub);
+  if (reason !== undefined) expense.deleteReason = reason;
+  await expense.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'expense.trash',
+    entityType: 'expense',
+    entityId: id,
+    before: { deletedAt: null },
+    after: { deletedAt: expense.deletedAt, ...(reason !== undefined ? { reason } : {}) },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  return toTrashedExpense(expense, await withNames([expense]));
+}
+
+export async function restoreExpense(
+  actor: AccessTokenPayload,
+  id: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicExpense> {
+  const expense = await ExpenseModel.findById(id);
+  if (!expense) throw new AppError('NOT_FOUND', 'Expense not found', 404);
+  if (!expense.deletedAt) throw new AppError('NOT_TRASHED', 'Expense is not in the trash', 409);
+
+  expense.deletedAt = null;
+  expense.set('deletedById', undefined);
+  expense.set('deleteReason', undefined);
+  await expense.save();
+
+  await audit({
+    actorId: actor.sub,
+    action: 'expense.restore',
+    entityType: 'expense',
+    entityId: id,
+    after: { deletedAt: null },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  return toPublicExpense(expense, await withNames([expense]));
+}
+
+export async function listExpenseTrash(
+  query: TrashListQuery,
+): Promise<{ items: TrashedExpense[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [items, total] = await Promise.all([
+    ExpenseModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    ExpenseModel.countDocuments(filter),
+  ]);
+  const names = await withNames(items);
+  return {
+    items: items.map((e) => toTrashedExpense(e, names)),
+    page: query.page,
+    limit: query.limit,
+    total,
   };
 }

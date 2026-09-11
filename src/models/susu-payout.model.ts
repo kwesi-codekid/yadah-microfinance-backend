@@ -1,9 +1,13 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField } from './shared.js';
+import { moneyField, optionalMoneyField } from './shared.js';
 
 /**
  * One disbursement of a susu account's value: cash at the office, or an
  * internal move (savings credit, loan/HP payment via transfers).
+ *
+ * These rows are never trashed and never edited — there is deliberately no
+ * correction path, unlike deposits. A payout is money that left the drawer;
+ * the way to undo one is another movement, not a rewrite.
  */
 export interface SusuPayout {
   _id: Types.ObjectId;
@@ -18,6 +22,16 @@ export interface SusuPayout {
   destination: 'cash' | 'savings' | 'loan' | 'hire-purchase';
   /** The credited record on the other side, when internal. */
   destinationId?: Types.ObjectId;
+  /**
+   * The one-day commission charged as the account stopped, in pesewas.
+   *
+   * Carried here rather than read off the account because an account can be
+   * stopped once and then paid out in several instalments: the commission
+   * belongs to the instalment that stopped it and to no other, or the ledger
+   * would charge it again on every disbursement. Zero on a partial
+   * withdrawal, on a termination, and on every follow-on instalment.
+   */
+  commissionAmount?: number;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
@@ -36,6 +50,7 @@ const susuPayoutSchema = new Schema<SusuPayout>(
       required: true,
     },
     destinationId: { type: Schema.Types.ObjectId },
+    commissionAmount: optionalMoneyField,
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
   },

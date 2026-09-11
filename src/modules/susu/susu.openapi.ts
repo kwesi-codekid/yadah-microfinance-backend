@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CYCLE_MONTHS } from '../../lib/account-number.js';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { trashBody } from '../../schemas/common.js';
@@ -18,7 +19,21 @@ import {
 const susuAccount = z
   .object({
     id: z.string(),
-    accountNumber: z.string().describe('6-digit randomized, unique'),
+    accountNumber: z
+      .string()
+      .describe(
+        'SU + YYMM + 4-digit monthly sequence + the cycle month, e.g. SU26090005-SEP. ' +
+          'Accounts opened before the cycle month carry no suffix; accounts opened ' +
+          'before the scheme keep their legacy 6 random digits.',
+      ),
+    cycleMonth: z
+      .enum(CYCLE_MONTHS)
+      .optional()
+      .describe(
+        'The month the cycle is called, which need not be the month the number was ' +
+          'issued in — a cycle opened in late August for September is SEP. Absent on ' +
+          'accounts opened before the field existed.',
+      ),
     customerId: z.string(),
     customerName: z.string().optional().describe('On list responses, for display'),
     dailyAmount: z.number().int().describe('Pesewas. Immutable for the life of the cycle.'),
@@ -68,6 +83,16 @@ const susuDeposit = z
       .enum(['cash', 'paystack', 'momo', 'transfer'])
       .describe("'transfer' = created by an internal transfer"),
     collectAllBatchId: z.string().optional(),
+    carriedToDepositId: z
+      .string()
+      .optional()
+      .describe('Set when part of this payment ran past the cycle and opened a new account'),
+    carriedToAccountId: z.string().optional(),
+    carriedFromDepositId: z
+      .string()
+      .optional()
+      .describe('Set on the follow-on half: the deposit whose cycle overflowed into this one'),
+    carriedFromAccountId: z.string().optional(),
     createdAt: z.iso.datetime(),
   })
   .meta({ id: 'SusuDeposit' });
@@ -91,8 +116,21 @@ const depositIdParam = z.object({
 
 const accountResult = z.object({ account: susuAccount });
 const depositResult = z.object({
-  deposit: susuDeposit,
+  deposit: susuDeposit.describe('The leg recorded against the account named in the path'),
   account: susuAccount,
+  legs: z
+    .array(
+      z.object({
+        deposit: susuDeposit,
+        account: susuAccount,
+        carried: z.boolean().describe('True when this leg’s account was opened by this payment'),
+      }),
+    )
+    .describe('Every leg of the payment, oldest first. Longer than one only on a carry.'),
+  totalAmount: z.number().int().describe('Pesewas across all legs — what the customer handed over'),
+  openedAccounts: z
+    .array(susuAccount)
+    .describe('Accounts this payment had to open. Empty on the ordinary path.'),
   replayed: z.boolean().describe('True when this response replays an earlier identical request'),
 });
 const security = [{ bearerAuth: [] }];
@@ -237,7 +275,13 @@ export const susuPaths: ZodOpenApiPathsObject = {
         'covered are derived from it (one multiple = today, more = catch-up on ' +
         'missed days). Requires an idempotency key: a retried request returns the ' +
         'original deposit (200) instead of double-recording. Reaching 31 deposits ' +
-        'completes the cycle. SMS receipt sent to the customer.',
+        'completes the cycle. SMS receipt sent to the customer. ' +
+        'CARRY-FORWARD: a payment worth more days than the cycle has left is no ' +
+        'longer refused. The days that fit finish the current cycle; the remainder ' +
+        'opens a new account for the same customer at the same daily amount, ' +
+        'numbered with the CURRENT month’s suffix, and is recorded there. Read ' +
+        '`legs` for every half and `openedAccounts` for anything opened. `deposit` ' +
+        'and `account` are unchanged — they are always the first leg.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(depositBody),
@@ -247,7 +291,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '409': errorResponse('CONFLICT — concurrent update, retry'),
         '422': errorResponse(
           'ACCOUNT_NOT_ACTIVE, AMOUNT_MISMATCH (details.dailyAmount), or ' +
-            'EXCEEDS_REMAINING (details.remaining)',
+            'EXCEEDS_CARRY_LIMIT (details.daysCovered, details.remaining, ' +
+            'details.wouldOpen, details.maxCarryAccounts) when one payment would ' +
+            'have to open more than one new account — almost always a mistyped amount',
         ),
       },
     },
@@ -289,7 +335,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse(
           'Corrected',
-          z.object({ deposit: susuDeposit, account: susuAccount, replayed: z.boolean() }),
+          depositResult.describe('A correction never carries, so `legs` always has one entry'),
         ),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),

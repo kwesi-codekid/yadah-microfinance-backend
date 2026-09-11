@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { accraDay } from '../../lib/time.js';
+import { createdAtFilter, rangeToWindow } from '../../lib/time.js';
 import {
   CustomerModel,
   HpSaleModel,
@@ -11,20 +11,12 @@ import {
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 
-/** Inclusive Accra-day range → UTC window (Ghana is UTC+0 year-round). */
-export function rangeToWindow(
-  from?: string,
-  to?: string,
-): { from: string; to: string; start: Date; end: Date } {
-  const toDay = to ?? accraDay();
-  const fromDay = from ?? accraDay(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
-  return {
-    from: fromDay,
-    to: toDay,
-    start: new Date(`${fromDay}T00:00:00.000Z`),
-    end: new Date(new Date(`${toDay}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000),
-  };
-}
+/**
+ * Re-exported so the many callers that reach for it here keep working. It
+ * lives in lib/time now: the transaction feed wanted it for one date
+ * calculation and was dragging the whole model graph in to get it.
+ */
+export { rangeToWindow };
 
 // ---------------------------------------------------------------- collections by staff
 
@@ -125,12 +117,26 @@ export interface OutstandingLoanRow {
   frozen: boolean;
 }
 
-export async function outstandingLoans(): Promise<{
+/**
+ * The loan book as it stands, optionally narrowed to loans DISBURSED in a
+ * range — "how much did we put out in August, and what is still owed on it".
+ *
+ * Open ends stay open, unlike a report window: the unfiltered call is the
+ * whole book, which is the question this page is usually asked.
+ */
+export async function outstandingLoans(
+  from?: string,
+  to?: string,
+): Promise<{
+  from: string | null;
+  to: string | null;
   rows: OutstandingLoanRow[];
   totalRemaining: number;
 }> {
+  const disbursedAt = createdAtFilter(from, to);
   const loans = await LoanModel.find({
     status: { $in: ['active', 'arrears'] },
+    ...(disbursedAt ? { disbursedAt } : {}),
     ...NOT_TRASHED,
   }).sort({ dueDate: 1 });
   const names = new Map(
@@ -157,7 +163,12 @@ export async function outstandingLoans(): Promise<{
     daysOverdue: l.dueDate ? Math.max(0, Math.floor((now - l.dueDate.getTime()) / 86_400_000)) : 0,
     frozen: l.frozen,
   }));
-  return { rows, totalRemaining: rows.reduce((sum, r) => sum + r.remaining, 0) };
+  return {
+    from: from ?? null,
+    to: to ?? null,
+    rows,
+    totalRemaining: rows.reduce((sum, r) => sum + r.remaining, 0),
+  };
 }
 
 // ---------------------------------------------------------------- arrears aging
@@ -168,11 +179,16 @@ export interface AgingBucket {
   totalRemaining: number;
 }
 
-export async function arrearsAging(): Promise<{
+export async function arrearsAging(
+  from?: string,
+  to?: string,
+): Promise<{
+  from: string | null;
+  to: string | null;
   buckets: AgingBucket[];
   rows: (OutstandingLoanRow & { bucket: string })[];
 }> {
-  const { rows } = await outstandingLoans();
+  const { rows } = await outstandingLoans(from, to);
   const overdue = rows.filter((r) => r.daysOverdue > 0);
   const bucketOf = (days: number): string => (days <= 30 ? '1-30' : days <= 90 ? '31-90' : '90+');
   const withBucket = overdue.map((r) => ({ ...r, bucket: bucketOf(r.daysOverdue) }));
@@ -184,7 +200,7 @@ export async function arrearsAging(): Promise<{
       totalRemaining: inBucket.reduce((sum, r) => sum + r.remaining, 0),
     };
   });
-  return { buckets, rows: withBucket };
+  return { from: from ?? null, to: to ?? null, buckets, rows: withBucket };
 }
 
 // ---------------------------------------------------------------- commission earned

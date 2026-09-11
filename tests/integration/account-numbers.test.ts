@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Types } from 'mongoose';
-import { accountPeriodKey, nextAccountNumber, raiseCounter } from '../../src/lib/account-number.js';
+import {
+  accountPeriodKey,
+  cycleMonthOf,
+  nextAccountNumber,
+  raiseCounter,
+} from '../../src/lib/account-number.js';
 import {
   CounterModel,
   LoanModel,
@@ -24,10 +29,18 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
     const first = await susu.openAccount(officer, customerId, 1_000);
     const second = await susu.openAccount(officer, customerId, 2_000);
 
-    expect(first.accountNumber).toMatch(new RegExp(`^SU${period}\\d{4}$`));
-    expect(second.accountNumber).toMatch(new RegExp(`^SU${period}\\d{4}$`));
+    // Susu numbers carry the cycle month, which defaults to the current one.
+    const shape = new RegExp(
+      `^SU${period}[0-9]{4}-(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$`,
+    );
+    expect(first.accountNumber).toMatch(shape);
+    expect(second.accountNumber).toMatch(shape);
+    expect(first.cycleMonth).toBe(cycleMonthOf());
     // Sequential, not random — the second number is exactly one higher.
-    expect(Number(second.accountNumber.slice(6))).toBe(Number(first.accountNumber.slice(6)) + 1);
+    // The slice is bounded so the cycle-month suffix cannot leak into it.
+    expect(Number(second.accountNumber.slice(6, 10))).toBe(
+      Number(first.accountNumber.slice(6, 10)) + 1,
+    );
   });
 
   it('gives each product an independent sequence', async () => {

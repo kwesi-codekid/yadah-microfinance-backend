@@ -124,6 +124,9 @@ const THE_COUNTER = [
   'POST /hire-purchase/items',
   'PATCH /hire-purchase/items/{id}',
   'POST /hire-purchase/items/{id}/adjust-stock',
+  // The counter takes deliveries — they are the ones holding the invoice.
+  'POST /hire-purchase/items/{id}/receive',
+  'GET /hire-purchase/items/{id}/price-changes',
   'GET /hire-purchase/items/import/template',
   'POST /hire-purchase/items/import/preview',
   'POST /hire-purchase/items/import',
@@ -133,6 +136,21 @@ const THE_COUNTER = [
   'GET /hire-purchase/categories',
   'POST /hire-purchase/categories',
   'PATCH /hire-purchase/categories/{id}',
+  // Damage is reported at the counter, where it happens; only the office
+  // decides whether it comes off the shelf.
+  // Petty cash is spent by whoever is at the counter, so the counter records
+  // it. Deciding and paying stay with the office, below.
+  'POST /expenses',
+  'GET /expenses',
+  'GET /expenses/summary',
+  'GET /expenses/{id}',
+  'PATCH /expenses/{id}',
+  'POST /expenses/{id}/receipt',
+  'POST /hire-purchase/damages',
+  'GET /hire-purchase/damages',
+  'GET /hire-purchase/damages/summary',
+  'GET /hire-purchase/damages/{id}',
+  'PATCH /hire-purchase/damages/{id}',
 
   // The day's figures, declaring the till at the end of it, and counting in
   // what a collector hands over. Which days a teller may count in is narrowed
@@ -173,6 +191,17 @@ const NOT_THE_COUNTER = [
   'GET /hire-purchase/items/trash',
   'DELETE /hire-purchase/brands/{id}',
   'DELETE /hire-purchase/categories/{id}',
+  'POST /hire-purchase/damages/{id}/approve',
+  'POST /hire-purchase/damages/{id}/reject',
+  'DELETE /hire-purchase/damages/{id}',
+  'POST /hire-purchase/damages/{id}/restore',
+  'GET /hire-purchase/damages/trash',
+  'POST /expenses/{id}/approve',
+  'POST /expenses/{id}/reject',
+  'POST /expenses/{id}/pay',
+  'DELETE /expenses/{id}',
+  'POST /expenses/{id}/restore',
+  'GET /expenses/trash',
 
   // Registering a whole book at once is an office job, unlike one at the desk.
   'POST /customers/import',

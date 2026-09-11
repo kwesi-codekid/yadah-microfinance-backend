@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { DAMAGE_CAUSES, DAMAGE_STATUSES, PRICE_KINDS } from '../../models/index.js';
 import {
   IMPORT_COLUMNS as ITEM_IMPORT_COLUMNS,
   MAX_IMPORT_ROWS as ITEM_IMPORT_MAX_ROWS,
@@ -11,7 +12,14 @@ import {
   createItemBody,
   importItemRowsBody,
   labelBody,
+  listDamagesQuery,
   listLabelsQuery,
+  listPriceChangesQuery,
+  rangeOnlyQuery,
+  receiveStockBody,
+  rejectDamageBody,
+  reportDamageBody,
+  updateDamageBody,
   updateLabelBody,
   depositBody,
   forfeitBody,
@@ -293,6 +301,82 @@ const hpSale = z
   .meta({ id: 'HpSale' });
 
 const security = [{ bearerAuth: [] }];
+const hpPriceChange = z
+  .object({
+    id: z.string(),
+    itemId: z.string(),
+    kind: z.enum(PRICE_KINDS).describe('Which price moved: what it costs, or what it sells for'),
+    previous: z.number().int().describe('Pesewas, before the change'),
+    current: z.number().int().describe('Pesewas, after'),
+    delta: z.number().int().describe('current − previous; negative when the price came down'),
+    reason: z.string().optional(),
+    quantityReceived: z
+      .number()
+      .int()
+      .optional()
+      .describe('Set when the change arrived with a delivery rather than an edit'),
+    supplier: z.string().optional(),
+    invoiceRef: z.string().optional(),
+    receivedOn: z.string().optional().describe('Accra day the goods arrived (YYYY-MM-DD)'),
+    changedById: z.string(),
+    changedByName: z.string().optional(),
+    createdAt: z.iso.datetime(),
+  })
+  .meta({ id: 'HpPriceChange' });
+
+const hpDamage = z
+  .object({
+    id: z.string(),
+    itemId: z.string(),
+    itemName: z.string().describe('The item’s name when it was reported — it may be renamed later'),
+    quantity: z.number().int(),
+    cause: z.enum(DAMAGE_CAUSES),
+    description: z.string(),
+    occurredOn: z.string().describe('Accra day it happened (YYYY-MM-DD)'),
+    status: z.enum(DAMAGE_STATUSES),
+    costValue: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'Pesewas. Struck at APPROVAL from the item’s cost at that moment, and never ' +
+          'recomputed. Absent while pending and on a rejection.',
+      ),
+    unitCost: z.number().int().optional().describe('The unit cost costValue was struck at'),
+    photoUrls: z.array(z.string()),
+    reportedById: z.string(),
+    reportedByName: z.string().optional(),
+    reviewedById: z.string().optional(),
+    reviewedByName: z.string().optional(),
+    reviewedAt: z.iso.datetime().optional(),
+    rejectionReason: z.string().optional(),
+    createdAt: z.iso.datetime(),
+  })
+  .meta({ id: 'HpDamage' });
+
+const trashedHpDamage = hpDamage.extend({
+  deletedAt: z.iso.datetime(),
+  deletedById: z.string().optional(),
+  deleteReason: z.string().optional(),
+});
+
+const damageSummary = z
+  .object({
+    from: z.string().nullable(),
+    to: z.string().nullable(),
+    totalCostValue: z.number().int(),
+    totalQuantity: z.number().int(),
+    byCause: z.array(
+      z.object({
+        cause: z.enum(DAMAGE_CAUSES),
+        count: z.number().int(),
+        quantity: z.number().int(),
+        costValue: z.number().int(),
+      }),
+    ),
+  })
+  .meta({ id: 'HpDamageSummary' });
+
 const idParam = z.object({ id: z.string() });
 const stageB =
   ' Installment schedules and payments arrive in Stage B once the client confirms the interest method.';
@@ -874,6 +958,227 @@ export const hpPaths: ZodOpenApiPathsObject = {
           content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
         },
         '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/hire-purchase/items/{id}/receive': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Book a delivery, and reconcile the shelf with the invoice',
+      description:
+        'Adds the quantity and sets the cost to what this delivery actually cost per ' +
+        'unit. The unit cost is required every time: the invoice is the only place the ' +
+        'real figure exists, and a delivery is the moment somebody is holding it. When ' +
+        'it differs from the shelf, the shelf moves and the move is written to the ' +
+        'item’s price history with the supplier and invoice reference. Pass ' +
+        '`sellingPrice` only when the delivery is also a repricing. Counter and office.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(receiveStockBody),
+      responses: {
+        '200': jsonResponse(
+          'Received',
+          z.object({
+            item: hpItem,
+            changes: z
+              .array(hpPriceChange)
+              .describe('The moves this delivery caused. Empty when the invoice matched.'),
+          }),
+        ),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — stock changed concurrently, retry'),
+        '422': errorResponse('INVALID_PRICING — the selling price is below cost'),
+      },
+    },
+  },
+  '/hire-purchase/items/{id}/price-changes': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'Why this item’s cost or selling price moved, newest first',
+      description:
+        'One row per price that actually moved, from any route into the shelf: the edit ' +
+        'drawer, a delivery, or the bulk importer. A delivery’s rows carry the quantity, ' +
+        'supplier and invoice that brought the change. Filter with `kind`.',
+      security,
+      requestParams: { path: idParam, query: listPriceChangesQuery },
+      responses: {
+        '200': jsonResponse(
+          'Price history',
+          z.object({
+            items: z.array(hpPriceChange),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+  },
+  '/hire-purchase/damages': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Report damaged or missing stock',
+      description:
+        'Counter and office. Writes NOTHING off — the shelf is untouched until the ' +
+        'office approves, so a mistaken report costs only a rejection. Photographs go ' +
+        'through POST /uploads/images with kind=photo first.',
+      security,
+      requestBody: jsonBody(reportDamageBody),
+      responses: {
+        '201': jsonResponse('Reported', z.object({ damage: hpDamage })),
+        '404': errorResponse('NOT_FOUND — no such item'),
+        '422': errorResponse('OUT_OF_STOCK (details.quantityInStock) or FUTURE_DATE'),
+      },
+    },
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'List damage reports',
+      description:
+        'Newest first by the day it happened. `totalCostValue` counts APPROVED reports ' +
+        'only — a pending report is not a loss yet.' +
+        ' Pass format=csv or xlsx for a download.',
+      security,
+      requestParams: { query: listDamagesQuery },
+      responses: {
+        '200': jsonResponse(
+          'Damage reports',
+          z.object({
+            items: z.array(hpDamage),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+            totalCostValue: z.number().int(),
+            pendingCount: z.number().int(),
+          }),
+        ),
+      },
+    },
+  },
+  '/hire-purchase/damages/summary': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'What the shop lost to damage in a period, by cause',
+      description: 'Approved reports only, dated by the day the damage happened.',
+      security,
+      requestParams: { query: rangeOnlyQuery },
+      responses: { '200': jsonResponse('Summary', damageSummary) },
+    },
+  },
+  '/hire-purchase/damages/trash': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'List binned damage reports (office only)',
+      security,
+      requestParams: { query: trashListQuery },
+      responses: {
+        '200': jsonResponse(
+          'Binned reports',
+          z.object({
+            items: z.array(trashedHpDamage),
+            page: z.number(),
+            limit: z.number(),
+            total: z.number(),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+      },
+    },
+  },
+  '/hire-purchase/damages/{id}': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'One damage report',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Report', z.object({ damage: hpDamage })),
+        '404': errorResponse('NOT_FOUND'),
+      },
+    },
+    patch: {
+      tags: ['Hire Purchase'],
+      summary: 'Correct a report that has not been decided',
+      description:
+        'Only while pending: once the office has approved or rejected it, changing what ' +
+        'they decided on would make the decision meaningless.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(updateDamageBody),
+      responses: {
+        '200': jsonResponse('Updated', z.object({ damage: hpDamage })),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('ALREADY_REVIEWED'),
+      },
+    },
+    delete: {
+      tags: ['Hire Purchase'],
+      summary: 'Bin a damage report (office only)',
+      description:
+        'Pending or rejected only. An approved damage has already moved the shelf and ' +
+        'struck a loss; hiding the row would leave the stock short with nothing to ' +
+        'explain it.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Binned', z.object({ damage: trashedHpDamage })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('CANNOT_TRASH — the report was approved'),
+      },
+    },
+  },
+  '/hire-purchase/damages/{id}/approve': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Approve a damage: take it off the shelf and strike the loss (office only)',
+      description:
+        'The stock move and the valuation happen together, in one transaction. The cost ' +
+        'is read from the item at that moment and stored on the report, never recomputed ' +
+        'later — prices are editable, and a loss that re-priced itself would silently ' +
+        'restate closed months. The person who reported the damage may not approve it.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Approved', z.object({ damage: hpDamage })),
+        '403': errorResponse('FORBIDDEN — office only, or SELF_APPROVAL'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('ALREADY_REVIEWED or CONFLICT'),
+        '422': errorResponse(
+          'OUT_OF_STOCK (details.quantityInStock, details.quantity) — fewer are on the ' +
+            'shelf than the report claims; reject it and record the real quantity',
+        ),
+      },
+    },
+  },
+  '/hire-purchase/damages/{id}/reject': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Refuse a damage report (office only)',
+      description: 'The shelf is untouched — it never moved. The reporter sees the reason.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(rejectDamageBody),
+      responses: {
+        '200': jsonResponse('Rejected', z.object({ damage: hpDamage })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('ALREADY_REVIEWED'),
+      },
+    },
+  },
+  '/hire-purchase/damages/{id}/restore': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Restore a binned damage report (office only)',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Restored', z.object({ damage: hpDamage })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NOT_TRASHED'),
       },
     },
   },

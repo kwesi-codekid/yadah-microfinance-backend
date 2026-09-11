@@ -4,9 +4,17 @@ import { AppError } from './errors.js';
 
 /**
  * Account numbers are `PREFIX + YY + MM + NNNN`, e.g. `SU26080001` — the
- * fourth susu account opened in August 2026. The sequence restarts at 1 each
+ * first susu account opened in August 2026. The sequence restarts at 1 each
  * month, per product, so the date segment is part of what makes the number
  * unique.
+ *
+ * Susu accounts carry one extra segment: the cycle month, as `-MMM`, giving
+ * `SU26090005-SEP`. The two are not the same thing and are allowed to differ.
+ * `YYMM` is when the number was *issued* and is what keeps it unique; `-MMM`
+ * is the month the customer's cycle is *called*, which the counter picks when
+ * opening. An account opened on 28 August for a cycle the customer thinks of
+ * as September is `SU26080012-SEP`, and the branch can read the month off the
+ * card without doing arithmetic.
  *
  * Accounts created before this scheme keep their old numbers (susu: 6 random
  * digits, savings: 10) — those are printed on receipts and quoted by
@@ -23,13 +31,72 @@ export const ACCOUNT_PREFIXES = {
 
 export type AccountPrefix = (typeof ACCOUNT_PREFIXES)[keyof typeof ACCOUNT_PREFIXES];
 
+/**
+ * Cycle months, in the three-letter form the branch writes on a passbook.
+ * Index order is the calendar's, so `CYCLE_MONTHS[month - 1]` is the lookup.
+ */
+export const CYCLE_MONTHS = [
+  'JAN',
+  'FEB',
+  'MAR',
+  'APR',
+  'MAY',
+  'JUN',
+  'JUL',
+  'AUG',
+  'SEP',
+  'OCT',
+  'NOV',
+  'DEC',
+] as const;
+export type CycleMonth = (typeof CYCLE_MONTHS)[number];
+
+/** The cycle month a date falls in. Ghana is UTC+0, so UTC months are Accra months. */
+export function cycleMonthOf(date: Date = new Date()): CycleMonth {
+  // getUTCMonth is 0-based, which is exactly the array's indexing.
+  const month = CYCLE_MONTHS[date.getUTCMonth()];
+  // getUTCMonth only ever returns 0-11, so this cannot fire. The check is
+  // what narrows the type; the alternative is an assertion the linter bans.
+  if (!month) throw new Error(`impossible month index ${String(date.getUTCMonth())}`);
+  return month;
+}
+
+/** Only susu cycles are named by month; every other product is just a sequence. */
+function acceptsCycleMonth(prefix: AccountPrefix): boolean {
+  return prefix === ACCOUNT_PREFIXES.susu;
+}
+
 /** Digits in the per-month sequence — 9,999 accounts per product per month. */
 const SEQUENCE_DIGITS = 4;
 const SEQUENCE_MAX = 10 ** SEQUENCE_DIGITS - 1;
 
-/** Matches the current format for a given prefix, e.g. /^SU\d{8}$/. */
+/**
+ * Matches the current format for a given prefix, e.g. /^SU\d{8}(-MMM)?$/.
+ * The susu suffix is optional here on purpose: accounts opened before the
+ * cycle month existed are still current-format and must keep validating.
+ */
 export function accountNumberPattern(prefix: AccountPrefix): RegExp {
-  return new RegExp(`^${prefix}[0-9]{${String(2 + 2 + SEQUENCE_DIGITS)}}$`);
+  const digits = String(2 + 2 + SEQUENCE_DIGITS);
+  const suffix = acceptsCycleMonth(prefix) ? `(?:-(?:${CYCLE_MONTHS.join('|')}))?` : '';
+  return new RegExp(`^${prefix}[0-9]{${digits}}${suffix}$`);
+}
+
+/**
+ * The number without its cycle month — what a customer quoting `SU26090005`
+ * for an account filed as `SU26090005-SEP` means. Anything else is returned
+ * unchanged, so this is safe to call on a legacy number.
+ */
+export function bareAccountNumber(accountNumber: string): string {
+  const cut = accountNumber.indexOf('-');
+  return cut === -1 ? accountNumber : accountNumber.slice(0, cut);
+}
+
+/** The cycle month written on a number, or undefined when it carries none. */
+export function cycleMonthFrom(accountNumber: string): CycleMonth | undefined {
+  const cut = accountNumber.indexOf('-');
+  if (cut === -1) return undefined;
+  const tail = accountNumber.slice(cut + 1);
+  return (CYCLE_MONTHS as readonly string[]).includes(tail) ? (tail as CycleMonth) : undefined;
 }
 
 /**
@@ -55,6 +122,7 @@ export function counterKey(prefix: AccountPrefix, period: string): string {
 export async function nextAccountNumber(
   prefix: AccountPrefix,
   date: Date = new Date(),
+  cycleMonth?: CycleMonth,
 ): Promise<string> {
   const period = accountPeriodKey(date);
   // upsert + returnDocument:'after' always yields a document.
@@ -71,11 +139,21 @@ export async function nextAccountNumber(
       500,
     );
   }
-  return formatAccountNumber(prefix, period, seq);
+  return formatAccountNumber(prefix, period, seq, cycleMonth);
 }
 
-export function formatAccountNumber(prefix: AccountPrefix, period: string, seq: number): string {
-  return `${prefix}${period}${String(seq).padStart(SEQUENCE_DIGITS, '0')}`;
+export function formatAccountNumber(
+  prefix: AccountPrefix,
+  period: string,
+  seq: number,
+  cycleMonth?: CycleMonth,
+): string {
+  const base = `${prefix}${period}${String(seq).padStart(SEQUENCE_DIGITS, '0')}`;
+  if (cycleMonth === undefined) return base;
+  if (!acceptsCycleMonth(prefix)) {
+    throw new Error(`${prefix} account numbers do not carry a cycle month`);
+  }
+  return `${base}-${cycleMonth}`;
 }
 
 /**

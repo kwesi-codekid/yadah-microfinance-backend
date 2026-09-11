@@ -109,6 +109,98 @@ export const listLabelsQuery = pagination.extend({
 });
 export type ListLabelsQuery = z.infer<typeof listLabelsQuery>;
 
+// ---- receiving stock and price history
+
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+
+export const receiveStockBody = z.object({
+  /** How many units arrived. */
+  quantity: z.number().int().min(1).max(10_000),
+  /**
+   * What this delivery cost per unit, from the invoice — in pesewas. Always
+   * asked for: the invoice is the only place the real figure exists, and if it
+   * disagrees with the shelf the shelf moves and the move is recorded.
+   */
+  unitCost: positiveMoneyPesewas,
+  /** Only when the delivery is also a repricing. Omit to leave it alone. */
+  sellingPrice: positiveMoneyPesewas.optional(),
+  supplier: z.string().min(2).max(160).trim().optional(),
+  invoiceRef: z.string().min(1).max(80).trim().optional(),
+  /** The Accra day the goods arrived. Defaults to today; may not be in the future. */
+  receivedOn: isoDay.optional(),
+  note: z.string().min(2).max(300).trim().optional(),
+});
+export type ReceiveStockBody = z.infer<typeof receiveStockBody>;
+
+export const listPriceChangesQuery = pagination.extend({
+  kind: z.enum(['cost', 'selling']).optional(),
+});
+export type ListPriceChangesQuery = z.infer<typeof listPriceChangesQuery>;
+
+// ---- damages
+
+const DAMAGE_CAUSE_VALUES = [
+  'delivery',
+  'in-shop',
+  'storage',
+  'defective',
+  'missing',
+  'other',
+] as const;
+
+export const reportDamageBody = z.object({
+  itemId: objectId,
+  quantity: z.number().int().min(1).max(10_000),
+  cause: z.enum(DAMAGE_CAUSE_VALUES),
+  /** What happened. This is what the office reads when deciding. */
+  description: z.string().min(2).max(300).trim(),
+  /** The Accra day it happened. Defaults to today. */
+  occurredOn: isoDay.optional(),
+  /** Photographs of the damage, from the shared uploader. */
+  photoUrls: z.array(uploadedImageUrl).max(5).optional(),
+});
+export type ReportDamageBody = z.infer<typeof reportDamageBody>;
+
+export const updateDamageBody = z
+  .object({
+    quantity: z.number().int().min(1).max(10_000).optional(),
+    cause: z.enum(DAMAGE_CAUSE_VALUES).optional(),
+    description: z.string().min(2).max(300).trim().optional(),
+    occurredOn: isoDay.optional(),
+    photoUrls: z.array(uploadedImageUrl).max(5).optional(),
+  })
+  .refine((v) => Object.values(v).some((f) => f !== undefined), {
+    message: 'At least one field must be provided',
+  });
+export type UpdateDamageBody = z.infer<typeof updateDamageBody>;
+
+export const rejectDamageBody = z.object({
+  /** Why it was refused — the reporter sees this, so it has to say something. */
+  reason: z.string().min(2).max(300).trim(),
+});
+export type RejectDamageBody = z.infer<typeof rejectDamageBody>;
+
+export const listDamagesQuery = pagination
+  .extend({
+    status: z.enum(['pending', 'approved', 'rejected']).optional(),
+    cause: z.enum(DAMAGE_CAUSE_VALUES).optional(),
+    itemId: objectId.optional(),
+    search: z.string().min(1).max(100).optional(),
+    ...dateRangeFields,
+    format: exportFormat,
+  })
+  .check((ctx) => {
+    const issue = fromToIssue(ctx.value);
+    if (issue) ctx.issues.push(issue);
+  });
+export type ListDamagesQuery = z.infer<typeof listDamagesQuery>;
+
+export const rangeOnlyQuery = z.object({ ...dateRangeFields }).check((ctx) => {
+  const issue = fromToIssue(ctx.value);
+  if (issue) ctx.issues.push(issue);
+});
+export type RangeOnlyQuery = z.infer<typeof rangeOnlyQuery>;
+
 /**
  * The corrected sheet coming back from the import preview. Cells stay strings
  * — the counter edits text, and the server decides what it means, so a bad

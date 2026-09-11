@@ -23,11 +23,6 @@ export const rangeQuery = z
   });
 export type RangeQuery = z.infer<typeof rangeQuery>;
 
-export const formatOnlyQuery = z.object({
-  format: exportFormat,
-});
-export type FormatOnlyQuery = z.infer<typeof formatOnlyQuery>;
-
 /** Unified transaction feed: Accra-day range + pagination + optional filters. */
 export const transactionsQuery = pagination
   .extend({

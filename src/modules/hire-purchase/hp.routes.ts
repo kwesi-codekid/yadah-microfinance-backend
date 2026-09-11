@@ -18,6 +18,13 @@ import {
   importItemRowsBody,
   labelBody,
   listLabelsQuery,
+  listDamagesQuery,
+  listPriceChangesQuery,
+  rangeOnlyQuery,
+  receiveStockBody,
+  rejectDamageBody,
+  reportDamageBody,
+  updateDamageBody,
   updateLabelBody,
   paymentIdParams,
   listAgreementsQuery,
@@ -41,7 +48,14 @@ import {
   type IdParams,
   type ImportItemRowsBody,
   type LabelBody,
+  type ListDamagesQuery,
   type ListLabelsQuery,
+  type ListPriceChangesQuery,
+  type RangeOnlyQuery,
+  type ReceiveStockBody,
+  type RejectDamageBody,
+  type ReportDamageBody,
+  type UpdateDamageBody,
   type UpdateLabelBody,
   type PaymentIdParams,
   type ListAgreementsQuery,
@@ -60,6 +74,8 @@ import {
 import * as hp from './hp.service.js';
 import * as hpImport from './hp.import.js';
 import * as hpLabels from './hp-labels.service.js';
+import * as damages from './hp-damages.service.js';
+import * as pricing from './hp-pricing.service.js';
 import type { HpLabelKind } from '../../models/index.js';
 
 export const hpRouter = Router();
@@ -335,6 +351,39 @@ hpRouter.patch(
   },
 );
 
+/**
+ * Booking a delivery. Takes the invoice's unit cost every time: the invoice
+ * is the only place the real figure exists, and a delivery is the one moment
+ * somebody is holding it. When it disagrees with the shelf, the shelf moves
+ * and the move goes on the item's price history.
+ */
+hpRouter.post(
+  '/items/:id/receive',
+  validate({ params: idParams, body: receiveStockBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: ReceiveStockBody }>(req);
+    pricing
+      .receiveStock(getAuth(req), params.id, body, req.id as string)
+      .then((result) => res.json({ item: hp.publicItem(result.item), changes: result.changes }))
+      .catch(next);
+  },
+);
+
+hpRouter.get(
+  '/items/:id/price-changes',
+  validate({ params: idParams, query: listPriceChangesQuery }),
+  (req, res, next) => {
+    const { params, query } = getValidated<{
+      params: IdParams;
+      query: ListPriceChangesQuery;
+    }>(req);
+    pricing
+      .listPriceChanges(params.id, query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
 hpRouter.post(
   '/items/:id/adjust-stock',
   validate({ params: idParams, body: adjustStockBody }),
@@ -342,6 +391,139 @@ hpRouter.post(
     const { params, body } = getValidated<{ params: IdParams; body: AdjustStockBody }>(req);
     hp.adjustStock(getAuth(req), params.id, body.delta, body.reason, req.id as string)
       .then((item) => res.json({ item }))
+      .catch(next);
+  },
+);
+
+/* --------------------------------------------------------------- damages ---
+ * Stock that can no longer be sold.
+ *
+ * The counter reports and the office decides: a teller who breaks something
+ * can say so straight away, but nothing leaves the shelf until somebody with
+ * authority approves it, and the reporter may never approve their own report.
+ *
+ * `/damages/summary` and `/damages/trash` are registered before `/damages/:id`
+ * so neither word is ever read as an id.
+ */
+
+hpRouter.post('/damages', validate({ body: reportDamageBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: ReportDamageBody }>(req);
+  damages
+    .reportDamage(getAuth(req), body, req.id as string)
+    .then((damage) => res.status(201).json({ damage }))
+    .catch(next);
+});
+
+hpRouter.get('/damages', validate({ query: listDamagesQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: ListDamagesQuery }>(req);
+  damages
+    .listDamages(query.format === 'json' ? query : { ...query, page: 1, limit: EXPORT_MAX_ROWS })
+    .then((list) =>
+      sendExport(res, {
+        format: query.format,
+        filename: 'damages',
+        payload: list,
+        rows: list.items.map(damages.toDamageExportRow),
+        moneyKeys: ['unitCost', 'costValue'],
+      }),
+    )
+    .catch(next);
+});
+
+hpRouter.get('/damages/summary', validate({ query: rangeOnlyQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: RangeOnlyQuery }>(req);
+  damages
+    .damageSummary(query.from, query.to)
+    .then((summary) => res.json(summary))
+    .catch(next);
+});
+
+hpRouter.get('/damages/:id', validate({ params: idParams }), (req, res, next) => {
+  const { params } = getValidated<{ params: IdParams }>(req);
+  damages
+    .getDamage(params.id)
+    .then((damage) => res.json({ damage }))
+    .catch(next);
+});
+
+hpRouter.patch(
+  '/damages/:id',
+  validate({ params: idParams, body: updateDamageBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: UpdateDamageBody }>(req);
+    damages
+      .updateDamage(getAuth(req), params.id, body, req.id as string)
+      .then((damage) => res.json({ damage }))
+      .catch(next);
+  },
+);
+
+// Deciding is the office's, and so is the bin. These are registered apart
+// from the counter's routes above because the access tests read a few lines
+// past each route for its guard: a `requireOffice` sitting directly under a
+// counter route would read as belonging to it.
+//
+hpRouter.get(
+  '/damages/trash',
+  requireOffice,
+  validate({ query: trashListQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: TrashListQuery }>(req);
+    damages
+      .listDamageTrash(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
+hpRouter.post(
+  '/damages/:id/approve',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    damages
+      .approveDamage(getAuth(req), params.id, req.id as string)
+      .then((damage) => res.json({ damage }))
+      .catch(next);
+  },
+);
+
+hpRouter.post(
+  '/damages/:id/reject',
+  requireOffice,
+  validate({ params: idParams, body: rejectDamageBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: RejectDamageBody }>(req);
+    damages
+      .rejectDamage(getAuth(req), params.id, body, req.id as string)
+      .then((damage) => res.json({ damage }))
+      .catch(next);
+  },
+);
+
+hpRouter.delete(
+  '/damages/:id',
+  requireOffice,
+  validate({ params: idParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: IdParams; body: TrashBody }>(req);
+    damages
+      .trashDamage(getAuth(req), params.id, body.reason, req.id as string)
+      .then((damage) => res.json({ damage }))
+      .catch(next);
+  },
+);
+
+hpRouter.post(
+  '/damages/:id/restore',
+  requireOffice,
+  validate({ params: idParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: IdParams }>(req);
+    damages
+      .restoreDamage(getAuth(req), params.id, req.id as string)
+      .then((damage) => res.json({ damage }))
       .catch(next);
   },
 );

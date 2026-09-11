@@ -105,3 +105,37 @@ export function directionOf(
       return 'internal';
   }
 }
+
+/**
+ * Whether a row's `fee` is money the company KEPT, as opposed to a charge
+ * mirrored onto another row for display.
+ *
+ * Three row types carry real revenue: the two savings charges, and a susu
+ * payout that stopped its account (one cycle-day's commission, charged once —
+ * every later instalment of the same closure carries zero, so counting the
+ * type here cannot double-charge). `transfer` is excluded deliberately: its
+ * fee mirrors the savings leg's, and counting both would bill the customer
+ * twice on paper. `susu-withdrawal` is a partial draw and never charges.
+ */
+export function isRevenueFee(type: TxnType): boolean {
+  return type === 'savings-withdrawal' || type === 'savings-closure' || type === 'susu-payout';
+}
+
+/**
+ * Who put the row on the ledger — which directory `recordedById` belongs to,
+ * and therefore how to read it.
+ *
+ *   staff    — a signed-in User: counter, office, or a collector in the field.
+ *   customer — the customer themselves, paying through the portal. They never
+ *              write to the ledger directly: a portal charge is applied by the
+ *              system on the webhook's word. The Paystack charge document is
+ *              what remembers that the customer asked, and the feed reads it
+ *              back, so the id on the row is a Customer id, not a User id.
+ *   system   — an automated move with no human behind it, i.e. debt recovery
+ *              sweeping a customer's own balances toward an overdue debt.
+ *   unknown  — the source document never recorded an actor. Some older loans
+ *              carry no approver. Calling that 'system' would claim a machine
+ *              did it, which is worse than admitting we do not know.
+ */
+export const RECORDED_BY_KINDS = ['staff', 'customer', 'system', 'unknown'] as const;
+export type RecordedByKind = (typeof RECORDED_BY_KINDS)[number];

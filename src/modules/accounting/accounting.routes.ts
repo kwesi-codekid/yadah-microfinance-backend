@@ -5,7 +5,6 @@ import { requireAdmin, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import * as balanceSheet from './balance-sheet.service.js';
 import * as cash from './cash.service.js';
-import * as expenses from './expenses.service.js';
 import * as assets from './fixed-assets.service.js';
 import { balanceSheetPdf, profitAndLossPdf } from './statement-pdf.service.js';
 import {
@@ -13,32 +12,22 @@ import {
   balanceSheetQuery,
   createCapitalEntryBody,
   createCashAccountBody,
-  createExpenseBody,
   createFixedAssetBody,
   disposeFixedAssetBody,
   idParams,
   listCapitalQuery,
-  listExpensesQuery,
   listFixedAssetsQuery,
-  payExpenseBody,
   profitLossQuery,
-  rejectExpenseBody,
-  updateExpenseBody,
   type AsOfQuery,
   type BalanceSheetQuery,
   type CreateCapitalEntryBody,
   type CreateCashAccountBody,
-  type CreateExpenseBody,
   type CreateFixedAssetBody,
   type DisposeFixedAssetBody,
   type IdParams,
   type ListCapitalQuery,
-  type ListExpensesQuery,
   type ListFixedAssetsQuery,
-  type PayExpenseBody,
   type ProfitLossQuery,
-  type RejectExpenseBody,
-  type UpdateExpenseBody,
 } from './accounting.schemas.js';
 
 /**
@@ -82,81 +71,11 @@ accountingRouter.get('/cash-position', validate({ query: asOfQuery }), (req, res
     .catch(next);
 });
 
-// ---------------------------------------------------------------- expenses
-
-accountingRouter.post('/expenses', validate({ body: createExpenseBody }), (req, res, next) => {
-  const { body } = getValidated<{ body: CreateExpenseBody }>(req);
-  expenses
-    .recordExpense(getAuth(req), body, req.id as string)
-    .then((expense) => res.status(201).json({ expense }))
-    .catch(next);
-});
-
-accountingRouter.get('/expenses', validate({ query: listExpensesQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: ListExpensesQuery }>(req);
-  expenses
-    .listExpenses(query)
-    .then((list) => {
-      if (query.format !== 'json') {
-        return sendExport(res, {
-          format: query.format,
-          filename: 'expenses',
-          payload: null,
-          rows: list.items.map(expenses.toExpenseExportRow),
-          moneyKeys: ['amount'],
-          sheet: 'Expenses',
-        });
-      }
-      res.json(list);
-      return undefined;
-    })
-    .catch(next);
-});
-
-accountingRouter.patch(
-  '/expenses/:id',
-  validate({ params: idParams, body: updateExpenseBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{ params: IdParams; body: UpdateExpenseBody }>(req);
-    expenses
-      .updateExpense(getAuth(req), params.id, body, req.id as string)
-      .then((expense) => res.json({ expense }))
-      .catch(next);
-  },
-);
-
-accountingRouter.post('/expenses/:id/approve', validate({ params: idParams }), (req, res, next) => {
-  const { params } = getValidated<{ params: IdParams }>(req);
-  expenses
-    .approveExpense(getAuth(req), params.id, req.id as string)
-    .then((expense) => res.json({ expense }))
-    .catch(next);
-});
-
-accountingRouter.post(
-  '/expenses/:id/reject',
-  validate({ params: idParams, body: rejectExpenseBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{ params: IdParams; body: RejectExpenseBody }>(req);
-    expenses
-      .rejectExpense(getAuth(req), params.id, body.reason, req.id as string)
-      .then((expense) => res.json({ expense }))
-      .catch(next);
-  },
-);
-
-// The only step that moves money, so it is the only one naming an account.
-accountingRouter.post(
-  '/expenses/:id/pay',
-  validate({ params: idParams, body: payExpenseBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{ params: IdParams; body: PayExpenseBody }>(req);
-    expenses
-      .payExpense(getAuth(req), params.id, body, req.id as string)
-      .then((expense) => res.json({ expense }))
-      .catch(next);
-  },
-);
+// Expenses used to live here. They moved to their own module at
+// /api/v1/expenses when recording was opened to the counter: petty cash is
+// spent by whoever is at the counter, and the accounting statements are read
+// at month end by somebody else entirely. The balance sheet below still reads
+// expensesByCategory and accruedExpenses from that module.
 
 // ---------------------------------------------------------------- fixed assets
 

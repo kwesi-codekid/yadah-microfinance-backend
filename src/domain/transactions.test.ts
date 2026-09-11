@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TXN_TYPES, directionOf, moduleOf } from './transactions.js';
+import { TXN_TYPES, directionOf, isRevenueFee, moduleOf } from './transactions.js';
 
 describe('moduleOf', () => {
   it('maps every type to its module', () => {
@@ -59,6 +59,28 @@ describe('directionOf — company cash perspective', () => {
   it('every type resolves to a direction (exhaustive)', () => {
     for (const type of TXN_TYPES) {
       expect(['in', 'out', 'internal']).toContain(directionOf(type, null, null));
+    }
+  });
+});
+
+describe('isRevenueFee', () => {
+  it('counts the charges the company keeps', () => {
+    expect(isRevenueFee('savings-withdrawal')).toBe(true);
+    expect(isRevenueFee('savings-closure')).toBe(true);
+    expect(isRevenueFee('susu-payout')).toBe(true);
+  });
+
+  it('excludes the transfer leg, which only mirrors the savings fee', () => {
+    expect(isRevenueFee('transfer')).toBe(false);
+  });
+
+  it('excludes a partial susu withdrawal, which charges nothing', () => {
+    expect(isRevenueFee('susu-withdrawal')).toBe(false);
+  });
+
+  it('excludes every money-in type', () => {
+    for (const t of ['susu-deposit', 'savings-deposit', 'loan-repayment', 'hp-sale'] as const) {
+      expect(isRevenueFee(t)).toBe(false);
     }
   });
 });

@@ -10,11 +10,18 @@ import {
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
 import { SUSU_MIN_DAILY_AMOUNT } from '../../domain/susu.js';
+import { CYCLE_MONTHS } from '../../lib/account-number.js';
 
 export const openAccountBody = z.object({
   customerId: objectId,
   /** Fixed daily amount in pesewas — immutable for the life of the cycle. */
   dailyAmount: positiveMoneyPesewas.min(SUSU_MIN_DAILY_AMOUNT, 'Minimum daily amount is GHS 10'),
+  /**
+   * The month the cycle is called, appended to the account number as `-SEP`.
+   * Any of the twelve is allowed: a cycle opened at the end of one month for
+   * the next is the point of the field. Defaults to the current month.
+   */
+  cycleMonth: z.enum(CYCLE_MONTHS).optional(),
 });
 export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
@@ -22,10 +29,17 @@ export const listAccountsQuery = pagination
   .extend({
     customerId: objectId.optional(),
     status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']).optional(),
-    /** Current format (SU26080001) or a grandfathered 6-digit number. */
+    /**
+     * Current format (SU26090005-SEP), a number without its cycle month
+     * (SU26090005 — what a customer reading off a receipt will quote), or a
+     * grandfathered 6-digit number.
+     */
     accountNumber: z
       .string()
-      .regex(/^(SU\d{8}|\d{6})$/, 'Expected an account number like SU26080001')
+      .regex(
+        /^(SU\d{8}(-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))?|\d{6})$/,
+        'Expected an account number like SU26090005-SEP',
+      )
       .optional(),
     /** Fuzzy: customer name (typo-tolerant), phone, or account number prefix. */
     search: z.string().min(1).max(100).optional(),

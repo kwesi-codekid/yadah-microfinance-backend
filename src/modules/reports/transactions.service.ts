@@ -2,9 +2,11 @@ import { Types, type PipelineStage } from 'mongoose';
 import { AppError } from '../../lib/errors.js';
 import {
   directionOf,
+  isRevenueFee,
   moduleOf,
   TXN_MODULES,
   type TxnDirection,
+  type RecordedByKind,
   type TxnModule,
   type TxnStatus,
   type TxnType,
@@ -14,6 +16,7 @@ import {
   CustomerModel,
   HpAgreementModel,
   LoanModel,
+  PaystackChargeModel,
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
@@ -21,8 +24,9 @@ import {
   UserModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
+import { rangeToWindow } from '../../lib/time.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
-import { rangeToWindow } from './reports.service.js';
+import { PAYSTACK_KEY_PREFIX } from '../payments/payments.service.js';
 import type { TransactionsQuery } from './reports.schemas.js';
 
 /** Automated debt-recovery moves are recorded by this well-known actor. */
@@ -54,6 +58,13 @@ interface RawRow {
   channel?: string | null;
   detail?: string | null;
   recordedById?: Types.ObjectId | null;
+  /**
+   * Ledger rows applied from a Paystack charge carry `paystack:<reference>`.
+   * It is the only surviving link from the row back to who asked for it.
+   */
+  idempotencyKey?: string | null;
+  /** Pending-charge rows alone know the actor's role first-hand. */
+  initiatedByRole?: string | null;
   balanceAfter?: number;
   /** Absent on ledger rows, which are completed by definition. */
   status?: TxnStatus;
@@ -83,6 +94,11 @@ export interface UnifiedTxnRow {
   balanceAfter?: number;
   recordedById: string | null;
   recordedByName: string | null;
+  /**
+   * Which directory `recordedById` belongs to, and so how to read it: a User
+   * id, a Customer id, the automation actor, or nothing at all.
+   */
+  recordedByKind: RecordedByKind;
   createdAt: Date;
 }
 
@@ -90,7 +106,12 @@ export interface TxnTotals {
   in: { count: number; amount: number };
   out: { count: number; amount: number };
   internal: { count: number; amount: number };
-  /** Savings withdrawal/closure fees in the range (company revenue). */
+  /**
+   * Company revenue taken as a charge in the range: savings withdrawal and
+   * closure fees, plus susu closing commissions. Named `feesCollected` for
+   * the wire's sake — every client reads that key — but it is charges of
+   * both kinds, and the screens label it accordingly.
+   */
   feesCollected: number;
 }
 
@@ -138,6 +159,7 @@ function buildBranches(
               channel: 1,
               detail: { $literal: null },
               recordedById: '$collectorId',
+              idempotencyKey: 1,
               createdAt: 1,
             },
           },
@@ -155,7 +177,11 @@ function buildBranches(
                 $cond: [{ $eq: ['$kind', 'partial-withdrawal'] }, 'susu-withdrawal', 'susu-payout'],
               },
               amount: 1,
-              fee: { $literal: 0 },
+              // The one-day commission charged as the account stopped. Only
+              // the row that stopped it carries a value; instalments of the
+              // same closure, and partial withdrawals, carry zero. Rows
+              // written before the field existed have none, and read as zero.
+              fee: { $ifNull: ['$commissionAmount', 0] },
               customerId: 1,
               refId: '$accountId',
               refKind: { $literal: 'susu-account' },
@@ -186,6 +212,7 @@ function buildBranches(
             channel: 1,
             detail: { $literal: null },
             recordedById: 1,
+            idempotencyKey: 1,
             balanceAfter: 1,
             createdAt: 1,
           },
@@ -237,6 +264,7 @@ function buildBranches(
               channel: 1,
               detail: '$source',
               recordedById: 1,
+              idempotencyKey: 1,
               createdAt: 1,
             },
           },
@@ -261,6 +289,7 @@ function buildBranches(
             channel: 1,
             detail: { $literal: null },
             recordedById: 1,
+            idempotencyKey: 1,
             createdAt: 1,
           },
         },
@@ -369,6 +398,9 @@ function buildBranches(
               $cond: [{ $eq: ['$executionStatus', 'failed'] }, 'failed', 'pending'],
             },
             recordedById: '$initiatedById',
+            // A Customer id when the portal raised it, a User id otherwise —
+            // this is the field that says which.
+            initiatedByRole: 1,
             createdAt: 1,
           },
         },
@@ -402,33 +434,68 @@ function unionStages(branches: Branch[]): PipelineStage[] {
 
 // ---------------------------------------------------------------- row resolution
 
+/**
+ * The Paystack reference a ledger row was applied from, or null.
+ *
+ * When a customer pays through the portal, the webhook applies the charge as
+ * the SYSTEM actor — they cannot post to their own ledger — so the row itself
+ * records no customer. What survives is the idempotency key, which embeds the
+ * charge reference, and the charge remembers who asked. This is the join back.
+ */
+function paystackReference(key: string | null | undefined): string | null {
+  if (key === null || key === undefined) return null;
+  return key.startsWith(PAYSTACK_KEY_PREFIX) ? key.slice(PAYSTACK_KEY_PREFIX.length) : null;
+}
+
 /** Batch-resolve customer names, staff names, and account numbers for a page of rows. */
 async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   const customerIds = new Set<string>();
   const userIds = new Set<string>();
+  // References to test against the charge book: only rows the system actor
+  // wrote can be a laundered customer payment, so only those are worth asking
+  // about.
+  const references = new Set<string>();
   const susuIds = new Set<string>();
   const savingsIds = new Set<string>();
   const loanIds = new Set<string>();
   const hpIds = new Set<string>();
   for (const r of raw) {
     customerIds.add(r.customerId.toHexString());
-    if (r.recordedById) userIds.add(r.recordedById.toHexString());
+    const actor = r.recordedById?.toHexString() ?? null;
+    // A Customer id must never be looked up in the staff directory: it misses,
+    // and the row then reads as if nobody recorded it.
+    if (actor !== null && actor !== SYSTEM_ACTOR_HEX && r.initiatedByRole !== 'customer') {
+      userIds.add(actor);
+    }
+    if (actor === SYSTEM_ACTOR_HEX) {
+      const reference = paystackReference(r.idempotencyKey);
+      if (reference !== null) references.add(reference);
+    }
     if (r.refKind === 'susu-account') susuIds.add(r.refId.toHexString());
     if (r.refKind === 'savings-account') savingsIds.add(r.refId.toHexString());
     if (r.refKind === 'loan') loanIds.add(r.refId.toHexString());
     if (r.refKind === 'hp-agreement') hpIds.add(r.refId.toHexString());
   }
 
-  const [customers, users, susuAccounts, savingsAccounts, loans, agreements] = await Promise.all([
-    CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
-    UserModel.find({ _id: { $in: [...userIds] } }, { name: 1 }),
-    SusuAccountModel.find({ _id: { $in: [...susuIds] } }, { accountNumber: 1 }),
-    SavingsAccountModel.find({ _id: { $in: [...savingsIds] } }, { accountNumber: 1 }),
-    LoanModel.find({ _id: { $in: [...loanIds] } }, { accountNumber: 1 }),
-    HpAgreementModel.find({ _id: { $in: [...hpIds] } }, { accountNumber: 1 }),
-  ]);
+  const [customers, users, susuAccounts, savingsAccounts, loans, agreements, charges] =
+    await Promise.all([
+      CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
+      UserModel.find({ _id: { $in: [...userIds] } }, { name: 1 }),
+      SusuAccountModel.find({ _id: { $in: [...susuIds] } }, { accountNumber: 1 }),
+      SavingsAccountModel.find({ _id: { $in: [...savingsIds] } }, { accountNumber: 1 }),
+      LoanModel.find({ _id: { $in: [...loanIds] } }, { accountNumber: 1 }),
+      HpAgreementModel.find({ _id: { $in: [...hpIds] } }, { accountNumber: 1 }),
+      references.size === 0
+        ? []
+        : PaystackChargeModel.find(
+            { reference: { $in: [...references] }, initiatedByRole: 'customer' },
+            { reference: 1 },
+          ),
+    ]);
   const customerNames = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   const userNames = new Map(users.map((u) => [u._id.toHexString(), u.name]));
+  /** References the customer raised themselves, rather than the counter. */
+  const selfServed = new Set(charges.map((c) => c.reference));
   // Loans and HP agreements predating the numbering scheme have none — those
   // rows simply carry no accountNumber, exactly as before.
   const accountNumbers = new Map(
@@ -440,8 +507,43 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   return raw.map((r) => {
     const channel = r.channel ?? null;
     const detail = r.detail ?? null;
-    const recordedById = r.recordedById?.toHexString() ?? null;
+    const actor = r.recordedById?.toHexString() ?? null;
+    const rowCustomerId = r.customerId.toHexString();
     const accountNumber = accountNumbers.get(r.refId.toHexString());
+
+    // Who put this row on the ledger, in four cases:
+    //
+    //   1. A pending charge says so outright — initiatedByRole is on the
+    //      charge document, and a portal one names the customer.
+    //   2. An applied portal charge was written by the system actor, but its
+    //      idempotency key leads back to a charge the customer raised. The
+    //      customer who paid is always the row's own customer, so the name is
+    //      already to hand.
+    //   3. Any other system-actor row is genuine automation: debt recovery.
+    //   4. Everything else is a member of staff — or, for a handful of older
+    //      loans that never recorded an approver, nobody we can name.
+    let recordedByKind: RecordedByKind;
+    let recordedById: string | null = actor;
+    let recordedByName: string | null;
+    const reference = paystackReference(r.idempotencyKey);
+    if (r.initiatedByRole === 'customer') {
+      recordedByKind = 'customer';
+      recordedByName = customerNames.get(rowCustomerId) ?? null;
+    } else if (actor === SYSTEM_ACTOR_HEX && reference !== null && selfServed.has(reference)) {
+      recordedByKind = 'customer';
+      recordedById = rowCustomerId;
+      recordedByName = customerNames.get(rowCustomerId) ?? null;
+    } else if (actor === SYSTEM_ACTOR_HEX) {
+      recordedByKind = 'system';
+      recordedByName = 'System';
+    } else if (actor !== null) {
+      recordedByKind = 'staff';
+      recordedByName = userNames.get(actor) ?? null;
+    } else {
+      recordedByKind = 'unknown';
+      recordedByName = null;
+    }
+
     return {
       id: r._id.toHexString(),
       module: moduleOf(r.type),
@@ -452,11 +554,11 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
       status: r.status ?? 'completed',
       channel,
       detail,
-      customerId: r.customerId.toHexString(),
+      customerId: rowCustomerId,
       customerName:
-        r.customerId.toHexString() === WALK_IN_CUSTOMER_HEX
+        rowCustomerId === WALK_IN_CUSTOMER_HEX
           ? 'Walk-in customer'
-          : (customerNames.get(r.customerId.toHexString()) ?? ''),
+          : (customerNames.get(rowCustomerId) ?? ''),
       ref: {
         kind: r.refKind,
         id: r.refId.toHexString(),
@@ -464,12 +566,8 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
       },
       ...(r.balanceAfter !== undefined ? { balanceAfter: r.balanceAfter } : {}),
       recordedById,
-      recordedByName:
-        recordedById === SYSTEM_ACTOR_HEX
-          ? 'System'
-          : recordedById
-            ? (userNames.get(recordedById) ?? null)
-            : null,
+      recordedByName,
+      recordedByKind,
       createdAt: r.createdAt,
     };
   });
@@ -508,10 +606,7 @@ function totalsFromGroups(groups: SummaryGroup[]): TxnTotals {
     const direction = directionOf(g._id.type, g._id.channel, g._id.detail);
     totals[direction].count += g.count;
     totals[direction].amount += g.amount;
-    // Fees on transfer rows mirror the savings-leg fee — count savings only.
-    if (g._id.type === 'savings-withdrawal' || g._id.type === 'savings-closure') {
-      totals.feesCollected += g.fee;
-    }
+    if (isRevenueFee(g._id.type)) totals.feesCollected += g.fee;
   }
   return totals;
 }
@@ -653,6 +748,10 @@ function toCsvRow(r: UnifiedTxnRow): Record<string, unknown> {
     accountRef: r.ref.accountNumber ?? r.ref.id,
     balanceAfter: r.balanceAfter ?? '',
     recordedBy: r.recordedByName ?? '',
+    // Appended, never inserted: csv.ts derives its header order from the keys
+    // in first-seen order, so a new column in the middle would shift every
+    // spreadsheet the office already reads by position.
+    recordedByType: r.recordedByKind,
   };
 }
 
@@ -756,9 +855,7 @@ export async function customerStatement(
   for (const t of transactions) {
     totals[t.direction].count += 1;
     totals[t.direction].amount += t.amount;
-    if (t.type === 'savings-withdrawal' || t.type === 'savings-closure') {
-      totals.feesCollected += t.fee;
-    }
+    if (isRevenueFee(t.type)) totals.feesCollected += t.fee;
   }
 
   const savings = await Promise.all(

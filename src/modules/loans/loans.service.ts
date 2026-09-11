@@ -866,7 +866,9 @@ export async function repayViaSusuClosure(
         throw new AppError('CONFLICT', 'Susu account was updated concurrently — retry', 409);
       }
 
-      // Payout record for the loan portion.
+      // Payout record for the loan portion. This is the row that stopped the
+      // account, so this is the row that carries the closing commission — the
+      // excess leg below must not charge it a second time.
       await SusuPayoutModel.create(
         [
           {
@@ -875,6 +877,7 @@ export async function repayViaSusuClosure(
             amount: applied,
             destination: 'loan',
             destinationId: loanId,
+            commissionAmount: commission,
             recordedById: new Types.ObjectId(actor.sub),
           },
         ],
@@ -914,6 +917,7 @@ export async function repayViaSusuClosure(
               amount: excess,
               destination: 'savings',
               destinationId: savingsTarget._id,
+              commissionAmount: 0,
               recordedById: new Types.ObjectId(actor.sub),
             },
           ],

@@ -3,9 +3,11 @@ import { formatGhs } from '../lib/money.js';
 import {
   SUSU_CYCLE_DEPOSITS,
   SUSU_MIN_DAILY_AMOUNT,
+  carriedAccountCount,
   computeClosure,
   computeDepositAmount,
   computePartialWithdrawal,
+  splitAcrossCycles,
   maxPartialWithdrawal,
   remainingDeposits,
   susuBalance,
@@ -193,5 +195,84 @@ describe('commission survives partial withdrawals (client rule 2026-08-21)', () 
     const closure = computeClosure(balance, daily);
     expect(closure.commission).toBe(1_000); // one day, not three
     expect(closure.payout).toBe(5_000);
+  });
+});
+
+describe('splitAcrossCycles', () => {
+  it('does not split a payment that fits', () => {
+    expect(splitAcrossCycles(5, 10)).toEqual([
+      { index: 0, daysCovered: 10, seqStart: 6, seqEnd: 15, completesCycle: false },
+    ]);
+  });
+
+  it('fills the cycle exactly and stops', () => {
+    const [only, ...rest] = splitAcrossCycles(5, 26);
+    expect(rest).toEqual([]);
+    expect(only).toEqual({
+      index: 0,
+      daysCovered: 26,
+      seqStart: 6,
+      seqEnd: 31,
+      completesCycle: true,
+    });
+  });
+
+  it('carries the remainder into one new cycle', () => {
+    // The worked example: 40 days paid against an account with 5 already in.
+    // 26 finish this cycle, 14 open the next — 40 in total, not 71.
+    expect(splitAcrossCycles(5, 40)).toEqual([
+      { index: 0, daysCovered: 26, seqStart: 6, seqEnd: 31, completesCycle: true },
+      { index: 1, daysCovered: 14, seqStart: 1, seqEnd: 14, completesCycle: false },
+    ]);
+  });
+
+  it('conserves the days however far the payment runs', () => {
+    for (const paid of [0, 1, 15, 30]) {
+      for (const days of [1, 5, 31, 62, 100]) {
+        const chunks = splitAcrossCycles(paid, days);
+        expect(chunks.reduce((n, c) => n + c.daysCovered, 0)).toBe(days);
+        for (const c of chunks) {
+          expect(c.daysCovered).toBeGreaterThanOrEqual(1);
+          expect(c.daysCovered).toBeLessThanOrEqual(SUSU_CYCLE_DEPOSITS);
+          expect(c.seqStart).toBeGreaterThanOrEqual(1);
+          expect(c.seqEnd).toBeLessThanOrEqual(SUSU_CYCLE_DEPOSITS);
+        }
+      }
+    }
+  });
+
+  it('can land a carried chunk exactly on a full cycle', () => {
+    const chunks = splitAcrossCycles(20, 42);
+    expect(chunks).toEqual([
+      { index: 0, daysCovered: 11, seqStart: 21, seqEnd: 31, completesCycle: true },
+      { index: 1, daysCovered: 31, seqStart: 1, seqEnd: 31, completesCycle: true },
+    ]);
+  });
+
+  it('refuses a full cycle and nonsense input', () => {
+    expect(() => splitAcrossCycles(31, 1)).toThrow();
+    expect(() => splitAcrossCycles(5, 0)).toThrow();
+    expect(() => splitAcrossCycles(5, 1.5)).toThrow();
+    expect(() => splitAcrossCycles(-1, 5)).toThrow();
+  });
+});
+
+describe('carriedAccountCount', () => {
+  it('is zero when nothing carried', () => {
+    expect(carriedAccountCount(splitAcrossCycles(5, 10))).toBe(0);
+    expect(carriedAccountCount(splitAcrossCycles(5, 26))).toBe(0);
+  });
+
+  it('counts only the follow-on accounts', () => {
+    expect(carriedAccountCount(splitAcrossCycles(5, 40))).toBe(1);
+    // 5 paid, 90 days: 26 finishes this cycle, then 31, 31 and 2.
+    expect(carriedAccountCount(splitAcrossCycles(5, 90))).toBe(3);
+  });
+
+  it('stays within the cap for a plausible catch-up', () => {
+    // The longest run that still opens a single account: fill this cycle, then
+    // one full new one.
+    expect(carriedAccountCount(splitAcrossCycles(0, 62))).toBe(1);
+    expect(carriedAccountCount(splitAcrossCycles(0, 63))).toBe(2);
   });
 });

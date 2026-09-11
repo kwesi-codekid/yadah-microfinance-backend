@@ -11,6 +11,7 @@ import { dashboardPaths } from '../modules/dashboard/dashboard.openapi.js';
 import { collectorPaths } from '../modules/collectors/collectors.openapi.js';
 import { portalPaths } from '../modules/portal/portal.openapi.js';
 import { accountingPaths } from '../modules/accounting/accounting.openapi.js';
+import { expensePaths } from '../modules/expenses/expenses.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
@@ -117,9 +118,16 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       {
         name: 'Accounting',
         description:
-          'The company own books: expenses, cash and bank accounts, the fixed-asset ' +
-          'register, owner capital, and the balance sheet and profit-and-loss statements ' +
-          'built from them.',
+          'The company own books: cash and bank accounts, the fixed-asset register, ' +
+          'owner capital, and the balance sheet and profit-and-loss statements built ' +
+          'from them. Expenses have their own group.',
+      },
+      {
+        name: 'Expenses',
+        description:
+          'Money the business spends on itself: recorded → approved → paid. The counter ' +
+          'records, because petty cash leaves the drawer all day; the office decides and ' +
+          'pays, and nobody approves their own spending. Only payment moves cash.',
       },
       { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
       {
@@ -149,6 +157,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...collectorPaths,
       ...portalPaths,
       ...accountingPaths,
+      ...expensePaths,
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,

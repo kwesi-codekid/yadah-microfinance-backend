@@ -45,7 +45,13 @@ susuRouter.post(
   (req, res, next) => {
     const { body } = getValidated<{ body: OpenAccountBody }>(req);
     susuService
-      .openAccount(getAuth(req), body.customerId, body.dailyAmount, req.id as string)
+      .openAccount(
+        getAuth(req),
+        body.customerId,
+        body.dailyAmount,
+        body.cycleMonth,
+        req.id as string,
+      )
       .then((account) => res.status(201).json({ account }))
       .catch(next);
   },

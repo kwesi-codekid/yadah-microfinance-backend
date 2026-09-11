@@ -2,8 +2,6 @@ import { z } from 'zod';
 import {
   CAPITAL_ENTRY_KINDS,
   CASH_ACCOUNT_KINDS,
-  EXPENSE_CATEGORIES,
-  EXPENSE_STATUSES,
   FIXED_ASSET_CATEGORIES,
 } from '../../models/index.js';
 import {
@@ -39,49 +37,7 @@ export type AsOfQuery = z.infer<typeof asOfQuery>;
 
 // ---------------------------------------------------------------- expenses
 
-export const createExpenseBody = z.object({
-  category: z.enum(EXPENSE_CATEGORIES),
-  description: z.string().min(3).max(300).trim(),
-  amount: positiveMoneyPesewas,
-  payee: z.string().min(2).max(160).trim().optional(),
-  /** The day the COST belongs to — August salaries paid in September are August. */
-  incurredOn: isoDay,
-  receiptUrl: z.url().optional(),
-  reference: z.string().max(80).trim().optional(),
-  writeOffEntityType: z.enum(['loan', 'hp-agreement']).optional(),
-  writeOffEntityId: objectId.optional(),
-});
-export type CreateExpenseBody = z.infer<typeof createExpenseBody>;
-
-export const updateExpenseBody = createExpenseBody.partial();
-export type UpdateExpenseBody = z.infer<typeof updateExpenseBody>;
-
-export const rejectExpenseBody = z.object({
-  reason: z.string().min(3).max(300).trim(),
-});
-export type RejectExpenseBody = z.infer<typeof rejectExpenseBody>;
-
-/** Paying is what actually moves money, so it names the account explicitly. */
-export const payExpenseBody = z.object({
-  cashAccountId: objectId,
-  paidOn: isoDay.optional(),
-});
-export type PayExpenseBody = z.infer<typeof payExpenseBody>;
-
-export const listExpensesQuery = pagination
-  .extend({
-    category: z.enum(EXPENSE_CATEGORIES).optional(),
-    status: z.enum(EXPENSE_STATUSES).optional(),
-    cashAccountId: objectId.optional(),
-    search: z.string().min(1).max(100).optional(),
-    ...dateRangeFields,
-    format: exportFormat,
-  })
-  .check((ctx) => {
-    const issue = fromToIssue(ctx.value);
-    if (issue) ctx.issues.push(issue);
-  });
-export type ListExpensesQuery = z.infer<typeof listExpensesQuery>;
+// Expense schemas moved with the module, to src/modules/expenses/.
 
 // ---------------------------------------------------------------- fixed assets
 

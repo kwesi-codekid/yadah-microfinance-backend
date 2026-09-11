@@ -20,7 +20,21 @@ export { LoanModel, type Loan } from './loan.model.js';
 export { LoanConfigModel, type LoanConfig } from './loan-config.model.js';
 export { LoanScheduleModel, type LoanSchedule } from './loan-schedule.model.js';
 export { RepaymentModel, type Repayment } from './repayment.model.js';
+export {
+  HpDamageModel,
+  DAMAGE_CAUSES,
+  DAMAGE_STATUSES,
+  type HpDamage,
+  type DamageCause,
+  type DamageStatus,
+} from './hp-damage.model.js';
 export { HpItemModel, type HpItem } from './hp-item.model.js';
+export {
+  HpPriceChangeModel,
+  PRICE_KINDS,
+  type HpPriceChange,
+  type PriceKind,
+} from './hp-price-change.model.js';
 export {
   HpLabelModel,
   HP_LABEL_KINDS,

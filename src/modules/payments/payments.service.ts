@@ -402,6 +402,13 @@ export async function getPortalCharge(
  */
 const SYSTEM_ACTOR_HEX = '000000000000000000000000';
 
+/**
+ * Every ledger row created by applying a charge carries this idempotency
+ * prefix. The transactions feed reads it back to tell a portal payment from a
+ * counter one, so the two must not drift — hence the shared constant.
+ */
+export const PAYSTACK_KEY_PREFIX = 'paystack:';
+
 async function executeCharge(charge: PaystackCharge): Promise<void> {
   // A portal charge is applied by the system on the webhook's word, not by the
   // customer — they cannot post to their own ledger. Who asked for it stays on
@@ -410,7 +417,7 @@ async function executeCharge(charge: PaystackCharge): Promise<void> {
     charge.initiatedByRole === 'customer'
       ? { sub: SYSTEM_ACTOR_HEX, role: 'admin' }
       : { sub: charge.initiatedById.toHexString(), role: charge.initiatedByRole };
-  const key = `paystack:${charge.reference}`;
+  const key = `${PAYSTACK_KEY_PREFIX}${charge.reference}`;
 
   try {
     let resultRecordId: Types.ObjectId | undefined;

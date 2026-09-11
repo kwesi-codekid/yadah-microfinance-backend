@@ -5,10 +5,8 @@ import { requireAuth } from '../../middleware/auth.js';
 import { requireOffice, requireRole } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
-  formatOnlyQuery,
   rangeQuery,
   transactionsQuery,
-  type FormatOnlyQuery,
   type RangeQuery,
   type TransactionsQuery,
 } from './reports.schemas.js';
@@ -75,10 +73,10 @@ reportsRouter.get('/collections', validate({ query: rangeQuery }), (req, res, ne
     .catch(next);
 });
 
-reportsRouter.get('/loans/outstanding', validate({ query: formatOnlyQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: FormatOnlyQuery }>(req);
+reportsRouter.get('/loans/outstanding', validate({ query: rangeQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: RangeQuery }>(req);
   reportsService
-    .outstandingLoans()
+    .outstandingLoans(query.from, query.to)
     .then((report) =>
       sendExport(res, {
         format: query.format,
@@ -92,10 +90,10 @@ reportsRouter.get('/loans/outstanding', validate({ query: formatOnlyQuery }), (r
     .catch(next);
 });
 
-reportsRouter.get('/loans/aging', validate({ query: formatOnlyQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: FormatOnlyQuery }>(req);
+reportsRouter.get('/loans/aging', validate({ query: rangeQuery }), (req, res, next) => {
+  const { query } = getValidated<{ query: RangeQuery }>(req);
   reportsService
-    .arrearsAging()
+    .arrearsAging(query.from, query.to)
     .then((report) =>
       sendExport(res, {
         format: query.format,

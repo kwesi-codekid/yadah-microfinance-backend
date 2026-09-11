@@ -465,6 +465,10 @@ export async function transfer(
               amount: credited,
               destination: body.to.type === 'susu' ? 'savings' : body.to.type, // susu→susu impossible
               destinationId: toId,
+              // Only when this transfer is what stopped the account. Drawing
+              // down a balance that was already stopped charges nothing: the
+              // commission was taken on the row that stopped it.
+              commissionAmount: susuSourceStopping ? susuSourceStopping.commission : 0,
               recordedById: actorId,
             },
           ],
