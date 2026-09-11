@@ -11,6 +11,7 @@ import {
   pagination,
   passportNumber,
   voterIdNumber,
+  uploadedImageUrl,
 } from '../../schemas/common.js';
 
 const idNumberRules: Record<
@@ -46,10 +47,7 @@ export const identification = z
     }
   });
 
-/** Only URLs minted by our own uploads endpoint are accepted. */
-export const uploadedImageUrl = z
-  .url()
-  .refine((v) => v.startsWith('https://res.cloudinary.com/'), 'Not an uploaded image URL');
+export { uploadedImageUrl };
 
 export const nextOfKin = z.object({
   fullName: z.string().min(2).max(120).trim(),

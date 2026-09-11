@@ -56,6 +56,8 @@ export interface HpAgreement extends TrashFields {
   redemptionDeadline?: Date;
   closedAt?: Date;
   rejectionReason?: string;
+  /** A picture of the customer's signature on the agreement. */
+  signatureUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -107,6 +109,7 @@ const hpAgreementSchema = new Schema<HpAgreement>(
     repossessionReason: { type: String, trim: true },
     redemptionDeadline: { type: Date },
     closedAt: { type: Date },
+    signatureUrl: { type: String },
     rejectionReason: { type: String, trim: true },
     ...trashFields,
   },

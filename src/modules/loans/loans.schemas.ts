@@ -8,12 +8,15 @@ import {
   objectId,
   pagination,
   positiveMoneyPesewas,
+  uploadedImageUrl,
 } from '../../schemas/common.js';
 
 export const applyBody = z.object({
   customerId: objectId,
   principal: positiveMoneyPesewas,
   durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]),
+  /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
+  signatureUrl: uploadedImageUrl,
 });
 export type ApplyBody = z.infer<typeof applyBody>;
 

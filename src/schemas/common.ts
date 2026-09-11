@@ -112,6 +112,11 @@ export const booleanFlag = z
 export const exportFormat = z.enum(['json', 'csv', 'xlsx']).default('json');
 export type ExportFormat = z.infer<typeof exportFormat>;
 
+/** Only URLs minted by our own uploads endpoint are accepted. */
+export const uploadedImageUrl = z
+  .url()
+  .refine((v) => v.startsWith('https://res.cloudinary.com/'), 'Not an uploaded image URL');
+
 /** Optional reason recorded when moving an item to the trash. */
 export const trashBody = z.object({
   reason: z.string().min(2).max(300).trim().optional(),

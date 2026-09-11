@@ -9,6 +9,7 @@ import {
   objectId,
   pagination,
   positiveMoneyPesewas,
+  uploadedImageUrl,
 } from '../../schemas/common.js';
 
 // ---- items
@@ -16,10 +17,16 @@ import {
 export const createItemBody = z
   .object({
     name: z.string().min(2).max(120).trim(),
+    /** A brand from GET /hire-purchase/brands. */
+    brandId: objectId.optional(),
+    /** A category from GET /hire-purchase/categories. */
+    categoryId: objectId.optional(),
     description: z.string().min(2).max(500).trim().optional(),
     quantityInStock: z.number().int().min(0),
     costPrice: positiveMoneyPesewas,
     sellingPrice: positiveMoneyPesewas,
+    /** Defaults to new. A sheet of second-hand stock says `used` per row. */
+    condition: z.enum(['new', 'used']).optional(),
   })
   .check((ctx) => {
     if (ctx.value.sellingPrice < ctx.value.costPrice) {
@@ -36,6 +43,9 @@ export type CreateItemBody = z.infer<typeof createItemBody>;
 export const updateItemBody = z
   .object({
     name: z.string().min(2).max(120).trim().optional(),
+    /** Null takes the item off a label; a wrong brand is worse than none. */
+    brandId: objectId.nullable().optional(),
+    categoryId: objectId.nullable().optional(),
     description: z.string().min(2).max(500).trim().optional(),
     costPrice: positiveMoneyPesewas.optional(),
     sellingPrice: positiveMoneyPesewas.optional(),
@@ -61,6 +71,8 @@ export type AdjustStockBody = z.infer<typeof adjustStockBody>;
 export const listItemsQuery = pagination
   .extend({
     status: z.enum(['active', 'discontinued']).optional(),
+    brandId: objectId.optional(),
+    categoryId: objectId.optional(),
     search: z.string().min(1).max(100).optional(),
     inStockOnly: z.coerce.boolean().default(false),
     format: exportFormat,
@@ -71,6 +83,49 @@ export const listItemsQuery = pagination
     if (issue) ctx.issues.push(issue);
   });
 export type ListItemsQuery = z.infer<typeof listItemsQuery>;
+
+// ---- brands and categories
+
+/** One managed label: a name, and a line about it if a name is not enough. */
+export const labelBody = z.object({
+  name: z.string().min(1).max(60).trim(),
+  description: z.string().min(2).max(300).trim().optional(),
+});
+export type LabelBody = z.infer<typeof labelBody>;
+
+export const updateLabelBody = z
+  .object({
+    name: z.string().min(1).max(60).trim().optional(),
+    /** Null clears it. */
+    description: z.string().min(2).max(300).trim().nullable().optional(),
+  })
+  .refine((v) => Object.values(v).some((f) => f !== undefined), {
+    message: 'At least one field must be provided',
+  });
+export type UpdateLabelBody = z.infer<typeof updateLabelBody>;
+
+export const listLabelsQuery = pagination.extend({
+  search: z.string().min(1).max(60).optional(),
+});
+export type ListLabelsQuery = z.infer<typeof listLabelsQuery>;
+
+/**
+ * The corrected sheet coming back from the import preview. Cells stay strings
+ * — the counter edits text, and the server decides what it means, so a bad
+ * cell is reported against its column instead of rejecting the request.
+ */
+export const importItemRowsBody = z.object({
+  rows: z
+    .array(
+      z.object({
+        row: z.number().int().min(1).optional(),
+        values: z.record(z.string(), z.string()),
+      }),
+    )
+    .min(1, 'No rows were sent'),
+});
+export type ImportItemRowsBody = z.infer<typeof importItemRowsBody>;
+export type ImportItemRowInput = ImportItemRowsBody['rows'][number];
 
 // ---- config
 
@@ -85,6 +140,8 @@ export const createAgreementBody = z.object({
   customerId: objectId,
   itemId: objectId,
   durationMonths: z.number().int().min(1).max(24),
+  /** A picture of the customer's signature on the agreement, from POST /uploads/images?kind=signature. */
+  signatureUrl: uploadedImageUrl,
 });
 export type CreateAgreementBody = z.infer<typeof createAgreementBody>;
 

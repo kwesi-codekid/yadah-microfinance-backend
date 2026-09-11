@@ -1,7 +1,16 @@
-import ExcelJS from 'exceljs';
 import { AppError } from '../../lib/errors.js';
-import { parseCsv } from '../../lib/csv-parse.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
+import {
+  MAX_IMPORT_ROWS,
+  SheetLayout,
+  caps,
+  matchEnum,
+  normalizeHeader,
+  plain,
+  readSheet,
+  type SheetColumn,
+  type SheetFile,
+} from '../../lib/sheet-import.js';
 import { CustomerModel, UserModel } from '../../models/index.js';
 import { normalizeGhanaPhone } from '../../schemas/common.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
@@ -45,16 +54,7 @@ export const IMPORT_FIELDS = [
 
 export type ImportField = (typeof IMPORT_FIELDS)[number];
 
-export interface ImportColumn {
-  field: ImportField;
-  /** What the template prints, and what a header is matched against first. */
-  header: string;
-  required?: boolean;
-  /** Other headings people actually use for the same thing. */
-  aliases?: readonly string[];
-  /** Shown in the template's example row. */
-  example: string;
-}
+export type ImportColumn = SheetColumn<ImportField>;
 
 export const IMPORT_COLUMNS: readonly ImportColumn[] = [
   { field: 'fullName', header: 'Full name', required: true, example: 'AMA MENSAH' },
@@ -102,141 +102,15 @@ export const IMPORT_COLUMNS: readonly ImportColumn[] = [
   { field: 'kinAddress', header: 'Next of kin address', example: 'ESIAMA' },
 ];
 
-/** One sheet at a time, and a size the office can still review by eye. */
-export const MAX_IMPORT_ROWS = 1_000;
+export { MAX_IMPORT_ROWS };
 
-const CSV_TYPES = new Set(['text/csv', 'application/csv', 'text/plain']);
-
-// ---------------------------------------------------------------- reading the file
-
-/** A spreadsheet cell as text. ExcelJS hands back richer shapes than strings. */
-function cellText(value: ExcelJS.CellValue): string {
-  if (value === null || value === undefined) return '';
-  if (value instanceof Date) return toIsoDay(value);
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (typeof value === 'object') {
-    if ('text' in value && typeof value.text === 'string') return value.text.trim();
-    if ('richText' in value && Array.isArray(value.richText)) {
-      return value.richText
-        .map((r) => r.text)
-        .join('')
-        .trim();
-    }
-    if ('result' in value) return cellText(value.result);
-  }
-  return '';
-}
-
-function toIsoDay(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-/** Headers match on letters and digits only, so spacing and case never matter. */
-function normalizeHeader(raw: string): string {
-  return raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-const HEADER_LOOKUP = new Map<string, ImportField>();
-for (const column of IMPORT_COLUMNS) {
-  HEADER_LOOKUP.set(normalizeHeader(column.header), column.field);
-  HEADER_LOOKUP.set(normalizeHeader(column.field), column.field);
-  for (const alias of column.aliases ?? []) HEADER_LOOKUP.set(normalizeHeader(alias), column.field);
-}
-
-async function readGrid(file: { buffer: Buffer; mimetype: string; originalname: string }) {
-  const isCsv = CSV_TYPES.has(file.mimetype) || file.originalname.toLowerCase().endsWith('.csv');
-  if (isCsv) return parseCsv(file.buffer.toString('utf8'));
-
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.load(file.buffer as unknown as ArrayBuffer);
-  } catch {
-    throw new AppError(
-      'UNREADABLE_FILE',
-      'That file could not be read as a spreadsheet — save it as .xlsx or .csv and try again',
-      422,
-    );
-  }
-  const sheet = workbook.worksheets[0];
-  if (!sheet) throw new AppError('UNREADABLE_FILE', 'The workbook has no sheets', 422);
-
-  const grid: string[][] = [];
-  sheet.eachRow({ includeEmpty: false }, (row) => {
-    const cells: string[] = [];
-    // `values` is 1-based with a hole at index 0.
-    const values = row.values as ExcelJS.CellValue[];
-    for (let c = 1; c < values.length; c++) cells.push(cellText(values[c] ?? null));
-    if (cells.some((v) => v !== '')) grid.push(cells);
-  });
-  return grid;
-}
-
-export interface ParsedSheet {
-  /** Sheet row number each entry came from, for messages that name a row. */
-  rows: { row: number; values: Record<ImportField, string> }[];
-  /** Headings the sheet carried that matched nothing — usually a typo. */
-  unknownHeaders: string[];
-}
-
-/** Turn the grid into field-keyed rows, using the header line to place columns. */
-export function mapGrid(grid: string[][]): ParsedSheet {
-  const header = grid[0];
-  if (!header) throw new AppError('EMPTY_FILE', 'That file has no rows', 422);
-
-  const placements = new Map<number, ImportField>();
-  const unknownHeaders: string[] = [];
-  header.forEach((cell, index) => {
-    const text = cell.trim();
-    if (text === '') return;
-    const field = HEADER_LOOKUP.get(normalizeHeader(text));
-    if (field) placements.set(index, field);
-    else unknownHeaders.push(text);
-  });
-
-  if (placements.size === 0) {
-    throw new AppError(
-      'NO_KNOWN_COLUMNS',
-      'None of the headings on the first row match the template — download it and start from there',
-      422,
-    );
-  }
-
-  const body = grid.slice(1);
-  if (body.length > MAX_IMPORT_ROWS) {
-    throw new AppError(
-      'TOO_MANY_ROWS',
-      `That sheet has ${String(body.length)} rows; ${String(MAX_IMPORT_ROWS)} is the most one import may carry`,
-      422,
-      { rows: body.length, max: MAX_IMPORT_ROWS },
-    );
-  }
-
-  const rows = body.map((cells, i) => {
-    const values = blankRow();
-    for (const [index, field] of placements) values[field] = (cells[index] ?? '').trim();
-    // +2: one for the header line, one because sheets count from 1.
-    return { row: i + 2, values };
-  });
-  return { rows, unknownHeaders };
-}
+const layout = new SheetLayout(IMPORT_COLUMNS);
 
 export function blankRow(): Record<ImportField, string> {
-  return Object.fromEntries(IMPORT_FIELDS.map((f) => [f, ''])) as Record<ImportField, string>;
+  return layout.blankRow();
 }
 
 // ---------------------------------------------------------------- normalising cells
-
-/** Free text the branch records in capitals, as the registration form does. */
-function caps(value: string): string | undefined {
-  const v = value.trim();
-  return v === '' ? undefined : v.toUpperCase();
-}
-
-function plain(value: string): string | undefined {
-  const v = value.trim();
-  return v === '' ? undefined : v;
-}
 
 /** `12/04/1990` and `12-04-1990` are how people write dates here. */
 function normalizeDay(value: string): string | undefined {
@@ -249,15 +123,6 @@ function normalizeDay(value: string): string | undefined {
     return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
   }
   return v; // handed on as-is so the schema is the one that refuses it
-}
-
-/** Enum cells, matched on letters only: "Ghana Card" and "ghana_card" agree. */
-function matchEnum(value: string, allowed: readonly string[]): string | undefined {
-  const v = value.trim();
-  if (v === '') return undefined;
-  const key = v.toLowerCase().replace(/[^a-z]/g, '');
-  const hit = allowed.find((a) => a.toLowerCase().replace(/[^a-z]/g, '') === key);
-  return hit ?? v; // unmatched text is handed on so the schema names the field
 }
 
 const GENDERS = ['male', 'female'] as const;
@@ -465,13 +330,8 @@ export async function validateRows(
 }
 
 /** Read an uploaded sheet and check it. Writes nothing. */
-export async function previewImportFile(file: {
-  buffer: Buffer;
-  mimetype: string;
-  originalname: string;
-}): Promise<ImportPreview> {
-  const grid = await readGrid(file);
-  const { rows, unknownHeaders } = mapGrid(grid);
+export async function previewImportFile(file: SheetFile): Promise<ImportPreview> {
+  const { rows, unknownHeaders } = await readSheet(file, layout);
   return validateRows(rows, unknownHeaders);
 }
 
@@ -564,9 +424,5 @@ export async function importCustomers(
 
 /** The blank sheet the office starts from: headings, then one example row. */
 export function templateRows(): Record<string, string>[] {
-  const example: Record<string, string> = {};
-  for (const column of IMPORT_COLUMNS) {
-    example[column.required ? `${column.header} *` : column.header] = column.example;
-  }
-  return [example];
+  return layout.templateRows();
 }

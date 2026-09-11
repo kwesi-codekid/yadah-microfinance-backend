@@ -38,8 +38,8 @@ const acceptImage: RequestHandler = (req, res, next) => {
 };
 
 export const uploadQuery = z.object({
-  /** photo (800px cap) or document (1600px, for ID legibility). */
-  kind: z.enum(['photo', 'document']).default('photo'),
+  /** photo (800px cap), document (1600px, for ID legibility) or signature (1200px). */
+  kind: z.enum(['photo', 'document', 'signature']).default('photo'),
 });
 
 // Upload → returns the URL for the frontend to include in its next form submit.

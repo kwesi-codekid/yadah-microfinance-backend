@@ -35,6 +35,10 @@ const publicLoan = z
     closedAt: z.iso.datetime().optional(),
     repaidOnTime: z.boolean().optional().describe('Set at settlement; unlocks the big tier'),
     rejectionReason: z.string().optional(),
+    signatureUrl: z
+      .string()
+      .optional()
+      .describe("A picture of the customer's signature on the application"),
   })
   .meta({ id: 'Loan' });
 

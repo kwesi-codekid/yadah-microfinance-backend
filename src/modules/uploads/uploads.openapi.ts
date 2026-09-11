@@ -14,7 +14,8 @@ export const uploadPaths: ZodOpenApiPathsObject = {
         'Multipart form with an `image` file field (JPEG/PNG/WebP, max 5 MB). ' +
         'Returns the hosted URL for the frontend to include in a later form submit ' +
         '(e.g. customer photoUrl / idDocumentFrontUrl / idDocumentBackUrl). ' +
-        'Use kind=document for ID scans (higher resolution). Nothing is attached ' +
+        'Use kind=document for ID scans (higher resolution) and kind=signature for a picture ' +
+        'of a signature on a loan application or hire-purchase agreement. Nothing is attached ' +
         'to any record by this call.',
       security,
       requestParams: { query: uploadQuery },

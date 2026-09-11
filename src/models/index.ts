@@ -21,6 +21,13 @@ export { LoanConfigModel, type LoanConfig } from './loan-config.model.js';
 export { LoanScheduleModel, type LoanSchedule } from './loan-schedule.model.js';
 export { RepaymentModel, type Repayment } from './repayment.model.js';
 export { HpItemModel, type HpItem } from './hp-item.model.js';
+export {
+  HpLabelModel,
+  HP_LABEL_KINDS,
+  labelKey,
+  type HpLabel,
+  type HpLabelKind,
+} from './hp-label.model.js';
 export { HpAgreementModel, type HpAgreement } from './hp-agreement.model.js';
 export { HpPaymentModel, type HpPayment } from './hp-payment.model.js';
 export { HpSaleModel, type HpSale, type HpSaleLine } from './hp-sale.model.js';

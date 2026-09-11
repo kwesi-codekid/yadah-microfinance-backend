@@ -1,8 +1,8 @@
-import { Router, type RequestHandler } from 'express';
-import multer from 'multer';
+import { Router } from 'express';
 import { AppError } from '../../lib/errors.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireAdmin, requireCounter, requireOffice } from '../../middleware/rbac.js';
+import { acceptSheet } from '../../middleware/sheet-upload.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { z } from 'zod';
 import {
@@ -99,51 +99,9 @@ customersRouter.post(
  * filled sheet for checking, then send back the rows the office accepted.
  */
 
-const SHEET_TYPES = new Set([
-  'text/csv',
-  'application/csv',
-  'text/plain',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/octet-stream',
-]);
-
-const sheetUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) => {
-    const named = /\.(csv|xlsx)$/i.test(file.originalname);
-    if (named || SHEET_TYPES.has(file.mimetype)) {
-      cb(null, true);
-      return;
-    }
-    cb(
-      new AppError(
-        'UNSUPPORTED_FILE_TYPE',
-        'Upload a .csv or .xlsx sheet — an older .xls must be saved as .xlsx first',
-        415,
-      ),
-    );
-  },
-});
-
 /** The template is a download, so csv is the sensible default rather than json. */
 const templateQuery = z.object({ format: exportFormat });
 type TemplateQuery = z.infer<typeof templateQuery>;
-
-/** Runs multer and maps its errors into the standard envelope. */
-const acceptSheet: RequestHandler = (req, res, next) => {
-  sheetUpload.single('file')(req, res, (err?: unknown) => {
-    if (err instanceof multer.MulterError) {
-      next(
-        err.code === 'LIMIT_FILE_SIZE'
-          ? new AppError('FILE_TOO_LARGE', 'The sheet must be 5 MB or smaller', 413)
-          : new AppError('UPLOAD_ERROR', err.message, 400),
-      );
-      return;
-    }
-    next(err);
-  });
-};
 
 // The blank sheet, with the headings the importer reads and one example row.
 customersRouter.get(

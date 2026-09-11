@@ -2,9 +2,17 @@ import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
+  IMPORT_COLUMNS as ITEM_IMPORT_COLUMNS,
+  MAX_IMPORT_ROWS as ITEM_IMPORT_MAX_ROWS,
+} from './hp.import.js';
+import {
   adjustStockBody,
   createAgreementBody,
   createItemBody,
+  importItemRowsBody,
+  labelBody,
+  listLabelsQuery,
+  updateLabelBody,
   depositBody,
   forfeitBody,
   listAgreementsQuery,
@@ -21,10 +29,160 @@ import {
   voidSaleBody,
 } from './hp.schemas.js';
 
+const itemImportField = z
+  .enum(ITEM_IMPORT_COLUMNS.map((c) => c.field) as [string, ...string[]])
+  .describe('The column an issue belongs to');
+
+const itemRowIssue = z.object({
+  field: itemImportField.nullable().describe('Null when the fault is the row as a whole'),
+  message: z.string(),
+});
+
+const labelRef = z.object({ id: z.string(), name: z.string() });
+
+const itemImportPreview = z
+  .object({
+    rows: z.array(
+      z.object({
+        row: z.number().int().describe('The line in the sheet, so a message can name it'),
+        values: z
+          .record(z.string(), z.string())
+          .describe('Every column as text, ready to be corrected and sent back'),
+        brandId: z.string().describe('Resolved from the brand cell; empty when it matched nothing'),
+        categoryId: z
+          .string()
+          .describe('Resolved from the category cell; empty when it matched nothing'),
+        issues: z.array(itemRowIssue),
+      }),
+    ),
+    unknownHeaders: z.array(z.string()).describe('Headings that matched no column'),
+    brands: z.array(labelRef).describe('Every brand, for correcting a row that named none'),
+    categories: z.array(labelRef).describe('Every category, likewise'),
+    counts: z.object({
+      total: z.number().int(),
+      ready: z.number().int(),
+      blocked: z.number().int(),
+    }),
+  })
+  .meta({ id: 'InventoryImportPreview' });
+
+const itemImportOutcome = z
+  .object({
+    created: z.array(z.object({ row: z.number().int(), id: z.string(), name: z.string() })),
+    failed: z.array(z.object({ row: z.number().int(), issues: z.array(itemRowIssue) })),
+    counts: z.object({
+      total: z.number().int(),
+      created: z.number().int(),
+      failed: z.number().int(),
+    }),
+  })
+  .meta({ id: 'InventoryImportOutcome' });
+
+const itemImportColumnList = ITEM_IMPORT_COLUMNS.map(
+  (c) => `${c.header}${c.required ? ' (required)' : ''}`,
+).join(', ');
+
+const hpLabel = z
+  .object({
+    id: z.string(),
+    kind: z.enum(['brand', 'category']),
+    name: z.string(),
+    description: z.string().optional(),
+    itemCount: z
+      .number()
+      .int()
+      .describe('Items on the shelf filed under it, trashed ones excluded'),
+    createdAt: z.iso.datetime(),
+  })
+  .meta({ id: 'HpLabel' });
+
+/**
+ * Brands and categories are the same shape behind two paths, so their
+ * documentation is written once and stamped for each.
+ */
+function labelPaths(plural: 'brands' | 'categories', noun: string): ZodOpenApiPathsObject {
+  return {
+    [`/hire-purchase/${plural}`]: {
+      get: {
+        tags: ['Hire Purchase'],
+        summary: `List ${plural}`,
+        description: `Alphabetical, with how many items are filed under each. \`search\` matches the name.`,
+        security,
+        requestParams: { query: listLabelsQuery },
+        responses: {
+          '200': jsonResponse(
+            `Paginated ${plural}`,
+            z.object({
+              items: z.array(hpLabel),
+              page: z.number(),
+              limit: z.number(),
+              total: z.number(),
+            }),
+          ),
+        },
+      },
+      post: {
+        tags: ['Hire Purchase'],
+        summary: `Add a ${noun} (counter)`,
+        description: `Names are unique within ${plural}, whatever the capitals or spacing.`,
+        security,
+        requestBody: jsonBody(labelBody),
+        responses: {
+          '201': jsonResponse('Created', z.object({ label: hpLabel })),
+          '409': errorResponse('LABEL_TAKEN — details.id names the existing one'),
+        },
+      },
+    },
+    [`/hire-purchase/${plural}/{id}`]: {
+      get: {
+        tags: ['Hire Purchase'],
+        summary: `One ${noun}`,
+        description: `Its items are GET /hire-purchase/items?${noun}Id={id}.`,
+        security,
+        requestParams: { path: idParam },
+        responses: {
+          '200': jsonResponse('Detail', z.object({ label: hpLabel })),
+          '404': errorResponse('NOT_FOUND'),
+        },
+      },
+      patch: {
+        tags: ['Hire Purchase'],
+        summary: `Rename or describe a ${noun} (counter)`,
+        description: 'A rename reaches every item filed under it. description: null clears it.',
+        security,
+        requestParams: { path: idParam },
+        requestBody: jsonBody(updateLabelBody),
+        responses: {
+          '200': jsonResponse('Updated', z.object({ label: hpLabel })),
+          '404': errorResponse('NOT_FOUND'),
+          '409': errorResponse('LABEL_TAKEN'),
+        },
+      },
+      delete: {
+        tags: ['Hire Purchase'],
+        summary: `Delete a ${noun} (office only)`,
+        description:
+          'Gone for good — there is no trash for a label. Refused while any item is still filed under it; move those first.',
+        security,
+        requestParams: { path: idParam },
+        responses: {
+          '204': { description: 'Deleted' },
+          '404': errorResponse('NOT_FOUND'),
+          '409': errorResponse('LABEL_IN_USE — details.itemCount says how many'),
+        },
+      },
+    },
+  };
+}
+
 const hpItem = z
   .object({
     id: z.string(),
     name: z.string(),
+    brand: labelRef.optional().describe('Who makes it — one of GET /hire-purchase/brands'),
+    category: labelRef
+      .optional()
+      .describe('What kind of thing it is — one of GET /hire-purchase/categories'),
     description: z.string().optional(),
     quantityInStock: z.number().int(),
     costPrice: z.number().int().describe('What Yadah paid — office-only, never shown to customers'),
@@ -83,6 +241,10 @@ const hpAgreement = z
       ),
     closedAt: z.iso.datetime().optional(),
     rejectionReason: z.string().optional(),
+    signatureUrl: z
+      .string()
+      .optional()
+      .describe("A picture of the customer's signature on the agreement"),
     createdAt: z.iso.datetime(),
   })
   .meta({ id: 'HpAgreement' });
@@ -247,9 +409,10 @@ export const hpPaths: ZodOpenApiPathsObject = {
   '/hire-purchase/items': {
     post: {
       tags: ['Hire Purchase'],
-      summary: 'Add an inventory item',
+      summary: 'Add an inventory item (counter)',
       description:
-        'Cost and selling price are both stored (profit-per-item reporting). If equal, enter the same number twice.',
+        'Cost and selling price are both stored (profit-per-item reporting). If equal, enter the same number twice. ' +
+        'brandId and categoryId name managed labels — see GET /hire-purchase/brands and /categories.',
       security,
       requestBody: jsonBody(createItemBody),
       responses: { '201': jsonResponse('Created', z.object({ item: hpItem })) },
@@ -257,7 +420,9 @@ export const hpPaths: ZodOpenApiPathsObject = {
     get: {
       tags: ['Hire Purchase'],
       summary: 'List inventory',
-      description: 'Pass format=csv or format=xlsx to download the listing as a spreadsheet.',
+      description:
+        'Search matches the name, brand and category; `brandId` and `categoryId` filter on one. ' +
+        'Pass format=csv or format=xlsx to download the listing as a spreadsheet.',
       security,
       requestParams: { query: listItemsQuery },
       responses: {
@@ -273,10 +438,72 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/items/import/template': {
+    get: {
+      tags: ['Hire Purchase'],
+      summary: 'Download the blank stock-import sheet (counter)',
+      description:
+        'Headings the importer reads, plus one example row. Columns: ' +
+        `${itemImportColumnList}. Headings are matched on letters and digits only, and a few ` +
+        'common alternatives are accepted (e.g. "Qty" for Quantity, "Make" for Brand). ' +
+        'Prices are written in cedis. format=csv (default) or xlsx.',
+      security,
+      requestParams: { query: z.object({ format: z.enum(['csv', 'xlsx']).optional() }) },
+      responses: {
+        '200': {
+          description: 'The template',
+          content: { 'text/csv': { schema: { type: 'string' } } },
+        },
+      },
+    },
+  },
+  '/hire-purchase/items/import/preview': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Check a filled stock sheet (counter, writes nothing)',
+      description:
+        'Multipart form with a `file` field carrying a .csv or .xlsx (max 5 MB, ' +
+        `${String(ITEM_IMPORT_MAX_ROWS)} rows). Every row is held to the rules one item is, and the ` +
+        'findings come back per cell. Also catches what only the whole file and the shelf can ' +
+        'answer: the same item twice in the sheet, or one already stocked. A brand or category ' +
+        'cell must name a managed label; one that does not is flagged with the list to pick from. ' +
+        'NOTHING IS CREATED by this call.',
+      security,
+      requestBody: {
+        content: {
+          'multipart/form-data': {
+            schema: z.object({ file: z.string().meta({ format: 'binary' }) }),
+          },
+        },
+      },
+      responses: {
+        '200': jsonResponse('Every row, with what is wrong with it', itemImportPreview),
+        '413': errorResponse('FILE_TOO_LARGE'),
+        '415': errorResponse('UNSUPPORTED_FILE_TYPE — .csv or .xlsx only'),
+        '422': errorResponse('EMPTY_FILE, NO_KNOWN_COLUMNS, TOO_MANY_ROWS, or UNREADABLE_FILE'),
+      },
+    },
+  },
+  '/hire-purchase/items/import': {
+    post: {
+      tags: ['Hire Purchase'],
+      summary: 'Stock the corrected rows (counter)',
+      description:
+        'Takes the rows the preview returned, with whatever was changed. Every row is checked ' +
+        'again and then added one at a time. A row that fails does not stop the rest: it comes ' +
+        'back in `failed` with its reason, while the rows that went in are absent from the retry.',
+      security,
+      requestBody: jsonBody(importItemRowsBody),
+      responses: {
+        '201': jsonResponse('What was stocked and what was not', itemImportOutcome),
+        '422': errorResponse('EMPTY_IMPORT or TOO_MANY_ROWS'),
+      },
+    },
+  },
   '/hire-purchase/items/trash': {
     get: {
       tags: ['Hire Purchase'],
-      summary: 'List trashed inventory items',
+      summary: 'List trashed inventory items (office only)',
       description: 'Newest-trashed first. Restore via POST /hire-purchase/items/{id}/restore.',
       security,
       requestParams: { query: trashListQuery },
@@ -296,7 +523,7 @@ export const hpPaths: ZodOpenApiPathsObject = {
   '/hire-purchase/items/{id}': {
     patch: {
       tags: ['Hire Purchase'],
-      summary: 'Update an item (prices, status)',
+      summary: 'Update an item (counter)',
       description: 'Never changes already-signed agreements — they snapshot prices at signing.',
       security,
       requestParams: { path: idParam },
@@ -650,4 +877,6 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  ...labelPaths('brands', 'brand'),
+  ...labelPaths('categories', 'category'),
 };

@@ -26,6 +26,7 @@ import {
   HpAgreementModel,
   HpConfigModel,
   HpItemModel,
+  HpLabelModel,
   HpPaymentModel,
   HpSaleModel,
   HpScheduleModel,
@@ -70,6 +71,8 @@ const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
 export interface PublicHpItem {
   id: string;
   name: string;
+  brand?: { id: string; name: string };
+  category?: { id: string; name: string };
   description?: string;
   quantityInStock: number;
   costPrice: number;
@@ -79,10 +82,38 @@ export interface PublicHpItem {
   createdAt: Date;
 }
 
-function toPublicItem(i: HpItem): PublicHpItem {
+/** Label names by id, for the labels these items point at. One read. */
+async function labelNamesFor(items: readonly HpItem[]): Promise<Map<string, string>> {
+  const ids = new Set<string>();
+  for (const i of items) {
+    if (i.brandId) ids.add(i.brandId.toHexString());
+    if (i.categoryId) ids.add(i.categoryId.toHexString());
+  }
+  if (ids.size === 0) return new Map();
+  const labels = await HpLabelModel.find({ _id: { $in: [...ids] } }, { name: 1 });
+  return new Map(labels.map((l) => [l._id.toHexString(), l.name]));
+}
+
+function labelRef(
+  id: Types.ObjectId | undefined,
+  names: Map<string, string>,
+): { id: string; name: string } | undefined {
+  if (!id) return undefined;
+  const key = id.toHexString();
+  const name = names.get(key);
+  // A label deleted from under an item is not a state the API allows; treat
+  // an unknown id as no label rather than a name-less one.
+  return name === undefined ? undefined : { id: key, name };
+}
+
+function toPublicItem(i: HpItem, names: Map<string, string>): PublicHpItem {
+  const brand = labelRef(i.brandId, names);
+  const category = labelRef(i.categoryId, names);
   return {
     id: i._id.toHexString(),
     name: i.name,
+    ...(brand !== undefined ? { brand } : {}),
+    ...(category !== undefined ? { category } : {}),
     ...(i.description !== undefined ? { description: i.description } : {}),
     quantityInStock: i.quantityInStock,
     costPrice: i.costPrice,
@@ -93,11 +124,38 @@ function toPublicItem(i: HpItem): PublicHpItem {
   };
 }
 
-/** Flat spreadsheet row for inventory exports (format=csv|xlsx). Office-only route, so costPrice is fine here. */
+/** One item with its labels named. */
+async function publicItem(i: HpItem): Promise<PublicHpItem> {
+  return toPublicItem(i, await labelNamesFor([i]));
+}
+
+/** A page of items with their labels named, in one label read. */
+async function publicItems(items: readonly HpItem[]): Promise<PublicHpItem[]> {
+  const names = await labelNamesFor(items);
+  return items.map((i) => toPublicItem(i, names));
+}
+
+/** Every label an item is being filed under must exist. */
+async function assertLabels(brandId?: Types.ObjectId, categoryId?: Types.ObjectId): Promise<void> {
+  const checks: [Types.ObjectId | undefined, 'brand' | 'category'][] = [
+    [brandId, 'brand'],
+    [categoryId, 'category'],
+  ];
+  for (const [id, kind] of checks) {
+    if (!id) continue;
+    const found = await HpLabelModel.exists({ _id: id, kind });
+    if (!found) throw new AppError('LABEL_NOT_FOUND', `No such ${kind}`, 422, { kind });
+  }
+}
+
+/** Flat spreadsheet row for inventory exports (format=csv|xlsx). */
 export function toHpItemExportRow(i: PublicHpItem): Record<string, unknown> {
   return {
     id: i.id,
     name: i.name,
+    brand: i.brand?.name ?? '',
+    category: i.category?.name ?? '',
+    description: i.description ?? '',
     quantityInStock: i.quantityInStock,
     costPrice: i.costPrice,
     sellingPrice: i.sellingPrice,
@@ -112,10 +170,14 @@ export async function createItem(
   body: CreateItemBody,
   requestId?: string,
 ): Promise<PublicHpItem> {
-  const { description, ...fields } = body;
+  const { brandId, categoryId, description, condition, ...fields } = body;
+  await assertLabels(brandId, categoryId);
   const item = await HpItemModel.create({
     ...fields,
+    ...(brandId !== undefined ? { brandId } : {}),
+    ...(categoryId !== undefined ? { categoryId } : {}),
     ...(description !== undefined ? { description } : {}),
+    ...(condition !== undefined ? { condition } : {}),
     createdById: new Types.ObjectId(actor.sub),
   });
   await audit({
@@ -131,7 +193,7 @@ export async function createItem(
     },
     ...(requestId !== undefined ? { requestId } : {}),
   });
-  return toPublicItem(item);
+  return publicItem(item);
 }
 
 export async function listItems(
@@ -140,9 +202,15 @@ export async function listItems(
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.status) filter.status = query.status;
   if (query.inStockOnly) filter.quantityInStock = { $gt: 0 };
+  if (query.brandId) filter.brandId = query.brandId;
+  if (query.categoryId) filter.categoryId = query.categoryId;
   if (query.search !== undefined) {
-    const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    filter.name = { $regex: escaped, $options: 'i' };
+    // A search is for a thing, and a thing is known by its name, its make or
+    // its kind — "samsung" should find the fridge as surely as "fridge" does.
+    const term = { $regex: escapeRegex(query.search), $options: 'i' };
+    const labels = await HpLabelModel.find({ name: term }, { _id: 1 });
+    const ids = labels.map((l) => l._id);
+    filter.$or = [{ name: term }, { brandId: { $in: ids } }, { categoryId: { $in: ids } }];
   }
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
@@ -153,7 +221,7 @@ export async function listItems(
       .limit(query.limit),
     HpItemModel.countDocuments(filter),
   ]);
-  return { items: items.map(toPublicItem), page: query.page, limit: query.limit, total };
+  return { items: await publicItems(items), page: query.page, limit: query.limit, total };
 }
 
 export async function updateItem(
@@ -175,6 +243,21 @@ export async function updateItem(
       (item as Record<typeof key, unknown>)[key] = next;
     }
   }
+  // Null clears: a wrong brand is worse than none, so both labels can be
+  // taken off again, which the fields above never need.
+  await assertLabels(patch.brandId ?? undefined, patch.categoryId ?? undefined);
+  for (const key of ['brandId', 'categoryId'] as const) {
+    const next = patch[key];
+    if (next === undefined) continue;
+    const value = next ?? undefined;
+    const current = item[key];
+    if (value?.toHexString() !== current?.toHexString()) {
+      before[key] = current;
+      after[key] = value;
+      if (value === undefined) item.set(key, undefined);
+      else item[key] = value;
+    }
+  }
   validatePricing(item.costPrice, item.sellingPrice);
   await item.save();
 
@@ -189,7 +272,7 @@ export async function updateItem(
       ...(requestId !== undefined ? { requestId } : {}),
     });
   }
-  return toPublicItem(item);
+  return publicItem(item);
 }
 
 export async function adjustStock(
@@ -224,7 +307,7 @@ export async function adjustStock(
   });
   const fresh = await HpItemModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!fresh) throw new AppError('NOT_FOUND', 'Item not found', 404);
-  return toPublicItem(fresh);
+  return publicItem(fresh);
 }
 
 // ---------------------------------------------------------------- item trash
@@ -235,9 +318,9 @@ export interface TrashedHpItem extends PublicHpItem {
   deleteReason?: string;
 }
 
-function toTrashedItem(i: HpItem): TrashedHpItem {
+function toTrashedItem(i: HpItem, names: Map<string, string>): TrashedHpItem {
   return {
-    ...toPublicItem(i),
+    ...toPublicItem(i, names),
     deletedAt: requireDeletedAt(i.deletedAt),
     ...(i.deletedById !== undefined ? { deletedById: i.deletedById.toHexString() } : {}),
     ...(i.deleteReason !== undefined ? { deleteReason: i.deleteReason } : {}),
@@ -288,7 +371,7 @@ export async function trashHpItem(
     ...(requestId !== undefined ? { requestId } : {}),
   });
   emitAdminEvent('hp.item.trashed', { id: id.toHexString(), name: item.name });
-  return toTrashedItem(trashed);
+  return toTrashedItem(trashed, await labelNamesFor([trashed]));
 }
 
 export async function restoreHpItem(
@@ -315,7 +398,7 @@ export async function restoreHpItem(
     ...(requestId !== undefined ? { requestId } : {}),
   });
   emitAdminEvent('hp.item.restored', { id: id.toHexString(), name: restored.name });
-  return toPublicItem(restored);
+  return publicItem(restored);
 }
 
 export async function listHpItemTrash(
@@ -329,7 +412,13 @@ export async function listHpItemTrash(
       .limit(query.limit),
     HpItemModel.countDocuments(filter),
   ]);
-  return { items: items.map(toTrashedItem), page: query.page, limit: query.limit, total };
+  const names = await labelNamesFor(items);
+  return {
+    items: items.map((i) => toTrashedItem(i, names)),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
 }
 
 // ---------------------------------------------------------------- config
@@ -453,6 +542,8 @@ export interface PublicHpAgreement {
   redemptionDeadline?: Date;
   closedAt?: Date;
   rejectionReason?: string;
+  /** A picture of the customer's signature on the agreement. */
+  signatureUrl?: string;
   createdAt: Date;
 }
 
@@ -491,6 +582,7 @@ function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
     ...(a.redemptionDeadline !== undefined ? { redemptionDeadline: a.redemptionDeadline } : {}),
     ...(a.closedAt !== undefined ? { closedAt: a.closedAt } : {}),
     ...(a.rejectionReason !== undefined ? { rejectionReason: a.rejectionReason } : {}),
+    ...(a.signatureUrl !== undefined ? { signatureUrl: a.signatureUrl } : {}),
     createdAt: a.createdAt,
   };
 }
@@ -575,6 +667,7 @@ export async function createAgreement(
             // are the ones who would have approved it.
             status: actor.role === 'teller' ? 'awaiting-approval' : 'pending',
             createdById: new Types.ObjectId(actor.sub),
+            signatureUrl: body.signatureUrl,
           },
         ],
         { session },
@@ -1263,7 +1356,7 @@ export async function forfeit(
           ],
           { session },
         );
-        restockedItem = toPublicItem(created as HpItem);
+        restockedItem = await publicItem(created as HpItem);
       }
 
       await audit(

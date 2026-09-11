@@ -118,6 +118,22 @@ const THE_COUNTER = [
   'POST /hire-purchase/agreements/{id}/payments',
   'POST /hire-purchase/agreements/{id}/redeem',
 
+  // The shelf: whoever sells off it stocks it, prices it and counts it — one
+  // item at a time or a whole delivery from a sheet.
+  'GET /hire-purchase/items',
+  'POST /hire-purchase/items',
+  'PATCH /hire-purchase/items/{id}',
+  'POST /hire-purchase/items/{id}/adjust-stock',
+  'GET /hire-purchase/items/import/template',
+  'POST /hire-purchase/items/import/preview',
+  'POST /hire-purchase/items/import',
+  'GET /hire-purchase/brands',
+  'POST /hire-purchase/brands',
+  'PATCH /hire-purchase/brands/{id}',
+  'GET /hire-purchase/categories',
+  'POST /hire-purchase/categories',
+  'PATCH /hire-purchase/categories/{id}',
+
   // The day's figures, declaring the till at the end of it, and counting in
   // what a collector hands over. Which days a teller may count in is narrowed
   // in the service, not the gate: collectors' only, never their own.
@@ -142,9 +158,7 @@ const NOT_THE_COUNTER = [
   'POST /hire-purchase/agreements/{id}/forfeit',
   'PUT /hire-purchase/config',
 
-  // The shelf, and undoing a sale already rung up.
-  'POST /hire-purchase/items',
-  'POST /hire-purchase/items/{id}/adjust-stock',
+  // Undoing a sale already rung up.
   'POST /hire-purchase/sales/{id}/void',
 
   // Taking anything out of the listings, or bringing it back.
@@ -154,6 +168,11 @@ const NOT_THE_COUNTER = [
   'DELETE /susu/accounts/{id}',
   'POST /susu/accounts/{id}/terminate',
   'DELETE /savings/accounts/{id}',
+  'DELETE /hire-purchase/items/{id}',
+  'POST /hire-purchase/items/{id}/restore',
+  'GET /hire-purchase/items/trash',
+  'DELETE /hire-purchase/brands/{id}',
+  'DELETE /hire-purchase/categories/{id}',
 
   // Registering a whole book at once is an office job, unlike one at the desk.
   'POST /customers/import',

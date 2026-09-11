@@ -23,14 +23,17 @@ export interface UploadedImage {
  * nothing in the DB is touched here. `kind` controls the size cap:
  * documents keep more detail for legibility.
  */
+export type UploadKind = 'photo' | 'document' | 'signature';
+
 export async function uploadImage(
   buffer: Buffer,
-  kind: 'photo' | 'document' = 'photo',
+  kind: UploadKind = 'photo',
 ): Promise<UploadedImage> {
   if (!configured) {
     throw new AppError('PHOTOS_NOT_CONFIGURED', 'Photo storage is not configured', 503);
   }
-  const max = kind === 'photo' ? 800 : 1600;
+  // A portrait needs little; an ID must stay legible; a signature sits between.
+  const max = kind === 'photo' ? 800 : kind === 'signature' ? 1200 : 1600;
   const result = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {

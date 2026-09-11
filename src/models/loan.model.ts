@@ -35,6 +35,8 @@ export interface Loan extends TrashFields {
   /** Repaid on time → unlocks the big tier (graduation rule). */
   repaidOnTime?: boolean;
   rejectionReason?: string;
+  /** A picture of the customer's signature on the application. */
+  signatureUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -65,6 +67,7 @@ const loanSchema = new Schema<Loan>(
     escalatedAt: { type: Date },
     closedAt: { type: Date },
     repaidOnTime: { type: Boolean },
+    signatureUrl: { type: String },
     rejectionReason: { type: String, trim: true },
     ...trashFields,
   },

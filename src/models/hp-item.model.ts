@@ -11,6 +11,10 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
 export interface HpItem extends TrashFields {
   _id: Types.ObjectId;
   name: string;
+  /** Who makes it — a managed label, so "Nasco" is one brand however it was typed. */
+  brandId?: Types.ObjectId;
+  /** What kind of thing it is — a managed label, likewise. */
+  categoryId?: Types.ObjectId;
   description?: string;
   quantityInStock: number;
   costPrice: number; // pesewas — Yadah's private margin input
@@ -26,6 +30,8 @@ export interface HpItem extends TrashFields {
 const hpItemSchema = new Schema<HpItem>(
   {
     name: { type: String, required: true, trim: true },
+    brandId: { type: Schema.Types.ObjectId, ref: 'HpLabel' },
+    categoryId: { type: Schema.Types.ObjectId, ref: 'HpLabel' },
     description: { type: String, trim: true },
     quantityInStock: { type: Number, required: true, min: 0 },
     costPrice: moneyField,
@@ -40,5 +46,7 @@ const hpItemSchema = new Schema<HpItem>(
 
 hpItemSchema.index({ name: 'text' });
 hpItemSchema.index({ status: 1 });
+hpItemSchema.index({ brandId: 1 });
+hpItemSchema.index({ categoryId: 1 });
 
 export const HpItemModel = model<HpItem>('HpItem', hpItemSchema, 'hp-items');

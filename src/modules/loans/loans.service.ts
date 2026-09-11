@@ -113,6 +113,8 @@ export interface PublicLoan {
   closedAt?: Date;
   repaidOnTime?: boolean;
   rejectionReason?: string;
+  /** A picture of the customer's signature on the application. */
+  signatureUrl?: string;
 }
 
 export function toPublicLoan(l: Loan): PublicLoan {
@@ -138,6 +140,7 @@ export function toPublicLoan(l: Loan): PublicLoan {
     ...(l.closedAt !== undefined ? { closedAt: l.closedAt } : {}),
     ...(l.repaidOnTime !== undefined ? { repaidOnTime: l.repaidOnTime } : {}),
     ...(l.rejectionReason !== undefined ? { rejectionReason: l.rejectionReason } : {}),
+    ...(l.signatureUrl !== undefined ? { signatureUrl: l.signatureUrl } : {}),
   };
 }
 
@@ -241,6 +244,7 @@ export async function applyForLoan(
   customerId: Types.ObjectId,
   principal: number,
   durationMonths: LoanDuration,
+  signatureUrl?: string,
   requestId?: string,
 ): Promise<PublicLoan> {
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
@@ -313,6 +317,7 @@ export async function applyForLoan(
     interestAmount,
     totalDue: principal + interestAmount,
     appliedAt: new Date(),
+    ...(signatureUrl !== undefined ? { signatureUrl } : {}),
   });
 
   await audit({
