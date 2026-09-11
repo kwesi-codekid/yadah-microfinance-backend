@@ -68,7 +68,7 @@ export const IMPORT_COLUMNS: readonly ImportColumn[] = [
   {
     field: 'collector',
     header: 'Collector',
-    required: true,
+    // Blank means the customer pays at the counter and is on nobody's round.
     aliases: ['assigned collector', 'agent', 'round'],
     example: 'Kofi Owusu',
   },
@@ -168,6 +168,11 @@ function fieldForPath(path: readonly PropertyKey[]): ImportField | null {
 }
 
 /** The object the schema sees, built from the row's cells. */
+/**
+ * `collectorId` is empty for a customer who pays at the office — the field is
+ * then left off entirely rather than sent as an empty string, which is what
+ * the schema means by "no round".
+ */
 function toCandidate(values: Record<ImportField, string>, collectorId: string) {
   const idType = matchEnum(values.idType, ID_TYPES);
   const idNumber = caps(values.idNumber);
@@ -179,7 +184,7 @@ function toCandidate(values: Record<ImportField, string>, collectorId: string) {
   return {
     fullName: caps(values.fullName) ?? '',
     phone: plain(values.phone) ?? '',
-    assignedCollectorId: collectorId,
+    ...(collectorId ? { assignedCollectorId: collectorId } : {}),
     dateOfBirth: normalizeDay(values.dateOfBirth),
     gender: matchEnum(values.gender, GENDERS),
     maritalStatus: matchEnum(values.maritalStatus, MARITAL_STATUSES),
@@ -281,13 +286,7 @@ export async function validateRows(
         const field = fieldForPath(issue.path);
         // The collector is already named above in its own words.
         if (field === 'collector' && issues.some((i) => i.field === 'collector')) continue;
-        issues.push({
-          field,
-          message:
-            field === 'collector'
-              ? 'Choose the collector whose round this customer joins'
-              : issue.message,
-        });
+        issues.push({ field, message: issue.message });
       }
     }
 

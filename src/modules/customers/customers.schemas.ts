@@ -147,8 +147,17 @@ export const profileFields = {
 export const createCustomerBody = z
   .object({
     ...profileFields,
-    /** Set at registration; changed only via the admin-only reassign route. */
-    assignedCollectorId: objectId.describe('Collector who owns this customer'),
+    /**
+     * Whose round this customer joins. Optional: plenty of customers bring
+     * their deposits to the counter instead of being collected from, and those
+     * belong to no round at all. Omit it for them.
+     *
+     * Set at registration; changed afterwards only via the admin-only reassign
+     * route.
+     */
+    assignedCollectorId: objectId
+      .optional()
+      .describe('Collector who owns this customer. Omit for a customer who pays at the office.'),
   })
   .check((ctx) => {
     for (const clash of phoneClashes({
@@ -237,7 +246,8 @@ export const importedCustomer = z
     altPhone: ghanaPhone.optional(),
     identification: identification.optional(),
     nextOfKin: nextOfKin.optional(),
-    assignedCollectorId: objectId,
+    /** Blank in the sheet means the customer pays at the office. */
+    assignedCollectorId: objectId.optional(),
   })
   .check((ctx) => {
     for (const clash of phoneClashes({
@@ -275,7 +285,12 @@ export type ImportRowsBody = z.infer<typeof importRowsBody>;
 export type ImportRowInput = ImportRowsBody['rows'][number];
 
 export const reassignCollectorBody = z.object({
-  collectorId: objectId,
+  /**
+   * The collector taking this customer on, or `null` to take them off every
+   * round — for a customer who brings their deposits to the counter and is
+   * collected from by nobody.
+   */
+  collectorId: objectId.nullable(),
   reason: z.string().min(2).max(300).trim().optional(),
 });
 export type ReassignCollectorBody = z.infer<typeof reassignCollectorBody>;

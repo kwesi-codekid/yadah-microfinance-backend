@@ -36,7 +36,10 @@ const publicCustomer = z
     assignedCollectorId: z
       .string()
       .optional()
-      .describe('Collector who owns this customer; only they may collect from them'),
+      .describe(
+        'Collector who owns this customer; only they may collect from them. Absent ' +
+          'for a customer who brings their deposits to the office and is on no round.',
+      ),
     nextOfKin: z
       .object({
         fullName: z.string(),
@@ -165,7 +168,10 @@ const previewRow = z.object({
     .describe('Every column as text, ready to be corrected and sent back'),
   assignedCollectorId: z
     .string()
-    .describe('Resolved from the collector cell; empty when it matched nobody'),
+    .describe(
+      'Resolved from the collector cell. Empty when the cell was blank (the customer ' +
+        'pays at the office) or when a name matched nobody, which is flagged as an issue.',
+    ),
   issues: z.array(rowIssue),
 });
 
@@ -291,7 +297,11 @@ export const customerPaths: ZodOpenApiPathsObject = {
       responses: {
         '201': jsonResponse('Created', customerResult),
         '409': errorResponse('PHONE_TAKEN or ID_TAKEN'),
-        '422': errorResponse('INVALID_COLLECTOR — assignedCollectorId is not an active collector'),
+        '422': errorResponse(
+          'INVALID_COLLECTOR — assignedCollectorId names somebody who is not an active ' +
+            'collector. Omitting it entirely is allowed: that is a customer who pays at ' +
+            'the office.',
+        ),
       },
     },
     get: {
@@ -351,12 +361,14 @@ export const customerPaths: ZodOpenApiPathsObject = {
   '/customers/{id}/collector': {
     patch: {
       tags: ['Customers'],
-      summary: 'Reassign one customer to another collector (admin only)',
+      summary: 'Move one customer between rounds, or off them (admin only)',
       description:
         'Admin only: a manager may edit a customer but must not silently move ' +
-        'collection responsibility. Idempotent when the customer is already on that ' +
-        'collector. This is the ONLY way to change assignedCollectorId — PATCH ' +
-        '/customers/{id} ignores the field.',
+        'collection responsibility. Idempotent when the customer is already where ' +
+        'you are putting them. Send `collectorId: null` to take the customer off ' +
+        'every round — the customer who brings deposits to the counter instead of ' +
+        'being collected from. This is the ONLY way to change assignedCollectorId — ' +
+        'PATCH /customers/{id} ignores the field.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(reassignCollectorBody),

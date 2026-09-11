@@ -3,6 +3,7 @@ import {
   createCustomerBody,
   identification,
   phoneClashes,
+  reassignCollectorBody,
   updateCustomerBody,
 } from './customers.schemas.js';
 
@@ -182,9 +183,21 @@ describe('registering a customer with blank optional inputs', () => {
 });
 
 describe('collector assignment', () => {
-  it('requires a collector at registration — an unassigned customer is invisible in the field', () => {
+  it('allows registration with no collector — the customer who pays at the counter', () => {
+    // Not everyone is collected from. Plenty of customers bring their deposits
+    // to the office, and those belong to no round at all.
     const { assignedCollectorId: _omitted, ...noCollector } = validBody;
-    expect(createCustomerBody.safeParse(noCollector).success).toBe(false);
+    const result = createCustomerBody.safeParse(noCollector);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.assignedCollectorId).toBeUndefined();
+  });
+
+  it('lets an admin take a customer off every round', () => {
+    // The other half of the same rule: a customer who starts on a round can be
+    // moved to paying at the counter, which is `null` rather than a collector.
+    expect(reassignCollectorBody.safeParse({ collectorId: null }).success).toBe(true);
+    expect(reassignCollectorBody.safeParse({ collectorId: COLLECTOR_ID }).success).toBe(true);
+    expect(reassignCollectorBody.safeParse({ collectorId: 'not-an-id' }).success).toBe(false);
   });
 
   it('rejects a malformed collector id', () => {

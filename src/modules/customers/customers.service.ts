@@ -194,10 +194,13 @@ export async function createCustomer(
   requestId?: string,
   options: CreateCustomerOptions = {},
 ): Promise<PublicCustomer> {
-  await assertActiveCollector(body.assignedCollectorId);
+  // A customer who brings their deposits to the counter joins no round, so the
+  // collector is optional — but if one is named it still has to be a real,
+  // active collector.
+  if (body.assignedCollectorId) await assertActiveCollector(body.assignedCollectorId);
   const doc: Record<string, unknown> = {
     registeredById: new Types.ObjectId(actor.sub),
-    assignedCollectorId: body.assignedCollectorId,
+    ...(body.assignedCollectorId ? { assignedCollectorId: body.assignedCollectorId } : {}),
     status: 'active',
   };
   for (const key of [...SCALAR_FIELDS, ...SUBDOC_FIELDS]) {
@@ -398,12 +401,15 @@ export async function reassignCollector(
 ): Promise<PublicCustomer> {
   const customer = await CustomerModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
-  await assertActiveCollector(body.collectorId);
+  // `null` means "collected from by nobody" — the office-counter customer.
+  if (body.collectorId) await assertActiveCollector(body.collectorId);
 
   const before = customer.assignedCollectorId ?? null;
-  if (before?.equals(body.collectorId)) return toPublicCustomer(customer); // idempotent
+  const unchanged = body.collectorId ? Boolean(before?.equals(body.collectorId)) : before === null;
+  if (unchanged) return toPublicCustomer(customer); // idempotent
 
-  customer.assignedCollectorId = body.collectorId;
+  if (body.collectorId) customer.assignedCollectorId = body.collectorId;
+  else customer.set('assignedCollectorId', undefined);
   await customer.save();
 
   await audit({
@@ -413,7 +419,7 @@ export async function reassignCollector(
     entityId: customer._id,
     before: { assignedCollectorId: before ? before.toHexString() : null },
     after: {
-      assignedCollectorId: body.collectorId.toHexString(),
+      assignedCollectorId: body.collectorId ? body.collectorId.toHexString() : null,
       ...(body.reason !== undefined ? { reason: body.reason } : {}),
     },
     ...(requestId !== undefined ? { requestId } : {}),
@@ -423,23 +429,29 @@ export async function reassignCollector(
     id: customer._id.toHexString(),
     fullName: customer.fullName,
     fromCollectorId: before ? before.toHexString() : null,
-    toCollectorId: body.collectorId.toHexString(),
+    toCollectorId: body.collectorId ? body.collectorId.toHexString() : null,
   });
-  // Separate messages: "gained" and "lost" are not the same news.
+  // Separate messages: "gained" and "lost" are not the same news. Taking a
+  // customer off every round tells the old collector only — there is nobody
+  // on the other side to tell.
   const reassignData = { customerId: customer._id.toHexString(), entity: 'customer' };
-  notifyInBackground({
-    userIds: [body.collectorId],
-    type: 'customer.reassigned',
-    title: 'Customer added to your round',
-    body: `${customer.fullName} is now yours to collect from.`,
-    data: reassignData,
-  });
+  if (body.collectorId) {
+    notifyInBackground({
+      userIds: [body.collectorId],
+      type: 'customer.reassigned',
+      title: 'Customer added to your round',
+      body: `${customer.fullName} is now yours to collect from.`,
+      data: reassignData,
+    });
+  }
   if (before) {
     notifyInBackground({
       userIds: [before],
       type: 'customer.reassigned',
       title: 'Customer moved off your round',
-      body: `${customer.fullName} has been reassigned to another collector.`,
+      body: body.collectorId
+        ? `${customer.fullName} has been reassigned to another collector.`
+        : `${customer.fullName} now pays at the office and is on nobody's round.`,
       data: reassignData,
     });
   }
