@@ -8,6 +8,7 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  UserModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { remainingDeposits } from '../../domain/susu.js';
@@ -21,6 +22,31 @@ import type { AccessTokenPayload } from '../auth/auth.service.js';
  * collector by passing collectorId — the same rule the reconciliation and susu
  * summary endpoints already follow.
  */
+
+export interface CollectorSummary {
+  id: string;
+  name: string;
+}
+
+/**
+ * The roster: who is out collecting, for the counter to assign a round to.
+ *
+ * Deliberately not `GET /users`. That is the staff directory — every account,
+ * with its role and whether it is disabled — and it is the office's. What the
+ * counter needs when registering a customer is narrower and different in kind:
+ * the names of the people whose rounds a customer can join, and nothing else.
+ * Opening the directory to tellers to answer that question would hand them the
+ * whole staff list to get at a roster.
+ *
+ * Active only. A disabled collector has no round to join.
+ */
+export async function listCollectors(): Promise<CollectorSummary[]> {
+  const collectors = await UserModel.find(
+    { role: 'collector', status: 'active' },
+    { name: 1 },
+  ).sort({ name: 1 });
+  return collectors.map((c) => ({ id: c._id.toHexString(), name: c.name }));
+}
 
 /** Office may inspect anyone; a collector is always pinned to themselves. */
 function resolveCollectorId(

@@ -93,6 +93,10 @@ const THE_COUNTER = [
   'GET /customers/{id}/statement',
   'GET /customers/{id}/registration-form',
 
+  // Registering a customer means putting them on somebody's round, so the
+  // counter can read the roster. The staff directory stays office-only.
+  'GET /collectors',
+
   // Susu: open a cycle, take the daily, pay it out at the end.
   'POST /susu/accounts',
   'POST /susu/accounts/{id}/deposits',

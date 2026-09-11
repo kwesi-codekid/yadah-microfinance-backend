@@ -73,6 +73,27 @@ const collectorDay = z
   .meta({ id: 'CollectorDay' });
 
 export const collectorPaths: ZodOpenApiPathsObject = {
+  '/collectors': {
+    get: {
+      tags,
+      summary: 'Active collectors, for assigning a round (counter and office)',
+      description:
+        'Just the names of the people a customer can be put on the round of. This is ' +
+        'not the staff directory — `GET /users` is that, and it stays the office’s. ' +
+        'Registering a customer means choosing somebody’s round, so whoever is at the ' +
+        'counter has to be able to answer that question without being handed every ' +
+        'account in the branch. Disabled collectors are left out: they have no round.',
+      security,
+      responses: {
+        '200': jsonResponse(
+          'Active collectors, by name',
+          z.object({
+            collectors: z.array(z.object({ id: z.string(), name: z.string() })),
+          }),
+        ),
+      },
+    },
+  },
   '/collectors/me/round': {
     get: {
       tags,
