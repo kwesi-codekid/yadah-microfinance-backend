@@ -1,2 +1,9 @@
-npx lint-staged
-npm run typecheck
+# husky puts node_modules/.bin on PATH, so no `npx` indirection is needed.
+lint-staged
+
+# Full-project typecheck, but only when TypeScript actually changed.
+# Incremental cache lives in node_modules/.cache/tsc, so warm runs are a few seconds.
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '\.ts$'; then
+  echo "→ typecheck (tsc --noEmit, quiet for a few seconds)…"
+  npm run --silent typecheck
+fi

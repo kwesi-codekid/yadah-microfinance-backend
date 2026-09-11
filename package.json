@@ -6,7 +6,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
     "lint": "eslint .",
     "format": "prettier --write .",
     "seed": "tsx src/scripts/seed.ts",
@@ -66,7 +66,10 @@
     "node": ">=24"
   },
   "lint-staged": {
-    "*.ts": "eslint --fix",
-    "*.{ts,js,json,md}": "prettier --write"
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,json,md}": "prettier --write"
   }
 }
