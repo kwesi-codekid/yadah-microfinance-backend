@@ -225,11 +225,12 @@ customersRouter.patch(
   },
 );
 
-// Move one customer to another collector — admin only: a manager may edit a
-// customer but must not silently move collection responsibility.
+// Move one customer to another collector, or off every round. Counter work:
+// whoever registers a customer puts them on a round, and the same people may
+// move them. Handing over a WHOLE round stays admin-only, above.
 customersRouter.patch(
   '/:id/collector',
-  requireAdmin,
+  requireCounter,
   validate({ params: customerIdParams, body: reassignCollectorBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{

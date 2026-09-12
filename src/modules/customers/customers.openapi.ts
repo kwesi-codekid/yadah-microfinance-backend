@@ -365,10 +365,12 @@ export const customerPaths: ZodOpenApiPathsObject = {
   '/customers/{id}/collector': {
     patch: {
       tags: ['Customers'],
-      summary: 'Move one customer between rounds, or off them (admin only)',
+      summary: 'Move one customer between rounds, or off them (counter)',
       description:
-        'Admin only: a manager may edit a customer but must not silently move ' +
-        'collection responsibility. Idempotent when the customer is already where ' +
+        'Counter work — admin, manager or teller: whoever registers a customer puts ' +
+        'them on a round, and the same people may move them. Handing over a whole ' +
+        'round (POST /customers/reassign-collector) stays admin-only. ' +
+        'Idempotent when the customer is already where ' +
         'you are putting them. Send `collectorId: null` to take the customer off ' +
         'every round — the customer who brings deposits to the counter instead of ' +
         'being collected from. This is the ONLY way to change assignedCollectorId — ' +
@@ -378,7 +380,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
       requestBody: jsonBody(reassignCollectorBody),
       responses: {
         '200': jsonResponse('Updated customer', customerResult),
-        '403': errorResponse('FORBIDDEN — admin only'),
+        '403': errorResponse('FORBIDDEN — collectors may not move customers'),
         '404': errorResponse('NOT_FOUND'),
         '422': errorResponse('INVALID_COLLECTOR — not an active collector account'),
       },
@@ -422,7 +424,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
         '"" or null to CLEAR them; omit a field to leave it unchanged. The ID document ' +
         'images clear the same way, except while the customer has an open loan or ' +
         'hire-purchase agreement (ID_DOCUMENT_IN_USE) — replacing a scan is always fine. ' +
-        'assignedCollectorId is ignored here — use PATCH /customers/{id}/collector (admin only).',
+        'assignedCollectorId is ignored here — use PATCH /customers/{id}/collector.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(updateCustomerBody),

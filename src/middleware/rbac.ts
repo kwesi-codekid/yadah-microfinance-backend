@@ -38,5 +38,9 @@ export const requireCounter = requireRole('admin', 'manager', 'teller');
  */
 export const requireOffice = requireRole('admin', 'manager');
 
-/** Admin only — reassigning a customer's collector, and user management. */
+/**
+ * Admin only — handing a collector's whole round to somebody else, and user
+ * management. Moving ONE customer between rounds is counter work: the person
+ * registering them puts them on a round, and the same person may move them.
+ */
 export const requireAdmin = requireRole('admin');

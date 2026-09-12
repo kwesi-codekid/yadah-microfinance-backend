@@ -5,6 +5,7 @@ import {
   PaystackChargeModel,
   ReconciliationModel,
   SusuAccountModel,
+  SusuDepositCorrectionModel,
 } from '../../models/index.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 
@@ -61,6 +62,7 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
     openHp,
     handoversAwaitingConfirmation,
     stuckCharges,
+    correctionsAwaitingDecision,
   ] = await Promise.all([
     SusuAccountModel.aggregate<{ count: number; amount: number }>([
       { $match: { status: 'pending-payout', ...NOT_TRASHED } },
@@ -94,6 +96,10 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
       { $match: { status: 'success', executionStatus: 'failed' } },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
+    // Deposit corrections a teller asked for. Nothing moves until the office
+    // answers, so an unanswered one is a figure the counter knows is wrong
+    // and the ledger still shows.
+    SusuDepositCorrectionModel.countDocuments({ status: 'pending' }),
   ]);
 
   const alerts: DashboardAlert[] = [];
@@ -156,6 +162,18 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
       count: loansAwaitingDecision,
       amount: null,
       target: { module: 'loans', filter: { status: 'pending' } },
+    });
+  }
+
+  if (correctionsAwaitingDecision > 0) {
+    alerts.push({
+      key: 'susu-corrections-awaiting-decision',
+      severity: 'info',
+      title: 'Deposit corrections awaiting a decision',
+      body: `${String(correctionsAwaitingDecision)} ${correctionsAwaitingDecision === 1 ? 'correction a teller asked for is' : 'corrections tellers asked for are'} waiting on the office — the ledger still shows the figure they say is wrong.`,
+      count: correctionsAwaitingDecision,
+      amount: null,
+      target: { module: 'susu-corrections', filter: { status: 'pending' } },
     });
   }
 

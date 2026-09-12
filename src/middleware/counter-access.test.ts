@@ -94,8 +94,10 @@ const THE_COUNTER = [
   'GET /customers/{id}/registration-form',
 
   // Registering a customer means putting them on somebody's round, so the
-  // counter can read the roster. The staff directory stays office-only.
+  // counter can read the roster, and may move one customer between rounds.
+  // The staff directory, and handing over a whole round, stay office-only.
   'GET /collectors',
+  'PATCH /customers/{id}/collector',
 
   // Susu: open a cycle, take the daily, pay it out at the end.
   'POST /susu/accounts',
@@ -104,6 +106,11 @@ const THE_COUNTER = [
   'POST /susu/accounts/{id}/withdraw',
   'POST /susu/accounts/{id}/payout',
   'POST /susu/accounts/{id}/close',
+  // A figure already on the ledger is the office's to change. The counter may
+  // ask, read the queue, and take its own request back.
+  'POST /susu/accounts/{id}/deposits/{depositId}/corrections',
+  'GET /susu/corrections',
+  'POST /susu/corrections/{correctionId}/cancel',
 
   // Savings: the same shape, with the API's own limits on what may leave.
   'POST /savings/accounts',
@@ -183,6 +190,12 @@ const NOT_THE_COUNTER = [
   // Undoing a sale already rung up.
   'POST /hire-purchase/sales/{id}/void',
 
+  // Changing a figure already on the ledger, or deciding a teller's request to.
+  'PATCH /susu/accounts/{id}/deposits/{depositId}',
+  'DELETE /susu/accounts/{id}/deposits/{depositId}',
+  'POST /susu/corrections/{correctionId}/approve',
+  'POST /susu/corrections/{correctionId}/reject',
+
   // Taking anything out of the listings, or bringing it back.
   'DELETE /customers/{id}',
   'POST /customers/{id}/restore',
@@ -210,9 +223,9 @@ const NOT_THE_COUNTER = [
   // Registering a whole book at once is an office job, unlike one at the desk.
   'POST /customers/import',
 
-  // Moving a customer between their own products, and moving them between rounds.
+  // Moving a customer between their own products, and handing over a whole round.
   'POST /transfers',
-  'PATCH /customers/{id}/collector',
+  'POST /customers/reassign-collector',
 
   // The company's own money, what it is owed, and who works here.
   'GET /accounting/cash-position',

@@ -7,6 +7,12 @@ export {
 } from './customer.model.js';
 export { SusuAccountModel, type SusuAccount } from './susu-account.model.js';
 export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
+export {
+  SusuDepositCorrectionModel,
+  CORRECTION_STATUSES,
+  type SusuDepositCorrection,
+  type CorrectionStatus,
+} from './susu-deposit-correction.model.js';
 export { SusuPayoutModel, type SusuPayout } from './susu-payout.model.js';
 export { TransferModel, type Transfer } from './transfer.model.js';
 export {
