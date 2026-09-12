@@ -109,8 +109,11 @@ const THE_COUNTER = [
   // A figure already on the ledger is the office's to change. The counter may
   // ask, read the queue, and take its own request back.
   'POST /susu/accounts/{id}/deposits/{depositId}/corrections',
-  'GET /susu/corrections',
-  'POST /susu/corrections/{correctionId}/cancel',
+  'POST /savings/accounts/{id}/transactions/{txnId}/corrections',
+  'POST /loans/{id}/repayments/{repaymentId}/corrections',
+  'POST /hire-purchase/agreements/{id}/payments/{paymentId}/corrections',
+  'GET /corrections',
+  'POST /corrections/{correctionId}/cancel',
 
   // Savings: the same shape, with the API's own limits on what may leave.
   'POST /savings/accounts',
@@ -193,8 +196,11 @@ const NOT_THE_COUNTER = [
   // Changing a figure already on the ledger, or deciding a teller's request to.
   'PATCH /susu/accounts/{id}/deposits/{depositId}',
   'DELETE /susu/accounts/{id}/deposits/{depositId}',
-  'POST /susu/corrections/{correctionId}/approve',
-  'POST /susu/corrections/{correctionId}/reject',
+  'PATCH /savings/accounts/{id}/transactions/{txnId}',
+  'PATCH /loans/{id}/repayments/{repaymentId}',
+  'PATCH /hire-purchase/agreements/{id}/payments/{paymentId}',
+  'POST /corrections/{correctionId}/approve',
+  'POST /corrections/{correctionId}/reject',
 
   // Taking anything out of the listings, or bringing it back.
   'DELETE /customers/{id}',

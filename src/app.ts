@@ -22,6 +22,7 @@ import { transfersRouter } from './modules/transfers/transfers.routes.js';
 import { reconciliationRouter } from './modules/reconciliation/reconciliation.routes.js';
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { paymentsRouter, paystackWebhookHandler } from './modules/payments/payments.routes.js';
+import { correctionsRouter } from './modules/corrections/corrections.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -65,6 +66,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/reconciliation', reconciliationRouter);
   app.use('/api/v1/notifications', notificationsRouter);
   app.use('/api/v1/payments', paymentsRouter);
+  app.use('/api/v1/corrections', correctionsRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);

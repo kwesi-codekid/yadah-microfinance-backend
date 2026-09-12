@@ -8,11 +8,13 @@ export {
 export { SusuAccountModel, type SusuAccount } from './susu-account.model.js';
 export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
 export {
-  SusuDepositCorrectionModel,
+  TxnCorrectionModel,
+  CORRECTION_KINDS,
   CORRECTION_STATUSES,
-  type SusuDepositCorrection,
+  type TxnCorrection,
+  type CorrectionKind,
   type CorrectionStatus,
-} from './susu-deposit-correction.model.js';
+} from './txn-correction.model.js';
 export { SusuPayoutModel, type SusuPayout } from './susu-payout.model.js';
 export { TransferModel, type Transfer } from './transfer.model.js';
 export {

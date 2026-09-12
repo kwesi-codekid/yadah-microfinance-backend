@@ -11,7 +11,6 @@ import {
 } from '../../schemas/common.js';
 import { SUSU_MIN_DAILY_AMOUNT } from '../../domain/susu.js';
 import { CYCLE_MONTHS } from '../../lib/account-number.js';
-import { CORRECTION_STATUSES } from '../../models/index.js';
 
 export const openAccountBody = z.object({
   customerId: objectId,
@@ -99,32 +98,6 @@ export const updateDepositBody = z.object({
   amount: positiveMoneyPesewas,
 });
 export type UpdateDepositBody = z.infer<typeof updateDepositBody>;
-
-/**
- * A teller asking the office to correct a deposit. The same amount rule as a
- * direct correction, plus a reason: the office decides on that line, so it
- * is not optional the way a trash reason is.
- */
-export const proposeCorrectionBody = z.object({
-  amount: positiveMoneyPesewas,
-  reason: z.string().min(3).max(300).trim(),
-});
-export type ProposeCorrectionBody = z.infer<typeof proposeCorrectionBody>;
-
-export const correctionIdParams = z.object({ correctionId: objectId });
-export type CorrectionIdParams = z.infer<typeof correctionIdParams>;
-
-export const listCorrectionsQuery = pagination.extend({
-  status: z.enum(CORRECTION_STATUSES).optional(),
-  accountId: objectId.optional(),
-});
-export type ListCorrectionsQuery = z.infer<typeof listCorrectionsQuery>;
-
-export const rejectCorrectionBody = z.object({
-  /** Why not, in words the teller will read. */
-  reason: z.string().min(3).max(300).trim(),
-});
-export type RejectCorrectionBody = z.infer<typeof rejectCorrectionBody>;
 
 export const listTrashQuery = pagination;
 export type ListTrashQuery = z.infer<typeof listTrashQuery>;

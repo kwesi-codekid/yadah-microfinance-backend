@@ -7,39 +7,36 @@ import { trashBody, type TrashBody } from '../../schemas/common.js';
 import {
   accountIdParams,
   collectAllBody,
-  correctionIdParams,
   depositBody,
   depositIdParams,
   listAccountsQuery,
-  listCorrectionsQuery,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
   partialWithdrawalBody,
   payoutBody,
   payoutIdParams,
-  proposeCorrectionBody,
-  rejectCorrectionBody,
   summaryQuery,
   updateDepositBody,
   type AccountIdParams,
   type CollectAllBody,
-  type CorrectionIdParams,
   type DepositBody,
   type DepositIdParams,
   type ListAccountsQuery,
-  type ListCorrectionsQuery,
   type ListDepositsQuery,
   type ListTrashQuery,
   type OpenAccountBody,
   type PartialWithdrawalBody,
   type PayoutBody,
   type PayoutIdParams,
-  type ProposeCorrectionBody,
-  type RejectCorrectionBody,
   type SummaryQuery,
   type UpdateDepositBody,
 } from './susu.schemas.js';
+import {
+  proposeCorrectionBody,
+  type ProposeCorrectionBody,
+} from '../corrections/corrections.schemas.js';
+import * as corrections from '../corrections/corrections.service.js';
 import * as susuService from './susu.service.js';
 
 export const susuRouter = Router();
@@ -181,11 +178,9 @@ susuRouter.patch(
   },
 );
 
-/* ------------------------------------------------------------- corrections ---
- * A teller asks; the office decides. Asking is counter work and moves nothing.
- * Approving applies the correction, so it is gated exactly as the PATCH above.
- */
-
+// A teller may not correct a deposit, but may ask the office to. Refused on
+// the spot for anything the correction itself would refuse; decided under
+// /corrections, which runs the same correction as the PATCH above.
 susuRouter.post(
   '/accounts/:id/deposits/:depositId/corrections',
   requireCounter,
@@ -195,66 +190,9 @@ susuRouter.post(
       params: DepositIdParams;
       body: ProposeCorrectionBody;
     }>(req);
-    susuService
-      .proposeCorrection(getAuth(req), params.id, params.depositId, body, req.id as string)
+    corrections
+      .propose(getAuth(req), 'susu-deposit', params.id, params.depositId, body, req.id as string)
       .then((correction) => res.status(201).json({ correction }))
-      .catch(next);
-  },
-);
-
-// The queue. The whole counter reads it; see the service for why.
-susuRouter.get(
-  '/corrections',
-  requireCounter,
-  validate({ query: listCorrectionsQuery }),
-  (req, res, next) => {
-    const { query } = getValidated<{ query: ListCorrectionsQuery }>(req);
-    susuService
-      .listCorrections(getAuth(req), query)
-      .then((list) => res.json(list))
-      .catch(next);
-  },
-);
-
-susuRouter.post(
-  '/corrections/:correctionId/approve',
-  requireOffice,
-  validate({ params: correctionIdParams }),
-  (req, res, next) => {
-    const { params } = getValidated<{ params: CorrectionIdParams }>(req);
-    susuService
-      .approveCorrection(getAuth(req), params.correctionId, req.id as string)
-      .then((result) => res.json(result))
-      .catch(next);
-  },
-);
-
-susuRouter.post(
-  '/corrections/:correctionId/reject',
-  requireOffice,
-  validate({ params: correctionIdParams, body: rejectCorrectionBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{
-      params: CorrectionIdParams;
-      body: RejectCorrectionBody;
-    }>(req);
-    susuService
-      .rejectCorrection(getAuth(req), params.correctionId, body.reason, req.id as string)
-      .then((correction) => res.json({ correction }))
-      .catch(next);
-  },
-);
-
-// Whoever asked takes it back. The service holds the line on who that is.
-susuRouter.post(
-  '/corrections/:correctionId/cancel',
-  requireCounter,
-  validate({ params: correctionIdParams }),
-  (req, res, next) => {
-    const { params } = getValidated<{ params: CorrectionIdParams }>(req);
-    susuService
-      .cancelCorrection(getAuth(req), params.correctionId, req.id as string)
-      .then((correction) => res.json({ correction }))
       .catch(next);
   },
 );

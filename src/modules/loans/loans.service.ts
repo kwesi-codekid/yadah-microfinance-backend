@@ -1,6 +1,7 @@
 import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -640,6 +641,7 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       id: r._id.toHexString(),
       amount: r.amount,
       source: r.source,
+      channel: r.channel,
       ...(r.susuAccountId ? { susuAccountId: r.susuAccountId.toHexString() } : {}),
       recordedById: r.recordedById.toHexString(),
       createdAt: r.createdAt,
@@ -861,6 +863,189 @@ export async function repayCash(
     replayed: false,
   };
 }
+
+// ---------------------------------------------------------------- corrections
+
+/**
+ * Correcting the amount on a cash repayment, for the corrections module (see
+ * lib/corrections.ts): outright for the office, or after a teller asked and
+ * the office approved.
+ *
+ * Only the newest repayment qualifies: the schedule is filled oldest
+ * instalment first, so its state depends only on the total repaid, and the
+ * newest is the one whose amount can move without a later one having been
+ * built on it. The schedule is rebuilt from the new total rather than
+ * adjusted, which is the same arithmetic the original allocation did. A
+ * repayment that settled the loan and no longer does reopens it as active —
+ * the escalation worker decides arrears on its own schedule, from the due
+ * date, and needs no guess here. Repayments paid from a susu closure or a
+ * transfer, and Paystack charges, are not data entry and cannot be corrected.
+ */
+export const prepareRepaymentCorrection: CorrectionPreparer = async (loanId, repaymentId) => {
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId });
+  if (!repayment) throw new AppError('NOT_FOUND', 'Repayment not found', 404);
+  const newest = await RepaymentModel.findOne({ loanId }).sort({ createdAt: -1, _id: -1 });
+  const isNewest = newest?._id.equals(repayment._id) ?? false;
+  // What the loan still owed before this repayment landed.
+  const remainingBefore = loan.totalDue - (loan.totalRepaid - repayment.amount);
+
+  const plan = (amount: number): CorrectionPlan => {
+    if (repayment.source !== 'cash') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        `A repayment paid ${repayment.source === 'susu-closure' ? 'by closing a susu account' : 'by transfer'} cannot be changed on its own`,
+        422,
+      );
+    }
+    if (repayment.channel === 'paystack') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'This was paid through Paystack, so the amount is what was charged',
+        422,
+      );
+    }
+    if (loan.status !== 'active' && loan.status !== 'arrears' && loan.status !== 'repaid') {
+      throw new AppError('CANNOT_CORRECT', `Loan is ${loan.status} — nothing has been repaid`, 422);
+    }
+    if (!isNewest) {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'Only the most recent repayment can be changed — correct from the end',
+        422,
+      );
+    }
+    if (amount > remainingBefore) {
+      throw new AppError(
+        'EXCEEDS_BALANCE',
+        `Amount exceeds the remaining balance (${formatGhs(remainingBefore)})`,
+        422,
+        { remaining: remainingBefore, amount },
+      );
+    }
+    return {};
+  };
+
+  return {
+    kind: 'loan-repayment',
+    targetId: loanId,
+    txnId: repaymentId,
+    customerId: repayment.customerId,
+    amount: repayment.amount,
+    plan,
+    apply: async (session, actor, amount, requestId, origin) => {
+      plan(amount);
+      const delta = amount - repayment.amount;
+      const totalRepaid = loan.totalRepaid + delta;
+      const settles = amount === remainingBefore;
+      const wasRepaid = loan.status === 'repaid';
+      const now = new Date();
+      const upd = await LoanModel.updateOne(
+        { _id: loanId, status: loan.status, totalRepaid: loan.totalRepaid, ...NOT_TRASHED },
+        {
+          $inc: { totalRepaid: delta },
+          ...(settles && !wasRepaid
+            ? {
+                $set: {
+                  status: 'repaid',
+                  closedAt: now,
+                  frozen: false,
+                  repaidOnTime:
+                    loan.dueDate !== undefined && now.getTime() <= loan.dueDate.getTime(),
+                },
+              }
+            : {}),
+          ...(!settles && wasRepaid
+            ? { $set: { status: 'active' }, $unset: { closedAt: '', repaidOnTime: '' } }
+            : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+      }
+
+      // The schedule as the new total fills it, oldest instalment first.
+      const schedule = await LoanScheduleModel.find({ loanId })
+        .sort({ installmentNumber: 1 })
+        .session(session);
+      const filled = allocateRepayment(
+        schedule.map((line) => ({ amountDue: line.amountDue, amountPaid: 0 })),
+        totalRepaid,
+      );
+      for (const [i, line] of schedule.entries()) {
+        const paid = filled[i] ?? 0;
+        const status =
+          paid >= line.amountDue
+            ? 'paid'
+            : paid > 0
+              ? 'partial'
+              : line.status === 'overdue'
+                ? 'overdue'
+                : 'pending';
+        if (paid === line.amountPaid && status === line.status) continue;
+        await LoanScheduleModel.updateOne(
+          { _id: line._id },
+          { $set: { amountPaid: paid, status } },
+          { session },
+        );
+      }
+
+      const repUpd = await RepaymentModel.updateOne(
+        { _id: repaymentId, amount: repayment.amount },
+        { $set: { amount } },
+        { session },
+      );
+      if (repUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Repayment changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'loan.repayment.update',
+          entityType: 'repayment',
+          entityId: repaymentId,
+          amountBefore: loan.totalRepaid,
+          amountAfter: totalRepaid,
+          before: { amount: repayment.amount },
+          after: {
+            amount,
+            settles,
+            ...(origin
+              ? {
+                  correctionId: origin.correctionId.toHexString(),
+                  requestedById: origin.requestedById.toHexString(),
+                }
+              : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    },
+    result: async () => {
+      const [afterLoan, afterRepayment] = await Promise.all([
+        LoanModel.findById(loanId),
+        RepaymentModel.findById(repaymentId),
+      ]);
+      if (!afterLoan || !afterRepayment) {
+        throw new AppError('NOT_FOUND', 'Repayment not found', 404);
+      }
+      return {
+        target: toPublicLoan(afterLoan),
+        txn: {
+          id: afterRepayment._id.toHexString(),
+          amount: afterRepayment.amount,
+          source: afterRepayment.source,
+          channel: afterRepayment.channel,
+          recordedById: afterRepayment.recordedById.toHexString(),
+          createdAt: afterRepayment.createdAt,
+        },
+      };
+    },
+  };
+};
 
 /**
  * Repayment by closing a susu account: one transaction closes the account

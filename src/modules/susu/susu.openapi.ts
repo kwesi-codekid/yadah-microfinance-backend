@@ -3,19 +3,16 @@ import { CYCLE_MONTHS } from '../../lib/account-number.js';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { trashBody } from '../../schemas/common.js';
-import { CORRECTION_STATUSES } from '../../models/index.js';
+import { proposeCorrectionPathFor } from '../corrections/corrections.openapi.js';
 import {
   collectAllBody,
   depositBody,
   listAccountsQuery,
-  listCorrectionsQuery,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
   partialWithdrawalBody,
   payoutBody,
-  proposeCorrectionBody,
-  rejectCorrectionBody,
   summaryQuery,
   updateDepositBody,
 } from './susu.schemas.js';
@@ -127,40 +124,6 @@ const depositIdParam = z.object({
   id: z.string().describe('Susu account id'),
   depositId: z.string().describe('Deposit id'),
 });
-
-const depositCorrection = z
-  .object({
-    id: z.string(),
-    accountId: z.string(),
-    depositId: z.string(),
-    customerId: z.string(),
-    customerName: z.string().optional().describe('Joined for display'),
-    accountNumber: z.string().optional().describe("The customer's number with the cycle month"),
-    accountRef: z.string().optional().describe("The account's own distinct ref"),
-    amountBefore: z
-      .number()
-      .int()
-      .describe('The deposit as it stood when the teller asked, pesewas'),
-    amount: z.number().int().describe('What the teller asked for, pesewas'),
-    daysBefore: z.number().int(),
-    days: z.number().int(),
-    reason: z.string(),
-    status: z.enum(CORRECTION_STATUSES),
-    requestedById: z.string(),
-    requestedByName: z.string().optional(),
-    reviewedById: z
-      .string()
-      .optional()
-      .describe('Whoever decided — or, for a cancellation, whoever withdrew it'),
-    reviewedByName: z.string().optional(),
-    reviewedAt: z.iso.datetime().optional(),
-    rejectionReason: z.string().optional(),
-    createdAt: z.iso.datetime(),
-  })
-  .meta({ id: 'SusuDepositCorrection' });
-
-const correctionIdParam = z.object({ correctionId: z.string().describe('Correction id') });
-const correctionResult = z.object({ correction: depositCorrection });
 
 const accountResult = z.object({ account: susuAccount });
 const depositResult = z.object({
@@ -419,116 +382,11 @@ export const susuPaths: ZodOpenApiPathsObject = {
       },
     },
   },
-  '/susu/accounts/{id}/deposits/{depositId}/corrections': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Ask the office to correct a deposit (counter)',
-      description:
-        'The teller’s door to a correction. Nothing on the ledger moves: the request ' +
-        'waits for an office decision. It is refused on the spot for anything the ' +
-        'correction itself would refuse — the newest deposit only, a whole number of ' +
-        'days, within the cycle — and checked again when applied, against the account ' +
-        'as it stands then. One open request per deposit. The office is notified.',
-      security,
-      requestParams: { path: depositIdParam },
-      requestBody: jsonBody(proposeCorrectionBody),
-      responses: {
-        '201': jsonResponse('Waiting for a decision', correctionResult),
-        '403': errorResponse('FORBIDDEN — collectors may not ask'),
-        '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('CORRECTION_PENDING — a request is already waiting on this deposit'),
-        '422': errorResponse(
-          'CANNOT_TRASH (not the latest deposit / closed account / transfer-created), ' +
-            'AMOUNT_MISMATCH (details.dailyAmount), EXCEEDS_REMAINING (details.remaining), ' +
-            'or NO_CHANGE (already that amount)',
-        ),
-      },
-    },
-  },
-  '/susu/corrections': {
-    get: {
-      tags: ['Susu'],
-      summary: 'Deposit corrections waiting on, or decided by, the office (counter)',
-      description:
-        'Newest first. Every counter role reads the whole queue, so a teller can see ' +
-        'that a request is already waiting on a deposit. Filter by status or account.',
-      security,
-      requestParams: { query: listCorrectionsQuery },
-      responses: {
-        '200': jsonResponse(
-          'Paginated corrections',
-          z.object({
-            items: z.array(depositCorrection),
-            page: z.number(),
-            limit: z.number(),
-            total: z.number(),
-          }),
-        ),
-      },
-    },
-  },
-  '/susu/corrections/{correctionId}/approve': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Apply a teller’s correction (office only)',
-      description:
-        'Runs the same correction as PATCH /susu/accounts/{id}/deposits/{depositId}, ' +
-        'against the account as it stands now, and marks the request approved in the ' +
-        'same transaction — the deposit changes and the request is approved together, ' +
-        'or neither happens. A rule that refuses the correction (a newer deposit has ' +
-        'landed, the cycle has closed) leaves the request pending with that refusal as ' +
-        'the answer: decline it with the reason, or put the account right and retry. ' +
-        'The teller who asked is notified.',
-      security,
-      requestParams: { path: correctionIdParam },
-      responses: {
-        '200': jsonResponse(
-          'Applied',
-          z.object({ correction: depositCorrection, deposit: susuDeposit, account: susuAccount }),
-        ),
-        '403': errorResponse('FORBIDDEN — office only'),
-        '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('NOT_PENDING (already decided) or CONFLICT (concurrent update)'),
-        '422': errorResponse(
-          'CANNOT_TRASH, AMOUNT_MISMATCH or EXCEEDS_REMAINING — the account has moved ' +
-            'since the teller asked',
-        ),
-      },
-    },
-  },
-  '/susu/corrections/{correctionId}/reject': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Decline a teller’s correction (office only)',
-      description: 'The deposit is untouched. The teller who asked reads the reason.',
-      security,
-      requestParams: { path: correctionIdParam },
-      requestBody: jsonBody(rejectCorrectionBody),
-      responses: {
-        '200': jsonResponse('Declined', correctionResult),
-        '403': errorResponse('FORBIDDEN — office only'),
-        '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('NOT_PENDING — already decided'),
-      },
-    },
-  },
-  '/susu/corrections/{correctionId}/cancel': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Take back a correction before it is decided (counter)',
-      description:
-        'Whoever asked may cancel; so may the office. Another teller may not — a ' +
-        'request is its author’s until it is decided.',
-      security,
-      requestParams: { path: correctionIdParam },
-      responses: {
-        '200': jsonResponse('Cancelled', correctionResult),
-        '403': errorResponse('FORBIDDEN — not yours to cancel'),
-        '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('NOT_PENDING — already decided'),
-      },
-    },
-  },
+  '/susu/accounts/{id}/deposits/{depositId}/corrections': proposeCorrectionPathFor(
+    'Susu',
+    'a deposit',
+    depositIdParam,
+  ),
   '/susu/accounts/{id}/deposits/{depositId}/restore': {
     post: {
       tags: ['Susu'],

@@ -120,7 +120,7 @@ export const TAG_GROUPS = [
   },
   {
     name: 'Office — money',
-    tags: ['Susu', 'Savings', 'Loans', 'Hire Purchase', 'Transfers', 'Payments'],
+    tags: ['Susu', 'Savings', 'Loans', 'Hire Purchase', 'Transfers', 'Payments', 'Corrections'],
   },
   {
     name: 'Office — books and reporting',

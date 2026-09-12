@@ -2,6 +2,10 @@ import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
+  correctionPathsFor,
+  proposeCorrectionPathFor,
+} from '../corrections/corrections.openapi.js';
+import {
   applyBody,
   listLoansQuery,
   loanTrashQuery,
@@ -68,6 +72,19 @@ const repaymentResult = z.object({
 });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Loan id') });
+const repaymentIdParam = z.object({
+  id: z.string().describe('Loan id'),
+  repaymentId: z.string().describe('Repayment id'),
+});
+/** One repayment, as a correction answers with it. */
+const repaymentTxn = z.object({
+  id: z.string(),
+  amount: z.number().int(),
+  source: z.enum(['cash', 'susu-closure', 'transfer']),
+  channel: z.string(),
+  recordedById: z.string(),
+  createdAt: z.iso.datetime(),
+});
 
 /** Public shape + trash metadata, inlined (kept out of the shared Loan component). */
 const trashedLoan = publicLoan.extend({
@@ -367,6 +384,24 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/loans/{id}/repayments/{repaymentId}': correctionPathsFor(
+    'Loans',
+    'a cash repayment',
+    'Only the newest repayment can change, and only one paid as cash: repayments paid ' +
+      'by a susu closure or a transfer, and Paystack charges, cannot (CANNOT_CORRECT). ' +
+      'The new amount may not exceed what the loan owed before the repayment landed ' +
+      '(EXCEEDS_BALANCE, details.remaining). The schedule is rebuilt from the new total, ' +
+      'oldest instalment first. A repayment corrected to exactly what was owed settles ' +
+      'the loan; a settlement corrected down reopens it as active.',
+    repaymentIdParam,
+    repaymentTxn,
+    publicLoan,
+  ),
+  '/loans/{id}/repayments/{repaymentId}/corrections': proposeCorrectionPathFor(
+    'Loans',
+    'a repayment',
+    repaymentIdParam,
+  ),
   '/loans/{id}/repayments/{repaymentId}/receipt': {
     get: {
       tags: ['Loans'],

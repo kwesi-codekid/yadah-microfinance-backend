@@ -20,8 +20,8 @@ import {
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
-  SusuDepositCorrectionModel,
   SusuDepositModel,
+  TxnCorrectionModel,
   UserModel,
 } from '../../src/models/index.js';
 import type { AccessTokenPayload } from '../../src/modules/auth/auth.service.js';
@@ -39,7 +39,7 @@ export async function setupDb(): Promise<void> {
       CustomerModel,
       SusuAccountModel,
       SusuDepositModel,
-      SusuDepositCorrectionModel,
+      TxnCorrectionModel,
       HpItemModel,
       HpDamageModel,
       HpPriceChangeModel,

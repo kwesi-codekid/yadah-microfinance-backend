@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
@@ -21,6 +22,7 @@ import {
 } from '../../models/index.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
+  MIN_DEPOSIT,
   availableToWithdraw,
   computeSavingsClosure,
   computeWithdrawal,
@@ -91,7 +93,7 @@ export interface PublicSavingsTxn {
   createdAt: Date;
 }
 
-function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
+export function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
   return {
     id: t._id.toHexString(),
     accountId: t.accountId.toHexString(),
@@ -1062,6 +1064,152 @@ export async function restoreSavingsTxn(
   });
   return { txn: toPublicTxn(afterTxn), account: toPublicSavingsAccount(afterAccount) };
 }
+
+// ---------------------------------------------------------------- corrections
+
+/**
+ * Correcting the amount on a deposit or withdrawal, for the corrections module
+ * (see lib/corrections.ts): outright for the office, or after a teller asked
+ * and the office approved.
+ *
+ * Only the newest live transaction of an active account qualifies, for the
+ * same reason only that one can be trashed: every later running balance is
+ * built on it. A withdrawal keeps its flat fee and is checked against what
+ * the account held before it, exactly as it was when first recorded; a
+ * deposit keeps the floor every deposit has. Transfer legs, Paystack charges
+ * and closures are not data entry and cannot be corrected here.
+ */
+export const prepareTxnCorrection: CorrectionPreparer = async (accountId, txnId) => {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const txn = await SavingsTxnModel.findOne({ _id: txnId, accountId, ...NOT_TRASHED });
+  if (!txn) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+  const newest = await SavingsTxnModel.findOne({ accountId, ...NOT_TRASHED }).sort({
+    createdAt: -1,
+    _id: -1,
+  });
+  const isNewest = newest?._id.equals(txn._id) ?? false;
+  const fee = txn.fee ?? 0;
+  // What the account held before this transaction — the figure a corrected
+  // withdrawal is checked against, as the original was.
+  const balanceBefore =
+    txn.type === 'deposit' ? txn.balanceAfter - txn.amount : txn.balanceAfter + txn.amount + fee;
+
+  const plan = (amount: number): CorrectionPlan => {
+    if (txn.type === 'closure') {
+      throw new AppError('CANNOT_CORRECT', 'A closure is final and cannot be changed', 422);
+    }
+    if (txn.channel === 'transfer') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'Transactions created by a transfer cannot be changed on their own',
+        422,
+      );
+    }
+    if (txn.channel === 'paystack') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'This was paid through Paystack, so the amount is what was charged',
+        422,
+      );
+    }
+    if (account.status !== 'active') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        `Account is ${account.status} — closed accounts keep their history`,
+        422,
+      );
+    }
+    if (!isNewest) {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'Only the most recent transaction can be changed — correct from the end of the statement',
+        422,
+      );
+    }
+    if (txn.type === 'deposit') {
+      if (amount < MIN_DEPOSIT) {
+        throw new AppError('AMOUNT_TOO_SMALL', `Deposits start at ${formatGhs(MIN_DEPOSIT)}`, 422, {
+          minimum: MIN_DEPOSIT,
+        });
+      }
+    } else {
+      const available = availableToWithdraw(balanceBefore);
+      if (amount > available) {
+        throw new AppError('EXCEEDS_AVAILABLE', 'Amount exceeds the available balance', 422, {
+          available,
+        });
+      }
+    }
+    return {};
+  };
+
+  return {
+    kind: 'savings-txn',
+    targetId: accountId,
+    txnId,
+    customerId: txn.customerId,
+    amount: txn.amount,
+    plan,
+    apply: async (session, actor, amount, requestId, origin) => {
+      plan(amount);
+      const balanceAfter =
+        txn.type === 'deposit' ? balanceBefore + amount : balanceBefore - amount - fee;
+      const delta = balanceAfter - txn.balanceAfter;
+      // The newest transaction's running balance IS the account's balance, so
+      // guarding on it guards against anything having moved since.
+      const upd = await SavingsAccountModel.updateOne(
+        { _id: accountId, status: 'active', balance: txn.balanceAfter, ...NOT_TRASHED },
+        { $inc: { balance: delta } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      const txnUpd = await SavingsTxnModel.updateOne(
+        { _id: txnId, deletedAt: null, amount: txn.amount },
+        { $set: { amount, balanceAfter } },
+        { session },
+      );
+      if (txnUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Transaction changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'savings.txn.update',
+          entityType: 'savings-txn',
+          entityId: txnId,
+          amountBefore: txn.balanceAfter,
+          amountAfter: balanceAfter,
+          before: { type: txn.type, amount: txn.amount },
+          after: {
+            type: txn.type,
+            amount,
+            ...(origin
+              ? {
+                  correctionId: origin.correctionId.toHexString(),
+                  requestedById: origin.requestedById.toHexString(),
+                }
+              : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    },
+    result: async () => {
+      const [afterTxn, afterAccount] = await Promise.all([
+        SavingsTxnModel.findById(txnId),
+        SavingsAccountModel.findById(accountId),
+      ]);
+      if (!afterTxn || !afterAccount) {
+        throw new AppError('NOT_FOUND', 'Transaction not found', 404);
+      }
+      return { target: toPublicSavingsAccount(afterAccount), txn: toPublicTxn(afterTxn) };
+    },
+  };
+};
 
 export async function listSavingsTxnTrash(
   _actor: AccessTokenPayload,

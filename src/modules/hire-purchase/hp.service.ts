@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { recordPriceChanges } from './hp-pricing.service.js';
 import { audit } from '../../lib/audit.js';
+import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
 import { formatGhs } from '../../lib/money.js';
@@ -576,7 +577,7 @@ export function remainingOn(a: HpAgreement): number {
 }
 
 /** Customer-facing shape: cost price (Yadah's margin) is deliberately absent. */
-function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
+export function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
   return {
     id: a._id.toHexString(),
     ...(a.accountNumber !== undefined ? { accountNumber: a.accountNumber } : {}),
@@ -1247,6 +1248,190 @@ export async function redeem(
   return { agreement: toPublicAgreement(after), amount, replayed: false };
 }
 
+// ---------------------------------------------------------------- corrections
+
+/**
+ * Correcting the amount on an instalment, for the corrections module (see
+ * lib/corrections.ts): outright for the office, or after a teller asked and
+ * the office approved.
+ *
+ * Only the newest payment qualifies, and only an instalment: the deposit is
+ * fixed by the agreement and a redemption is the whole remaining balance, so
+ * neither has a figure somebody typed. The plan is filled oldest instalment
+ * first, so its state depends only on the total paid, and it is rebuilt from
+ * the new total rather than adjusted. An instalment that completed the
+ * agreement and no longer does reopens it as active; arrears are the
+ * worker's to flag again, from the plan. Transfer legs and Paystack charges
+ * are not data entry and cannot be corrected.
+ */
+export const preparePaymentCorrection: CorrectionPreparer = async (agreementId, paymentId) => {
+  const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
+  if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
+  const payment = await HpPaymentModel.findOne({ _id: paymentId, agreementId });
+  if (!payment) throw new AppError('NOT_FOUND', 'Payment not found', 404);
+  const newest = await HpPaymentModel.findOne({ agreementId }).sort({ createdAt: -1, _id: -1 });
+  const isNewest = newest?._id.equals(payment._id) ?? false;
+  // What the agreement still owed before this instalment landed.
+  const remainingBefore = remainingOn(agreement) + payment.amount;
+
+  const plan = (amount: number): CorrectionPlan => {
+    if (payment.type === 'deposit') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'The deposit is fixed by the agreement — exactly half the agreed price — and cannot be changed',
+        422,
+      );
+    }
+    if (payment.type === 'redemption') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'A redemption is the whole remaining balance and cannot be changed',
+        422,
+      );
+    }
+    if (payment.channel === 'transfer') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'Payments created by a transfer cannot be changed on their own',
+        422,
+      );
+    }
+    if (payment.channel === 'paystack') {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'This was paid through Paystack, so the amount is what was charged',
+        422,
+      );
+    }
+    if (
+      agreement.status !== 'active' &&
+      agreement.status !== 'in-arrears' &&
+      agreement.status !== 'closed-completed'
+    ) {
+      throw new AppError('CANNOT_CORRECT', `Agreement is ${agreement.status}`, 422);
+    }
+    if (!isNewest) {
+      throw new AppError(
+        'CANNOT_CORRECT',
+        'Only the most recent payment can be changed — correct from the end',
+        422,
+      );
+    }
+    if (amount > remainingBefore) {
+      throw new AppError(
+        'EXCEEDS_BALANCE',
+        `Amount exceeds the remaining balance (${formatGhs(remainingBefore)})`,
+        422,
+        { remaining: remainingBefore, amount },
+      );
+    }
+    return {};
+  };
+
+  return {
+    kind: 'hp-payment',
+    targetId: agreementId,
+    txnId: paymentId,
+    customerId: payment.customerId,
+    amount: payment.amount,
+    plan,
+    apply: async (session, actor, amount, requestId, origin) => {
+      plan(amount);
+      const delta = amount - payment.amount;
+      const totalPaid = agreement.totalPaid + delta;
+      const settles = amount === remainingBefore;
+      const wasClosed = agreement.status === 'closed-completed';
+      const now = new Date();
+      const upd = await HpAgreementModel.updateOne(
+        { _id: agreementId, status: agreement.status, totalPaid: agreement.totalPaid },
+        {
+          $inc: { totalPaid: delta },
+          ...(settles && !wasClosed ? { $set: { status: 'closed-completed', closedAt: now } } : {}),
+          ...(!settles && wasClosed
+            ? { $set: { status: 'active' }, $unset: { closedAt: '' } }
+            : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Agreement was updated concurrently — retry', 409);
+      }
+
+      // The plan as the new total fills it, oldest instalment first. The
+      // deposit is not in the plan, so it comes off the total first.
+      const schedule = await HpScheduleModel.find({ agreementId })
+        .sort({ installmentNumber: 1 })
+        .session(session);
+      const filled = allocateRepayment(
+        schedule.map((line) => ({ amountDue: line.amountDue, amountPaid: 0 })),
+        totalPaid - agreement.depositRequired,
+      );
+      for (const [i, line] of schedule.entries()) {
+        const paid = filled[i] ?? 0;
+        const status = paid >= line.amountDue ? 'paid' : paid > 0 ? 'partial' : 'pending';
+        if (paid === line.amountPaid && status === line.status) continue;
+        await HpScheduleModel.updateOne(
+          { _id: line._id },
+          { $set: { amountPaid: paid, status } },
+          { session },
+        );
+      }
+
+      const payUpd = await HpPaymentModel.updateOne(
+        { _id: paymentId, amount: payment.amount },
+        { $set: { amount } },
+        { session },
+      );
+      if (payUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Payment changed concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'hp.payment.update',
+          entityType: 'hp-payment',
+          entityId: paymentId,
+          amountBefore: agreement.totalPaid,
+          amountAfter: totalPaid,
+          before: { amount: payment.amount },
+          after: {
+            amount,
+            settles,
+            ...(origin
+              ? {
+                  correctionId: origin.correctionId.toHexString(),
+                  requestedById: origin.requestedById.toHexString(),
+                }
+              : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    },
+    result: async () => {
+      const [afterAgreement, afterPayment] = await Promise.all([
+        HpAgreementModel.findById(agreementId),
+        HpPaymentModel.findById(paymentId),
+      ]);
+      if (!afterAgreement || !afterPayment) {
+        throw new AppError('NOT_FOUND', 'Payment not found', 404);
+      }
+      return {
+        target: toPublicAgreement(afterAgreement),
+        txn: {
+          id: afterPayment._id.toHexString(),
+          type: afterPayment.type,
+          amount: afterPayment.amount,
+          channel: afterPayment.channel,
+          recordedById: afterPayment.recordedById.toHexString(),
+          createdAt: afterPayment.createdAt,
+        },
+      };
+    },
+  };
+};
+
 // ---------------------------------------------------------------- manual state transitions
 // The arrears trigger is automated (instalment ≥1 month overdue — see
 // lib/hp-arrears.ts); the transitions also remain available as office actions.
@@ -1474,7 +1659,14 @@ export async function getAgreement(agreementId: Types.ObjectId): Promise<{
     amountPaid: number;
     status: string;
   }[];
-  payments: { id: string; type: string; amount: number; recordedById: string; createdAt: Date }[];
+  payments: {
+    id: string;
+    type: string;
+    amount: number;
+    channel: string;
+    recordedById: string;
+    createdAt: Date;
+  }[];
 }> {
   const agreement = await HpAgreementModel.findOne({ _id: agreementId, ...NOT_TRASHED });
   if (!agreement) throw new AppError('NOT_FOUND', 'Agreement not found', 404);
@@ -1495,6 +1687,7 @@ export async function getAgreement(agreementId: Types.ObjectId): Promise<{
       id: p._id.toHexString(),
       type: p.type,
       amount: p.amount,
+      channel: p.channel,
       recordedById: p.recordedById.toHexString(),
       createdAt: p.createdAt,
     })),

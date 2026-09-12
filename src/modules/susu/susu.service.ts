@@ -1,4 +1,3 @@
-import { MongoServerError } from 'mongodb';
 import mongoose, { Types, type ClientSession } from 'mongoose';
 import {
   accountRef,
@@ -9,6 +8,7 @@ import {
   type CycleMonth,
 } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import type { CorrectionOrigin, CorrectionPreparer } from '../../lib/corrections.js';
 import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
@@ -18,15 +18,12 @@ import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   CustomerModel,
   SusuAccountModel,
-  SusuDepositCorrectionModel,
   SusuDepositModel,
   SusuPayoutModel,
   UserModel,
-  type CorrectionStatus,
   type Customer,
   type SusuAccount,
   type SusuDeposit,
-  type SusuDepositCorrection,
 } from '../../models/index.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
@@ -41,15 +38,13 @@ import {
   susuBalance,
 } from '../../domain/susu.js';
 import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
-import { notifyInBackground, notifyOffice } from '../../lib/notifications.js';
+import { notifyOffice } from '../../lib/notifications.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
   ListAccountsQuery,
-  ListCorrectionsQuery,
   ListDepositsQuery,
   ListTrashQuery,
-  ProposeCorrectionBody,
   SummaryQuery,
 } from './susu.schemas.js';
 
@@ -2155,6 +2150,15 @@ function planCorrection(
   amount: number,
 ): CorrectionPlan {
   assertCorrectable(account, deposit);
+  // A Paystack deposit's amount is what Paystack charged, not what somebody
+  // typed. There is no data-entry mistake in it to correct.
+  if (deposit.channel === 'paystack') {
+    throw new AppError(
+      'CANNOT_CORRECT',
+      'This was paid through Paystack, so the amount is what was charged',
+      422,
+    );
+  }
 
   if (amount % account.dailyAmount !== 0) {
     throw new AppError(
@@ -2176,16 +2180,6 @@ function planCorrection(
     );
   }
   return { newDays, dayDelta, newCount: account.depositsCount + dayDelta };
-}
-
-/**
- * Where a correction came from, when the office is applying a teller's
- * request rather than its own. Recorded on the audit entry so the ledger can
- * answer both "who changed this figure" (the approver) and "who asked".
- */
-export interface CorrectionOrigin {
-  correctionId: Types.ObjectId;
-  requestedById: Types.ObjectId;
 }
 
 /**
@@ -2309,448 +2303,50 @@ export async function updateDeposit(
 }
 
 // ---------------------------------------------------------------- corrections
-//
-// The teller's door to a correction. A teller may not change a figure already
-// on the ledger — that is a decision — but may ask, and the office decides.
-// Approval runs the very same correction the office would make by hand, so
-// nothing a direct correction refuses can get in this way either.
-
-export interface PublicDepositCorrection {
-  id: string;
-  accountId: string;
-  depositId: string;
-  customerId: string;
-  /** Joined for display; the record itself holds only ids. */
-  customerName?: string;
-  accountNumber?: string;
-  /** The account's own distinct ref — the number alone is the customer's. */
-  accountRef?: string;
-  /** The deposit as it stood when the teller asked, and what they asked for. */
-  amountBefore: number;
-  amount: number;
-  daysBefore: number;
-  days: number;
-  reason: string;
-  status: CorrectionStatus;
-  requestedById: string;
-  requestedByName?: string;
-  /** Whoever decided — or, for a cancellation, whoever withdrew it. */
-  reviewedById?: string;
-  reviewedByName?: string;
-  reviewedAt?: Date;
-  rejectionReason?: string;
-  createdAt: Date;
-}
-
-interface CorrectionNames {
-  customers: Map<string, string>;
-  users: Map<string, string>;
-  accounts: Map<string, { accountNumber: string; ref: string }>;
-}
-
-function toPublicCorrection(
-  c: SusuDepositCorrection,
-  names: CorrectionNames,
-): PublicDepositCorrection {
-  const customerName = names.customers.get(c.customerId.toHexString());
-  const account = names.accounts.get(c.accountId.toHexString());
-  const requestedByName = names.users.get(c.requestedById.toHexString());
-  const reviewedByName = c.reviewedById ? names.users.get(c.reviewedById.toHexString()) : undefined;
-  return {
-    id: c._id.toHexString(),
-    accountId: c.accountId.toHexString(),
-    depositId: c.depositId.toHexString(),
-    customerId: c.customerId.toHexString(),
-    ...(customerName !== undefined ? { customerName } : {}),
-    ...(account !== undefined
-      ? { accountNumber: account.accountNumber, accountRef: account.ref }
-      : {}),
-    amountBefore: c.amountBefore,
-    amount: c.amount,
-    daysBefore: c.daysBefore,
-    days: c.days,
-    reason: c.reason,
-    status: c.status,
-    requestedById: c.requestedById.toHexString(),
-    ...(requestedByName !== undefined ? { requestedByName } : {}),
-    ...(c.reviewedById ? { reviewedById: c.reviewedById.toHexString() } : {}),
-    ...(reviewedByName !== undefined ? { reviewedByName } : {}),
-    ...(c.reviewedAt !== undefined ? { reviewedAt: c.reviewedAt } : {}),
-    ...(c.rejectionReason !== undefined ? { rejectionReason: c.rejectionReason } : {}),
-    createdAt: c.createdAt,
-  };
-}
-
-/** Batch-resolve the names a page of corrections is read by. */
-async function correctionNames(rows: SusuDepositCorrection[]): Promise<CorrectionNames> {
-  const customerIds = [...new Set(rows.map((r) => r.customerId.toHexString()))];
-  const accountIds = [...new Set(rows.map((r) => r.accountId.toHexString()))];
-  const userIds = [
-    ...new Set(
-      rows.flatMap((r) => [
-        r.requestedById.toHexString(),
-        ...(r.reviewedById ? [r.reviewedById.toHexString()] : []),
-      ]),
-    ),
-  ];
-  const [customers, accounts, users] = await Promise.all([
-    CustomerModel.find({ _id: { $in: customerIds } }, { fullName: 1 }),
-    SusuAccountModel.find({ _id: { $in: accountIds } }, { accountNumber: 1, createdAt: 1 }),
-    UserModel.find({ _id: { $in: userIds } }, { name: 1 }),
-  ]);
-  return {
-    customers: new Map(customers.map((c) => [c._id.toHexString(), c.fullName])),
-    accounts: new Map(
-      accounts.map((a) => [
-        a._id.toHexString(),
-        { accountNumber: a.accountNumber, ref: accountRef(a._id.toHexString(), a.createdAt) },
-      ]),
-    ),
-    users: new Map(users.map((u) => [u._id.toHexString(), u.name])),
-  };
-}
-
-async function publicCorrection(c: SusuDepositCorrection): Promise<PublicDepositCorrection> {
-  return toPublicCorrection(c, await correctionNames([c]));
-}
-
-/** Everything a notification about a correction needs to link to. */
-function correctionData(c: SusuDepositCorrection): Record<string, unknown> {
-  return {
-    correctionId: c._id.toHexString(),
-    susuAccountId: c.accountId.toHexString(),
-    depositId: c.depositId.toHexString(),
-    customerId: c.customerId.toHexString(),
-  };
-}
 
 /**
- * A teller asks the office to correct a deposit.
- *
- * Nothing on the ledger moves. The request is refused on the spot for anything
- * the correction itself would refuse — the newest deposit only, a whole number
- * of days, within the cycle — so what reaches the office is something it CAN
- * approve, as the account stands now.
+ * A deposit correction as the corrections module runs it: outright for the
+ * office, or after a teller asked and the office approved. The rules are the
+ * ones above; this only packages them behind the shared contract (see
+ * lib/corrections.ts).
  */
-export async function proposeCorrection(
-  actor: AccessTokenPayload,
-  accountId: Types.ObjectId,
-  depositId: Types.ObjectId,
-  body: ProposeCorrectionBody,
-  requestId?: string,
-): Promise<PublicDepositCorrection> {
+export const prepareDepositCorrection: CorrectionPreparer = async (accountId, depositId) => {
   const account = await SusuAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
   const deposit = await SusuDepositModel.findOne({ _id: depositId, accountId, ...NOT_TRASHED });
   if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
-  const { newDays } = planCorrection(account, deposit, body.amount);
-  if (body.amount === deposit.amount) {
-    throw new AppError('NO_CHANGE', 'That is already the amount on this deposit', 422);
-  }
 
-  let correction: SusuDepositCorrection;
-  try {
-    correction = await SusuDepositCorrectionModel.create({
-      accountId,
-      depositId,
-      customerId: deposit.customerId,
-      amountBefore: deposit.amount,
-      amount: body.amount,
-      daysBefore: deposit.daysCovered,
-      days: newDays,
-      reason: body.reason,
-      status: 'pending',
-      requestedById: new Types.ObjectId(actor.sub),
-    });
-  } catch (err) {
-    // The one-open-request-per-deposit index. Two figures queued against one
-    // entry would let the office approve both, and the second would apply to
-    // a deposit that no longer says what the teller saw.
-    if (err instanceof MongoServerError && err.code === 11000) {
-      throw new AppError(
-        'CORRECTION_PENDING',
-        'A correction is already waiting on this deposit',
-        409,
-      );
-    }
-    throw err;
-  }
-
-  await audit({
-    actorId: actor.sub,
-    action: 'susu.deposit.correction.propose',
-    entityType: 'susu-deposit-correction',
-    entityId: correction._id,
-    amountBefore: deposit.amount,
-    amountAfter: body.amount,
-    after: { depositId: depositId.toHexString(), amount: body.amount, reason: body.reason },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
-
-  const names = await correctionNames([correction]);
-  const teller = names.users.get(actor.sub) ?? 'A teller';
-  const customer = names.customers.get(deposit.customerId.toHexString()) ?? 'a customer';
-  notifyOffice({
-    type: 'susu.correction',
-    title: 'Deposit correction to approve',
-    body:
-      `${teller} asks to change a deposit on ${customer}'s #${account.accountNumber} ` +
-      `from ${formatGhs(deposit.amount)} to ${formatGhs(body.amount)}: ${body.reason}`,
-    data: correctionData(correction),
-  });
-  emitAdminEvent('susu.correction.proposed', {
-    ...correctionData(correction),
-    amountBefore: deposit.amount,
-    amount: body.amount,
-  });
-  return toPublicCorrection(correction, names);
-}
-
-/**
- * The queue. Every counter role reads the whole of it: a teller has to see
- * that somebody else's request is already waiting on a deposit before trying
- * to raise their own. Cancelling stays with whoever asked.
- */
-export async function listCorrections(
-  _actor: AccessTokenPayload,
-  query: ListCorrectionsQuery,
-): Promise<{ items: PublicDepositCorrection[]; page: number; limit: number; total: number }> {
-  const filter: Record<string, unknown> = {
-    ...(query.status !== undefined ? { status: query.status } : {}),
-    ...(query.accountId !== undefined ? { accountId: query.accountId } : {}),
-  };
-  const [rows, total] = await Promise.all([
-    SusuDepositCorrectionModel.find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .skip((query.page - 1) * query.limit)
-      .limit(query.limit),
-    SusuDepositCorrectionModel.countDocuments(filter),
-  ]);
-  const names = await correctionNames(rows);
   return {
-    items: rows.map((r) => toPublicCorrection(r, names)),
-    page: query.page,
-    limit: query.limit,
-    total,
-  };
-}
-
-/**
- * The office applies a teller's correction.
- *
- * The correction is the same one the office would make by hand, checked
- * against the account as it stands NOW — not as it stood when the teller asked.
- * A rule that refuses it here (a newer deposit has landed, the cycle has been
- * closed) leaves the request open with the refusal as the answer: the office
- * reads why and declines it with that reason, or puts the account right and
- * tries again. Nothing is applied by halves — the deposit changes and the
- * request becomes approved in one transaction, or neither happens.
- */
-export async function approveCorrection(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  requestId?: string,
-): Promise<{
-  correction: PublicDepositCorrection;
-  deposit: PublicDeposit;
-  account: PublicSusuAccount;
-}> {
-  const correction = await SusuDepositCorrectionModel.findById(id);
-  if (!correction) throw new AppError('NOT_FOUND', 'Correction not found', 404);
-  if (correction.status !== 'pending') {
-    throw new AppError('NOT_PENDING', `Correction is already ${correction.status}`, 409);
-  }
-  const account = await SusuAccountModel.findOne({ _id: correction.accountId, ...NOT_TRASHED });
-  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
-  const deposit = await SusuDepositModel.findOne({
-    _id: correction.depositId,
-    accountId: correction.accountId,
-    ...NOT_TRASHED,
-  });
-  if (!deposit) throw new AppError('NOT_FOUND', 'Deposit not found', 404);
-  const plan = planCorrection(account, deposit, correction.amount);
-  // Already at the asked figure — the office corrected it by hand in the
-  // meantime. Approving is then only the bookkeeping.
-  const unchanged = plan.dayDelta === 0 && correction.amount === deposit.amount;
-
-  const now = new Date();
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      if (!unchanged) {
-        await applyCorrection(
-          session,
-          actor,
-          account,
-          deposit,
-          correction.amount,
-          plan,
-          requestId,
-          {
-            correctionId: correction._id,
-            requestedById: correction.requestedById,
-          },
-        );
-      }
-      const decided = await SusuDepositCorrectionModel.updateOne(
-        { _id: correction._id, status: 'pending' },
-        {
-          $set: {
-            status: 'approved',
-            reviewedById: new Types.ObjectId(actor.sub),
-            reviewedAt: now,
-          },
-        },
-        { session },
-      );
-      if (decided.modifiedCount !== 1) {
-        throw new AppError('NOT_PENDING', 'Correction was decided concurrently', 409);
-      }
-      await audit(
-        {
-          actorId: actor.sub,
-          action: 'susu.deposit.correction.approve',
-          entityType: 'susu-deposit-correction',
-          entityId: correction._id,
-          amountBefore: correction.amountBefore,
-          amountAfter: correction.amount,
-          after: {
-            depositId: correction.depositId.toHexString(),
-            amount: correction.amount,
-            requestedById: correction.requestedById.toHexString(),
-          },
-          ...(requestId !== undefined ? { requestId } : {}),
-        },
+    kind: 'susu-deposit',
+    targetId: accountId,
+    txnId: depositId,
+    customerId: deposit.customerId,
+    amount: deposit.amount,
+    units: deposit.daysCovered,
+    plan: (amount) => ({ units: planCorrection(account, deposit, amount).newDays }),
+    apply: (session, actor, amount, requestId, origin) =>
+      applyCorrection(
         session,
-      );
-    });
-  } finally {
-    await session.endSession();
-  }
-
-  const [afterCorrection, afterDeposit, afterAccount] = await Promise.all([
-    SusuDepositCorrectionModel.findById(id),
-    SusuDepositModel.findById(correction.depositId),
-    SusuAccountModel.findById(correction.accountId),
-  ]);
-  if (!afterCorrection || !afterDeposit || !afterAccount) {
-    throw new AppError('NOT_FOUND', 'Correction not found', 404);
-  }
-  emitAdminEvent('susu.deposit.updated', {
-    accountId: correction.accountId.toHexString(),
-    depositId: correction.depositId.toHexString(),
-    amountBefore: deposit.amount,
-    amountAfter: correction.amount,
-    depositsCount: afterAccount.depositsCount,
-  });
-  emitAdminEvent('susu.correction.approved', correctionData(correction));
-  notifyInBackground({
-    userIds: [correction.requestedById],
-    type: 'susu.correction',
-    title: 'Deposit correction approved',
-    body:
-      `Your correction on #${account.accountNumber} was applied: the deposit is now ` +
-      `${formatGhs(correction.amount)}, was ${formatGhs(correction.amountBefore)}.`,
-    data: correctionData(correction),
-  });
-  return {
-    correction: await publicCorrection(afterCorrection),
-    deposit: toPublicDeposit(afterDeposit),
-    account: toPublicAccount(afterAccount),
+        actor,
+        account,
+        deposit,
+        amount,
+        planCorrection(account, deposit, amount),
+        requestId,
+        origin,
+      ),
+    result: async () => {
+      const [afterDeposit, afterAccount] = await Promise.all([
+        SusuDepositModel.findById(depositId),
+        SusuAccountModel.findById(accountId),
+      ]);
+      if (!afterDeposit || !afterAccount) {
+        throw new AppError('NOT_FOUND', 'Deposit not found', 404);
+      }
+      return { target: toPublicAccount(afterAccount), txn: toPublicDeposit(afterDeposit) };
+    },
   };
-}
-
-/** The office declines. The deposit is untouched; the teller reads why. */
-export async function rejectCorrection(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  reason: string,
-  requestId?: string,
-): Promise<PublicDepositCorrection> {
-  const now = new Date();
-  const correction = await SusuDepositCorrectionModel.findOneAndUpdate(
-    { _id: id, status: 'pending' },
-    {
-      $set: {
-        status: 'rejected',
-        reviewedById: new Types.ObjectId(actor.sub),
-        reviewedAt: now,
-        rejectionReason: reason,
-      },
-    },
-    { returnDocument: 'after' },
-  );
-  if (!correction) {
-    const existing = await SusuDepositCorrectionModel.findById(id);
-    if (!existing) throw new AppError('NOT_FOUND', 'Correction not found', 404);
-    throw new AppError('NOT_PENDING', `Correction is already ${existing.status}`, 409);
-  }
-
-  await audit({
-    actorId: actor.sub,
-    action: 'susu.deposit.correction.reject',
-    entityType: 'susu-deposit-correction',
-    entityId: correction._id,
-    after: { reason },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
-
-  const names = await correctionNames([correction]);
-  const number = names.accounts.get(correction.accountId.toHexString())?.accountNumber ?? '';
-  emitAdminEvent('susu.correction.rejected', correctionData(correction));
-  notifyInBackground({
-    userIds: [correction.requestedById],
-    type: 'susu.correction',
-    title: 'Deposit correction declined',
-    body:
-      `The office did not apply your correction on #${number} ` +
-      `(${formatGhs(correction.amountBefore)} to ${formatGhs(correction.amount)}): ${reason}`,
-    data: correctionData(correction),
-  });
-  return toPublicCorrection(correction, names);
-}
-
-/**
- * Whoever asked takes it back before a decision. The office may tidy one away
- * too; another teller may not — a request is its author's until it is decided.
- */
-export async function cancelCorrection(
-  actor: AccessTokenPayload,
-  id: Types.ObjectId,
-  requestId?: string,
-): Promise<PublicDepositCorrection> {
-  const existing = await SusuDepositCorrectionModel.findById(id);
-  if (!existing) throw new AppError('NOT_FOUND', 'Correction not found', 404);
-  const office = actor.role === 'admin' || actor.role === 'manager';
-  if (!office && existing.requestedById.toHexString() !== actor.sub) {
-    throw new AppError('FORBIDDEN', 'Only whoever asked for this correction can cancel it', 403);
-  }
-
-  const correction = await SusuDepositCorrectionModel.findOneAndUpdate(
-    { _id: id, status: 'pending' },
-    {
-      $set: {
-        status: 'cancelled',
-        reviewedById: new Types.ObjectId(actor.sub),
-        reviewedAt: new Date(),
-      },
-    },
-    { returnDocument: 'after' },
-  );
-  if (!correction) {
-    throw new AppError('NOT_PENDING', `Correction is already ${existing.status}`, 409);
-  }
-
-  await audit({
-    actorId: actor.sub,
-    action: 'susu.deposit.correction.cancel',
-    entityType: 'susu-deposit-correction',
-    entityId: correction._id,
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
-  emitAdminEvent('susu.correction.cancelled', correctionData(correction));
-  return publicCorrection(correction);
-}
+};
 
 // ---------------------------------------------------------------- receipts
 

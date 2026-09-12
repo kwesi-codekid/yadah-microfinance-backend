@@ -71,6 +71,13 @@ import {
   type UpdateItemBody,
   type VoidSaleBody,
 } from './hp.schemas.js';
+import {
+  correctionBody,
+  proposeCorrectionBody,
+  type CorrectionBody,
+  type ProposeCorrectionBody,
+} from '../corrections/corrections.schemas.js';
+import * as corrections from '../corrections/corrections.service.js';
 import * as hp from './hp.service.js';
 import * as hpImport from './hp.import.js';
 import * as hpLabels from './hp-labels.service.js';
@@ -708,6 +715,45 @@ hpRouter.post(
     const { params, body } = getValidated<{ params: IdParams; body: RedeemBody }>(req);
     hp.redeem(getAuth(req), params.id, body.idempotencyKey, body.channel, req.id as string)
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Correct the newest instalment's amount. Office only: a figure already on
+// the ledger is changed by a decision. The counter's door is the request
+// below, which the office applies through this same correction.
+hpRouter.patch(
+  '/agreements/:id/payments/:paymentId',
+  requireOffice,
+  validate({ params: paymentIdParams, body: correctionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: PaymentIdParams; body: CorrectionBody }>(req);
+    corrections
+      .correct(
+        getAuth(req),
+        'hp-payment',
+        params.id,
+        params.paymentId,
+        body.amount,
+        req.id as string,
+      )
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// The counter asks; decided under /corrections.
+hpRouter.post(
+  '/agreements/:id/payments/:paymentId/corrections',
+  validate({ params: paymentIdParams, body: proposeCorrectionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: PaymentIdParams;
+      body: ProposeCorrectionBody;
+    }>(req);
+    corrections
+      .propose(getAuth(req), 'hp-payment', params.id, params.paymentId, body, req.id as string)
+      .then((correction) => res.status(201).json({ correction }))
       .catch(next);
   },
 );

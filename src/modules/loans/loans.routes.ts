@@ -27,6 +27,13 @@ import {
   type SusuRepayBody,
   type TrashBody,
 } from './loans.schemas.js';
+import {
+  correctionBody,
+  proposeCorrectionBody,
+  type CorrectionBody,
+  type ProposeCorrectionBody,
+} from '../corrections/corrections.schemas.js';
+import * as corrections from '../corrections/corrections.service.js';
 import * as loansService from './loans.service.js';
 
 // Loans are office territory throughout (admin ≡ manager for now).
@@ -211,6 +218,55 @@ loansRouter.post(
         req.id as string,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Correct the newest cash repayment's amount. Office only: a figure already
+// on the ledger is changed by a decision. The counter's door is the request
+// below, which the office applies through this same correction.
+loansRouter.patch(
+  '/:id/repayments/:repaymentId',
+  requireOffice,
+  validate({ params: repaymentIdParams, body: correctionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: RepaymentIdParams;
+      body: CorrectionBody;
+    }>(req);
+    corrections
+      .correct(
+        getAuth(req),
+        'loan-repayment',
+        params.id,
+        params.repaymentId,
+        body.amount,
+        req.id as string,
+      )
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// The counter asks; decided under /corrections.
+loansRouter.post(
+  '/:id/repayments/:repaymentId/corrections',
+  validate({ params: repaymentIdParams, body: proposeCorrectionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: RepaymentIdParams;
+      body: ProposeCorrectionBody;
+    }>(req);
+    corrections
+      .propose(
+        getAuth(req),
+        'loan-repayment',
+        params.id,
+        params.repaymentId,
+        body,
+        req.id as string,
+      )
+      .then((correction) => res.status(201).json({ correction }))
       .catch(next);
   },
 );

@@ -22,6 +22,13 @@ import {
   type TxnIdParams,
   type WithdrawalBody,
 } from './savings.schemas.js';
+import {
+  correctionBody,
+  proposeCorrectionBody,
+  type CorrectionBody,
+  type ProposeCorrectionBody,
+} from '../corrections/corrections.schemas.js';
+import * as corrections from '../corrections/corrections.service.js';
 import * as savingsService from './savings.service.js';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 
@@ -175,6 +182,40 @@ savingsRouter.delete(
     savingsService
       .trashSavingsTxn(getAuth(req), params.id, params.txnId, body.reason, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Correct the newest transaction's amount. Office only: a figure already on
+// the ledger is changed by a decision. The counter's door is the request
+// below, which the office applies through this same correction.
+savingsRouter.patch(
+  '/accounts/:id/transactions/:txnId',
+  requireOffice,
+  validate({ params: txnIdParams, body: correctionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: TxnIdParams; body: CorrectionBody }>(req);
+    corrections
+      .correct(getAuth(req), 'savings-txn', params.id, params.txnId, body.amount, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// A teller may not correct a transaction, but may ask the office to. Decided
+// under /corrections, which runs the same correction as the PATCH above.
+savingsRouter.post(
+  '/accounts/:id/transactions/:txnId/corrections',
+  requireCounter,
+  validate({ params: txnIdParams, body: proposeCorrectionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{
+      params: TxnIdParams;
+      body: ProposeCorrectionBody;
+    }>(req);
+    corrections
+      .propose(getAuth(req), 'savings-txn', params.id, params.txnId, body, req.id as string)
+      .then((correction) => res.status(201).json({ correction }))
       .catch(next);
   },
 );

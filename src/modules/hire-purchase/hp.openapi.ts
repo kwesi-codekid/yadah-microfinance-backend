@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import {
+  correctionPathsFor,
+  proposeCorrectionPathFor,
+} from '../corrections/corrections.openapi.js';
 import { DAMAGE_CAUSES, DAMAGE_STATUSES, PRICE_KINDS } from '../../models/index.js';
 import {
   IMPORT_COLUMNS as ITEM_IMPORT_COLUMNS,
@@ -390,6 +394,19 @@ const damageSummary = z
   .meta({ id: 'HpDamageSummary' });
 
 const idParam = z.object({ id: z.string() });
+const paymentIdParam = z.object({
+  id: z.string().describe('Agreement id'),
+  paymentId: z.string().describe('Payment id'),
+});
+/** One payment against an agreement, as a correction answers with it. */
+const paymentTxn = z.object({
+  id: z.string(),
+  type: z.enum(['deposit', 'installment', 'redemption']),
+  amount: z.number().int(),
+  channel: z.string(),
+  recordedById: z.string(),
+  createdAt: z.iso.datetime(),
+});
 const stageB =
   ' Installment schedules and payments arrive in Stage B once the client confirms the interest method.';
 
@@ -952,6 +969,25 @@ export const hpPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/hire-purchase/agreements/{id}/payments/{paymentId}': correctionPathsFor(
+    'Hire Purchase',
+    'an instalment',
+    'Only the newest payment can change, and only an instalment: the deposit is fixed ' +
+      'by the agreement and a redemption is the whole remaining balance (CANNOT_CORRECT), ' +
+      'as are transfer legs and Paystack charges. The new amount may not exceed what the ' +
+      'agreement owed before the payment landed (EXCEEDS_BALANCE, details.remaining). ' +
+      'The plan is rebuilt from the new total, oldest instalment first. An instalment ' +
+      'corrected to exactly what was owed completes the agreement; a completion ' +
+      'corrected down reopens it as active.',
+    paymentIdParam,
+    paymentTxn,
+    hpAgreement,
+  ),
+  '/hire-purchase/agreements/{id}/payments/{paymentId}/corrections': proposeCorrectionPathFor(
+    'Hire Purchase',
+    'an instalment',
+    paymentIdParam,
+  ),
   '/hire-purchase/agreements/{id}/payments/{paymentId}/receipt': {
     get: {
       tags: ['Hire Purchase'],

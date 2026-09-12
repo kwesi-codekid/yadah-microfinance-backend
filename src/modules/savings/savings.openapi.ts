@@ -2,6 +2,10 @@ import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
+  correctionPathsFor,
+  proposeCorrectionPathFor,
+} from '../corrections/corrections.openapi.js';
+import {
   depositBody,
   listAccountsQuery,
   listTrashQuery,
@@ -220,6 +224,19 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     },
   },
   '/savings/accounts/{id}/transactions/{txnId}': {
+    ...correctionPathsFor(
+      'Savings',
+      'a deposit or withdrawal',
+      'Only the newest live transaction of an active account can change, for the same ' +
+        'reason only that one can be trashed: every later running balance is built on it. ' +
+        'A withdrawal keeps its flat fee and is checked against what the account held ' +
+        'before it (EXCEEDS_AVAILABLE, details.available); a deposit keeps the GHS 5 ' +
+        'floor (AMOUNT_TOO_SMALL). Transfer legs, Paystack charges and closures cannot ' +
+        'be corrected (CANNOT_CORRECT). The balance and the running balance move with it.',
+      txnIdParam,
+      savingsTxn,
+      savingsAccount,
+    ),
     delete: {
       tags: ['Savings'],
       summary: 'Move a transaction to the trash (office only)',
@@ -261,6 +278,11 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/savings/accounts/{id}/transactions/{txnId}/corrections': proposeCorrectionPathFor(
+    'Savings',
+    'a deposit or withdrawal',
+    txnIdParam,
+  ),
   '/savings/accounts/{id}/txns/{txnId}/receipt': {
     get: {
       tags: ['Savings'],
