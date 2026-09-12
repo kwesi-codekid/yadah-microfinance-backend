@@ -76,6 +76,7 @@ loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next
       body.customerId,
       body.principal,
       body.durationMonths,
+      body.guarantorId,
       body.signatureUrl,
       req.id as string,
     )

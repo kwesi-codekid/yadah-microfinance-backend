@@ -6,9 +6,22 @@ import { ID_DOCUMENT_REQUIRED_MESSAGE } from '../../src/lib/id-document.js';
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import { asOfficer, makeCustomer, makeTeller, setupDb, teardownDb } from './helpers.js';
+import {
+  asOfficer,
+  makeCustomer,
+  makeGuarantor,
+  makeTeller,
+  setupDb,
+  teardownDb,
+} from './helpers.js';
 
-beforeAll(setupDb);
+/** Stands behind every application in this file. One is enough: the rule is
+ *  about who the guarantor is, not how many loans they carry. */
+let guarantor: Types.ObjectId;
+beforeAll(async () => {
+  await setupDb();
+  guarantor = await makeGuarantor();
+});
 afterAll(teardownDb);
 
 const officer = asOfficer();
@@ -49,7 +62,7 @@ describe('the ID document gate', () => {
 
     const itemId = await makeItem(1);
     await expect(
-      hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 }),
+      hp.createAgreement(officer, { customerId, itemId, agreedPrice: 200_000, durationMonths: 3 }),
     ).rejects.toMatchObject({
       code: 'NOT_ELIGIBLE',
       details: { reasons: [ID_DOCUMENT_REQUIRED_MESSAGE] },
@@ -70,7 +83,12 @@ describe('an agreement signed at the counter', () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
 
-    const signed = await hp.createAgreement(teller, { customerId, itemId, durationMonths: 6 });
+    const signed = await hp.createAgreement(teller, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     expect(signed.status).toBe('awaiting-approval');
     // Reserved at signing, exactly as an office-signed one is.
     expect((await HpItemModel.findById(itemId))?.quantityInStock).toBe(0);
@@ -96,7 +114,12 @@ describe('an agreement signed at the counter', () => {
   it('stands at once when the office signs it — they are the approver', async () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
-    const signed = await hp.createAgreement(officer, { customerId, itemId, durationMonths: 6 });
+    const signed = await hp.createAgreement(officer, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     expect(signed.status).toBe('pending');
   });
 
@@ -105,7 +128,12 @@ describe('an agreement signed at the counter', () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
 
-    const signed = await hp.createAgreement(teller, { customerId, itemId, durationMonths: 3 });
+    const signed = await hp.createAgreement(teller, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 3,
+    });
     await hp.rejectAgreement(officer, new Types.ObjectId(signed.id), 'changed their mind');
     expect((await HpItemModel.findById(itemId))?.quantityInStock).toBe(1);
   });
@@ -114,7 +142,12 @@ describe('an agreement signed at the counter', () => {
     const teller = await makeTeller();
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
-    const signed = await hp.createAgreement(teller, { customerId, itemId, durationMonths: 3 });
+    const signed = await hp.createAgreement(teller, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 3,
+    });
     const id = new Types.ObjectId(signed.id);
     await hp.approveAgreement(officer, id);
     await expect(hp.approveAgreement(officer, id)).rejects.toMatchObject({
@@ -129,8 +162,18 @@ describe('hire purchase transactions (Stage A)', () => {
     const itemId = await makeItem(1);
 
     const results = await Promise.allSettled([
-      hp.createAgreement(officer, { customerId: c1, itemId, durationMonths: 6 }),
-      hp.createAgreement(officer, { customerId: c2, itemId, durationMonths: 6 }),
+      hp.createAgreement(officer, {
+        customerId: c1,
+        itemId,
+        agreedPrice: 200_000,
+        durationMonths: 6,
+      }),
+      hp.createAgreement(officer, {
+        customerId: c2,
+        itemId,
+        agreedPrice: 200_000,
+        durationMonths: 6,
+      }),
     ]);
     const ok = results.filter((r) => r.status === 'fulfilled').length;
     expect(ok).toBe(1);
@@ -141,7 +184,12 @@ describe('hire purchase transactions (Stage A)', () => {
   it('rejecting a pending agreement restores stock', async () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
-    const agreement = await hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 });
+    const agreement = await hp.createAgreement(officer, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 3,
+    });
     expect((await HpItemModel.findById(itemId))?.quantityInStock).toBe(0);
 
     await hp.rejectAgreement(officer, new Types.ObjectId(agreement.id), 'changed mind');
@@ -151,7 +199,12 @@ describe('hire purchase transactions (Stage A)', () => {
   it('parallel deposits under one idempotency key record exactly once', async () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
-    const agreement = await hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 });
+    const agreement = await hp.createAgreement(officer, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 3,
+    });
     const agreementId = new Types.ObjectId(agreement.id);
     const key = randomUUID();
 
@@ -173,16 +226,23 @@ describe('hire purchase transactions (Stage A)', () => {
     const itemId = await makeItem(2);
 
     // HP open → loan refused
-    const agreement = await hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 });
-    await expect(loans.applyForLoan(officer, customerId, 100_000, 3)).rejects.toMatchObject({
+    const agreement = await hp.createAgreement(officer, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 3,
+    });
+    await expect(
+      loans.applyForLoan(officer, customerId, 100_000, 3, guarantor),
+    ).rejects.toMatchObject({
       code: 'HP_EXISTS',
     });
 
     // Close the HP (reject), take a loan → HP refused
     await hp.rejectAgreement(officer, new Types.ObjectId(agreement.id), 'test');
-    await loans.applyForLoan(officer, customerId, 100_000, 3);
+    await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
     await expect(
-      hp.createAgreement(officer, { customerId, itemId, durationMonths: 3 }),
+      hp.createAgreement(officer, { customerId, itemId, agreedPrice: 200_000, durationMonths: 3 }),
     ).rejects.toMatchObject({ code: 'NOT_ELIGIBLE' });
   });
 });

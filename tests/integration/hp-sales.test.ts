@@ -55,7 +55,8 @@ describe('recording an outright sale', () => {
     expect(sale.customerId).toBeNull(); // the whole point — no registration needed
     expect(sale.buyerName).toBe('Kwame Asare');
     expect(sale.total).toBe(10_000);
-    expect(sale.discount).toBe(0);
+    expect(sale.listedTotal).toBe(10_000); // nothing was bargained
+
     expect(sale.lines).toHaveLength(1);
     expect(await stockOf(itemId)).toBe(8);
   });
@@ -97,7 +98,10 @@ describe('recording an outright sale', () => {
     expect(await stockOf(iron)).toBe(4);
   });
 
-  it('records a haggled price against the list price', async () => {
+  // The price is settled at the counter, and the settled price IS the sale:
+  // a television listed at 5,000 and given for 4,500 is a 4,500 sale, not
+  // 5,000 with 500 taken off. The shelf figure is kept to compare against.
+  it('sells below the shelf price at the price agreed', async () => {
     const itemId = await makeItem(5, 5_000, 3_000);
 
     const { sale } = await hp.recordSale(officer, {
@@ -108,10 +112,31 @@ describe('recording an outright sale', () => {
     });
 
     expect(sale.total).toBe(4_500);
-    expect(sale.subtotal).toBe(5_000);
-    expect(sale.discount).toBe(500);
+    expect(sale.listedTotal).toBe(5_000);
     expect(sale.lines[0]?.listPrice).toBe(5_000);
     expect(sale.lines[0]?.unitPrice).toBe(4_500);
+  });
+
+  // The other direction, which the old derived discount could not survive:
+  // `subtotal − total` went negative and failed the model's `min: 0`, so a
+  // counter that bargained upwards got a 500 instead of a sale.
+  it('sells above the shelf price when that is what was agreed', async () => {
+    const itemId = await makeItem(5, 5_000, 3_000);
+
+    const { sale } = await hp.recordSale(officer, {
+      buyerName: 'Akosua Mensah',
+      lines: [{ itemId, quantity: 2, unitPrice: 6_500 }],
+      idempotencyKey: randomUUID(),
+      channel: 'cash',
+    });
+
+    expect(sale.total).toBe(13_000);
+    expect(sale.listedTotal).toBe(10_000);
+    expect(sale.lines[0]?.unitPrice).toBe(6_500);
+    // Revenue and the margin follow the price charged, not the shelf price.
+    const stored = await HpSaleModel.findById(new Types.ObjectId(sale.id));
+    expect(stored?.total).toBe(13_000);
+    expect(stored?.profit).toBe(13_000 - 6_000);
   });
 
   it('keeps cost and profit off the customer-facing shape', async () => {

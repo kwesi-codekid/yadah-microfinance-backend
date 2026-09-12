@@ -56,3 +56,21 @@ export function computeHpFinancing(financedAmount: number, ratePercent: number):
   const interestAmount = Math.round((financedAmount * ratePercent) / 100);
   return { interestAmount, totalPayable: financedAmount + interestAmount };
 }
+
+/**
+ * What an agreement is actually priced at.
+ *
+ * The counter and the customer settle on a figure, which may be above or below
+ * what the shelf listed — a television listed at GHS 1,200 and given for GHS
+ * 1,000 is a GHS 1,000 agreement, and every figure that follows comes off that.
+ * The listed price is kept beside it only so a report can show what was asked.
+ *
+ * Agreements signed before negotiated pricing carry no agreed price; they fall
+ * back to the listed one, which is what they were genuinely built from.
+ */
+export function agreementPrice(agreement: {
+  agreedPrice?: number;
+  itemSnapshot: { sellingPrice: number };
+}): number {
+  return agreement.agreedPrice ?? agreement.itemSnapshot.sellingPrice;
+}

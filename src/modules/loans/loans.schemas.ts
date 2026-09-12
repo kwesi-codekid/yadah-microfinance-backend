@@ -15,6 +15,12 @@ export const applyBody = z.object({
   customerId: objectId,
   principal: positiveMoneyPesewas,
   durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]),
+  /**
+   * Another registered customer who stands behind the loan. Required: they must
+   * be active, must not be the borrower, and must be identified as fully as the
+   * borrower — an ID recorded and both sides of it photographed.
+   */
+  guarantorId: objectId,
   /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
   signatureUrl: uploadedImageUrl,
 });

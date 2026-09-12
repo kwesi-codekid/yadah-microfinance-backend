@@ -232,6 +232,15 @@ export const createAgreementBody = z.object({
   customerId: objectId,
   itemId: objectId,
   durationMonths: z.number().int().min(1).max(24),
+  /**
+   * What the customer actually agreed to pay for the item, in pesewas.
+   *
+   * Required, and entered every time — the counter types the figure they
+   * settled on, which is often just the listed price again. It may be above or
+   * below what the shelf lists, and it is what the deposit, the financed half,
+   * the interest and every instalment are worked out from.
+   */
+  agreedPrice: positiveMoneyPesewas.min(2, 'The agreed price is too small to split in half'),
   /** A picture of the customer's signature on the agreement, from POST /uploads/images?kind=signature. */
   signatureUrl: uploadedImageUrl,
 });
@@ -318,9 +327,10 @@ export type ListAgreementsQuery = z.infer<typeof listAgreementsQuery>;
 // ---- outright sales (counter / POS)
 
 /**
- * One basket line. `unitPrice` is optional and defaults to the item's current
- * selling price — pass it only to record a haggled or discounted price, which
- * is then visible against the list price on the sale.
+ * One basket line. `unitPrice` is what the counter and the buyer settled on,
+ * and it is the price the sale is written at. It may sit below the shelf price
+ * or above it — bargaining runs both ways — and it is optional only so that a
+ * basket sold at the shelf price need not repeat it.
  */
 const saleLineBody = z.object({
   itemId: objectId,

@@ -39,6 +39,21 @@ const publicLoan = z
       .string()
       .optional()
       .describe("A picture of the customer's signature on the application"),
+    guarantorId: z
+      .string()
+      .optional()
+      .describe(
+        'The customer standing behind the loan. Absent on loans written before guarantors.',
+      ),
+    guarantor: z
+      .object({
+        fullName: z.string(),
+        phone: z.string(),
+        idType: z.string().optional(),
+        idNumber: z.string().optional(),
+      })
+      .optional()
+      .describe('The guarantor as they were when the application was signed'),
   })
   .meta({ id: 'Loan' });
 
@@ -94,7 +109,10 @@ export const loanPaths: ZodOpenApiPathsObject = {
             customer: z.object({
               id: z.string(),
               fullName: z.string(),
-              hasGhanaCard: z.boolean(),
+              hasGhanaCard: z
+                .boolean()
+                .describe('Informational only — any ID type may back a loan'),
+              hasId: z.boolean().describe('An ID type and number are recorded'),
               hasIdDocument: z
                 .boolean()
                 .describe('Both sides of the ID uploaded — required to apply and to approve'),
@@ -123,15 +141,23 @@ export const loanPaths: ZodOpenApiPathsObject = {
         'Tiers: small 1,000–20,000, big to 50,000 GHS. Requires a Ghana Card and both ' +
         'sides of the ID document on the profile (ID_DOCUMENT_REQUIRED; checked again at ' +
         'approval). One open loan per customer — a second application is always ' +
-        'refused. Big tier requires a previous small loan repaid on time.',
+        'refused. Big tier requires a previous small loan repaid on time. ' +
+        'A GUARANTOR is required: another registered customer who is active, is not ' +
+        'the borrower, and is identified as fully as the borrower — an ID recorded ' +
+        'and both sides of it photographed. Any of the four ID types is accepted for ' +
+        'either party. The guarantor is snapshotted onto the loan, so the undertaking ' +
+        'keeps the name, phone and ID it was signed against.',
       security,
       requestBody: jsonBody(applyBody),
       responses: {
         '201': jsonResponse('Application recorded (pending)', loanResult),
         '409': errorResponse('LOAN_EXISTS — customer already has an open loan'),
+        '404': errorResponse('NOT_FOUND, or GUARANTOR_NOT_FOUND'),
         '422': errorResponse(
-          'GHANA_CARD_REQUIRED, ID_DOCUMENT_REQUIRED, PRINCIPAL_OUT_OF_RANGE, BIG_TIER_LOCKED, ' +
-            'or CUSTOMER_INACTIVE',
+          'ID_REQUIRED, ID_DOCUMENT_REQUIRED, PRINCIPAL_OUT_OF_RANGE, BIG_TIER_LOCKED, ' +
+            'CUSTOMER_INACTIVE, GUARANTOR_IS_BORROWER, GUARANTOR_INACTIVE, or ' +
+            'GUARANTOR_ID_INCOMPLETE (details.missing names which halves of the ID are ' +
+            'absent)',
         ),
       },
     },

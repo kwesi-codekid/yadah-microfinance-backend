@@ -12,9 +12,15 @@ import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
+import { asOfficer, makeCustomer, makeGuarantor, setupDb, teardownDb } from './helpers.js';
 
-beforeAll(setupDb);
+/** Stands behind every application in this file. One is enough: the rule is
+ *  about who the guarantor is, not how many loans they carry. */
+let guarantor: Types.ObjectId;
+beforeAll(async () => {
+  await setupDb();
+  guarantor = await makeGuarantor();
+});
 afterAll(teardownDb);
 
 const officer = asOfficer();
@@ -124,15 +130,17 @@ describe('savings account trash', () => {
 describe('loan trash', () => {
   it('trashed pending loan frees the one-open-loan slot; restore re-checks it', async () => {
     const customerId = await makeCustomer(true);
-    const first = await loans.applyForLoan(officer, customerId, 100_000, 3);
+    const first = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
     const firstId = new Types.ObjectId(first.id);
 
-    await expect(loans.applyForLoan(officer, customerId, 200_000, 3)).rejects.toMatchObject({
+    await expect(
+      loans.applyForLoan(officer, customerId, 200_000, 3, guarantor),
+    ).rejects.toMatchObject({
       code: 'LOAN_EXISTS',
     });
 
     await loans.trashLoan(officer, firstId, 'entered wrong amount');
-    const second = await loans.applyForLoan(officer, customerId, 200_000, 3);
+    const second = await loans.applyForLoan(officer, customerId, 200_000, 3, guarantor);
     expect(second.status).toBe('pending');
 
     await expect(loans.restoreLoan(officer, firstId)).rejects.toMatchObject({
@@ -142,7 +150,7 @@ describe('loan trash', () => {
 
   it('active loans can never be trashed', async () => {
     const customerId = await makeCustomer(true);
-    const loan = await loans.applyForLoan(officer, customerId, 100_000, 3);
+    const loan = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
     const loanId = new Types.ObjectId(loan.id);
     await loans.approveLoan(officer, loanId);
 
@@ -156,7 +164,12 @@ describe('hire purchase trash', () => {
   it('trashing a pending agreement restocks the item; restore takes the stock back', async () => {
     const customerId = await makeEligibleCustomer();
     const itemId = await makeItem(1);
-    const agreement = await hp.createAgreement(officer, { customerId, itemId, durationMonths: 6 });
+    const agreement = await hp.createAgreement(officer, {
+      customerId,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     const agreementId = new Types.ObjectId(agreement.id);
     expect((await HpItemModel.findById(itemId))?.quantityInStock).toBe(0);
 
@@ -170,10 +183,20 @@ describe('hire purchase trash', () => {
   it('restore fails with OUT_OF_STOCK when the freed unit was sold meanwhile', async () => {
     const [c1, c2] = await Promise.all([makeEligibleCustomer(), makeEligibleCustomer()]);
     const itemId = await makeItem(1);
-    const first = await hp.createAgreement(officer, { customerId: c1, itemId, durationMonths: 6 });
+    const first = await hp.createAgreement(officer, {
+      customerId: c1,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     await hp.trashHpAgreement(officer, new Types.ObjectId(first.id), undefined);
 
-    await hp.createAgreement(officer, { customerId: c2, itemId, durationMonths: 6 });
+    await hp.createAgreement(officer, {
+      customerId: c2,
+      itemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     await expect(
       hp.restoreHpAgreement(officer, new Types.ObjectId(first.id)),
     ).rejects.toMatchObject({ code: 'OUT_OF_STOCK' });
@@ -182,7 +205,12 @@ describe('hire purchase trash', () => {
   it('items referenced by any agreement cannot be trashed; unused items can', async () => {
     const customerId = await makeEligibleCustomer();
     const usedItemId = await makeItem(2);
-    await hp.createAgreement(officer, { customerId, itemId: usedItemId, durationMonths: 6 });
+    await hp.createAgreement(officer, {
+      customerId,
+      itemId: usedItemId,
+      agreedPrice: 200_000,
+      durationMonths: 6,
+    });
     await expect(hp.trashHpItem(officer, usedItemId, undefined)).rejects.toMatchObject({
       code: 'CANNOT_TRASH',
     });

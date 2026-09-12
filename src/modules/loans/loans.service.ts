@@ -6,7 +6,7 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
-import { hasIdDocument, idDocumentRequired } from '../../lib/id-document.js';
+import { hasIdDocument, idDocumentRequired, missingIdParts } from '../../lib/id-document.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
   CustomerModel,
@@ -95,6 +95,15 @@ export interface PublicLoan {
   accountNumber?: string;
   customerId: string;
   customerName?: string;
+  /** Who stands behind it. Absent on loans written before guarantors existed. */
+  guarantorId?: string;
+  /** The guarantor as they were when the application was signed. */
+  guarantor?: {
+    fullName: string;
+    phone: string;
+    idType?: string;
+    idNumber?: string;
+  };
   tier: 'small' | 'big';
   principal: number;
   durationMonths: number;
@@ -122,6 +131,8 @@ export function toPublicLoan(l: Loan): PublicLoan {
     id: l._id.toHexString(),
     ...(l.accountNumber !== undefined ? { accountNumber: l.accountNumber } : {}),
     customerId: l.customerId.toHexString(),
+    ...(l.guarantorId !== undefined ? { guarantorId: l.guarantorId.toHexString() } : {}),
+    ...(l.guarantorSnapshot !== undefined ? { guarantor: l.guarantorSnapshot } : {}),
     tier: l.tier,
     principal: l.principal,
     durationMonths: l.durationMonths,
@@ -149,6 +160,10 @@ export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
   return {
     id: item.id,
     customerName: item.customerName ?? '',
+    // Appended at the end would read oddly beside the borrower; the guarantor
+    // belongs next to the person they are standing behind.
+    guarantorName: item.guarantor?.fullName ?? '',
+    guarantorPhone: item.guarantor?.phone ?? '',
     tier: item.tier,
     principal: item.principal,
     durationMonths: item.durationMonths,
@@ -171,7 +186,16 @@ const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
 // ---------------------------------------------------------------- eligibility
 
 export interface EligibilitySummary {
-  customer: { id: string; fullName: string; hasGhanaCard: boolean; hasIdDocument: boolean };
+  customer: {
+    id: string;
+    fullName: string;
+    /** Informational only — any ID type may back a loan. */
+    hasGhanaCard: boolean;
+    /** An ID type and number are recorded. */
+    hasId: boolean;
+    /** Both sides of the ID are photographed. */
+    hasIdDocument: boolean;
+  };
   firstActivityAt: Date | null;
   monthsOfHistory: number;
   susu: { accounts: number; activeAccounts: number; totalDeposited: number };
@@ -218,7 +242,10 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
     customer: {
       id: customer._id.toHexString(),
       fullName: customer.fullName,
+      // Kept for the screens that still read it, but no longer a condition of
+      // lending: any ID type is accepted.
       hasGhanaCard: customer.identification?.idType === 'ghana-card',
+      hasId: Boolean(customer.identification?.idNumber),
       hasIdDocument: hasIdDocument(customer),
     },
     firstActivityAt,
@@ -239,11 +266,67 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
 
 // ---------------------------------------------------------------- application
 
+/**
+ * The guarantor: another registered customer who stands behind the loan.
+ *
+ * Held to the same identification bar as the borrower — an ID recorded and both
+ * sides of it photographed — because a guarantor nobody can identify is not a
+ * guarantor. Any of the four ID types will do; which document it is has never
+ * been the point.
+ *
+ * Returns the snapshot the loan stores, so the undertaking keeps the details it
+ * was signed against even if the guarantor later changes them.
+ */
+async function resolveGuarantor(
+  borrowerId: Types.ObjectId,
+  guarantorId: Types.ObjectId,
+): Promise<NonNullable<Loan['guarantorSnapshot']>> {
+  if (guarantorId.equals(borrowerId)) {
+    throw new AppError(
+      'GUARANTOR_IS_BORROWER',
+      'A customer cannot guarantee their own loan — choose somebody else',
+      422,
+    );
+  }
+  const guarantor = await CustomerModel.findOne({ _id: guarantorId, ...NOT_TRASHED });
+  if (!guarantor) {
+    throw new AppError('GUARANTOR_NOT_FOUND', 'That guarantor is not on our books', 404);
+  }
+  if (guarantor.status !== 'active') {
+    throw new AppError(
+      'GUARANTOR_INACTIVE',
+      `${guarantor.fullName} is deactivated and cannot stand behind a loan`,
+      422,
+    );
+  }
+  const missing = missingIdParts(guarantor);
+  if (missing.length > 0) {
+    throw new AppError(
+      'GUARANTOR_ID_INCOMPLETE',
+      `${guarantor.fullName} cannot guarantee a loan yet — ${missing.join(' and ')} ` +
+        'is missing from their profile',
+      422,
+      { guarantorId: guarantorId.toHexString(), missing },
+    );
+  }
+  return {
+    fullName: guarantor.fullName,
+    phone: guarantor.phone,
+    ...(guarantor.identification?.idType !== undefined
+      ? { idType: guarantor.identification.idType }
+      : {}),
+    ...(guarantor.identification?.idNumber !== undefined
+      ? { idNumber: guarantor.identification.idNumber }
+      : {}),
+  };
+}
+
 export async function applyForLoan(
   actor: AccessTokenPayload,
   customerId: Types.ObjectId,
   principal: number,
   durationMonths: LoanDuration,
+  guarantorId: Types.ObjectId,
   signatureUrl?: string,
   requestId?: string,
 ): Promise<PublicLoan> {
@@ -252,15 +335,17 @@ export async function applyForLoan(
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
   }
-  if (customer.identification?.idType !== 'ghana-card') {
+  // Any of the four ID types is accepted (client decision, 12 Sep 2026 — this
+  // used to demand a Ghana Card). What a loan turns on is that the borrower is
+  // identified at all: an ID recorded, and both sides of it photographed. The
+  // customer service refuses to remove either while this loan stays open.
+  if (!customer.identification?.idNumber) {
     throw new AppError(
-      'GHANA_CARD_REQUIRED',
-      'Loans require a Ghana Card on the customer profile',
+      'ID_REQUIRED',
+      'No ID on the customer profile — record the ID type and number first',
       422,
     );
   }
-  // Both sides of the ID must be uploaded before any credit opens — and the
-  // customer service refuses to remove them while this loan stays open.
   if (!hasIdDocument(customer)) throw idDocumentRequired();
 
   // One open loan per customer — always refused, no exception paths (rule 7).
@@ -288,6 +373,11 @@ export async function applyForLoan(
     );
   }
 
+  // Checked before the numbers are worked out: a loan with no valid guarantor
+  // is not going to be written, and the counter should hear about the guarantor
+  // rather than about the tier.
+  const guarantorSnapshot = await resolveGuarantor(customerId, guarantorId);
+
   const config = await getLoanConfig();
   const tier = tierFor(principal, config.tiers);
   if (!tier) {
@@ -310,6 +400,8 @@ export async function applyForLoan(
   const loan = await LoanModel.create({
     accountNumber: await nextAccountNumber('LN'),
     customerId,
+    guarantorId,
+    guarantorSnapshot,
     tier,
     principal,
     durationMonths,
@@ -326,7 +418,14 @@ export async function applyForLoan(
     entityType: 'loan',
     entityId: loan._id,
     amountAfter: loan.totalDue,
-    after: { principal, durationMonths, tier, ratePercent },
+    after: {
+      principal,
+      durationMonths,
+      tier,
+      ratePercent,
+      guarantorId: guarantorId.toHexString(),
+      guarantorName: guarantorSnapshot.fullName,
+    },
     ...(requestId !== undefined ? { requestId } : {}),
   });
   emitAdminEvent('loan.applied', {
@@ -1187,6 +1286,17 @@ export async function disbursementReceipt(loanId: Types.ObjectId): Promise<Recei
     { label: 'Interest', value: formatGhs(loan.interestAmount) },
     { label: 'Total repayable', value: formatGhs(loan.totalDue), emphasis: true },
     ...(loan.dueDate ? [{ label: 'Due by', value: accraDay(loan.dueDate) }] : []),
+    // On the receipt because it is on the paper: the guarantor's copy of who
+    // stood behind this money is the whole point of taking one.
+    ...(loan.guarantorSnapshot
+      ? [
+          { label: 'Guarantor', value: loan.guarantorSnapshot.fullName },
+          { label: 'Guarantor phone', value: loan.guarantorSnapshot.phone },
+          ...(loan.guarantorSnapshot.idNumber
+            ? [{ label: 'Guarantor ID', value: loan.guarantorSnapshot.idNumber }]
+            : []),
+        ]
+      : []),
   ];
 
   const buffer = await buildReceiptPdf({

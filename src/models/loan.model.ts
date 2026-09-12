@@ -16,6 +16,30 @@ export interface Loan extends TrashFields {
    */
   accountNumber?: string;
   customerId: Types.ObjectId;
+  /**
+   * Who stands behind the loan if the borrower does not pay — another
+   * registered customer, identified as fully as the borrower is: an ID
+   * recorded and both sides of it photographed.
+   *
+   * Optional on the model and required on new applications. Loans written
+   * before guarantors existed have none, and making the field required would
+   * make every one of those records invalid.
+   */
+  guarantorId?: Types.ObjectId;
+  /**
+   * The guarantor as they were when the application was signed.
+   *
+   * Snapshotted for the same reason HpAgreement.itemSnapshot is: this is what
+   * the paper the guarantor put their name to actually said. They may later
+   * change their phone, or replace the ID they stood behind it with, and none
+   * of that may quietly rewrite a signed undertaking.
+   */
+  guarantorSnapshot?: {
+    fullName: string;
+    phone: string;
+    idType?: string;
+    idNumber?: string;
+  };
   tier: 'small' | 'big';
   principal: number; // pesewas, never changes
   durationMonths: 3 | 6 | 12;
@@ -46,6 +70,19 @@ const loanSchema = new Schema<Loan>(
     // Sparse: pre-scheme loans carry no number until the migration runs.
     accountNumber: { type: String, unique: true, sparse: true, match: /^LN\d{8}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
+    guarantorId: { type: Schema.Types.ObjectId, ref: 'Customer' },
+    guarantorSnapshot: {
+      type: new Schema(
+        {
+          fullName: { type: String, required: true, trim: true },
+          phone: { type: String, required: true, trim: true },
+          idType: { type: String },
+          idNumber: { type: String },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     tier: { type: String, enum: ['small', 'big'], required: true },
     principal: { ...moneyField, immutable: true },
     durationMonths: { type: Number, enum: [3, 6, 12], required: true },
@@ -75,6 +112,9 @@ const loanSchema = new Schema<Loan>(
 );
 
 loanSchema.index({ customerId: 1, status: 1 });
+// "What is this customer standing behind?" — asked before accepting them as a
+// guarantor again, and on their own record.
+loanSchema.index({ guarantorId: 1, status: 1 });
 loanSchema.index({ status: 1, dueDate: 1 }); // overdue cron scans
 
 export const LoanModel = model<Loan>('Loan', loanSchema, 'loans');

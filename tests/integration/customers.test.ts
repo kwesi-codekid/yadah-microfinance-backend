@@ -10,13 +10,23 @@ import {
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import { CLOUDINARY, asOfficer, makeCollector, setupDb, teardownDb } from './helpers.js';
+import {
+  CLOUDINARY,
+  asOfficer,
+  makeCollector,
+  makeGuarantor,
+  setupDb,
+  teardownDb,
+} from './helpers.js';
 
 /** Every registration joins a collector's round; one is made for the file. */
 let collectorId: string;
+/** Stands behind the one loan this file opens. */
+let guarantor: Types.ObjectId;
 async function setup(): Promise<void> {
   await setupDb();
   collectorId = (await makeCollector()).sub;
+  guarantor = await makeGuarantor();
 }
 beforeAll(setup);
 afterAll(teardownDb);
@@ -173,7 +183,7 @@ describe('the ID document and open credit', () => {
   it('stays on file while a loan is open — replaceable, never removable', async () => {
     const created = await createCustomer(officer, registration({ identification: ghanaCard() }));
     const customerId = new Types.ObjectId(created.id);
-    const loan = await loans.applyForLoan(officer, customerId, 100_000, 3);
+    const loan = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
 
     await expect(
       updateCustomer(officer, customerId, patch({ idDocumentBackUrl: '' })),
@@ -216,6 +226,7 @@ describe('the ID document and open credit', () => {
     await hp.createAgreement(officer, {
       customerId,
       itemId: new Types.ObjectId(item.id),
+      agreedPrice: 200_000,
       durationMonths: 3,
     });
 

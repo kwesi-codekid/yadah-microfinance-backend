@@ -9,9 +9,15 @@ import {
 import { runEscalationPass } from '../../src/lib/loan-escalation.js';
 import { runHpArrearsPass } from '../../src/lib/hp-arrears.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
-import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
+import { asOfficer, makeCustomer, makeGuarantor, setupDb, teardownDb } from './helpers.js';
 
-beforeAll(setupDb);
+/** Stands behind every application in this file. One is enough: the rule is
+ *  about who the guarantor is, not how many loans they carry. */
+let guarantor: Types.ObjectId;
+beforeAll(async () => {
+  await setupDb();
+  guarantor = await makeGuarantor();
+});
 afterAll(teardownDb);
 
 const officer = asOfficer();
@@ -21,7 +27,7 @@ const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 /** Active loan whose disbursement is backdated `months` months. */
 async function overdueLoan(months: number): Promise<Types.ObjectId> {
   const customerId = await makeCustomer(true);
-  const applied = await loans.applyForLoan(officer, customerId, 100_000, 3);
+  const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
   const loanId = new Types.ObjectId(applied.id);
   await loans.approveLoan(officer, loanId);
   const past = new Date(Date.now() - months * MONTH_MS);

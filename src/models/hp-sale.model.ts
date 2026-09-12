@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { CHANNELS, moneyField, type Channel } from './shared.js';
+import { CHANNELS, moneyField, optionalMoneyField, type Channel } from './shared.js';
 
 /**
  * An outright sale from the hire-purchase stock — the counter/POS case the
@@ -22,9 +22,13 @@ export interface HpSaleLine {
   /** Snapshot — the item may be renamed or discontinued later. */
   name: string;
   quantity: number;
-  /** What was actually charged per unit, pesewas. */
+  /**
+   * What the customer actually agreed to pay per unit, in pesewas — the price
+   * of this sale. It may be above or below the shelf price; that is what
+   * haggling is.
+   */
   unitPrice: number;
-  /** The item's listed selling price at the time — makes a discount visible. */
+  /** The shelf price at the time, so a report can compare. Reference only. */
   listPrice: number;
   /** Yadah's cost at the time, pesewas. Never exposed to customers. */
   unitCost: number;
@@ -40,11 +44,23 @@ export interface HpSale {
   buyerName: string;
   buyerPhone?: string;
   lines: HpSaleLine[];
-  /** Sum of listPrice × quantity — what the basket would have cost at list. */
+  /**
+   * Sum of listPrice × quantity — what the basket would have come to at the
+   * shelf prices. Reference only: it is not what anybody owes.
+   */
   subtotal: number;
-  /** subtotal − total. Zero unless a line was sold below list. */
-  discount: number;
-  /** What the buyer actually paid. */
+  /**
+   * Retained for sales written before negotiated pricing, where it held
+   * `subtotal − total`.
+   *
+   * No longer written. A price settled at the counter IS the price — a
+   * television listed at GHS 1,200 and given for GHS 1,000 is a GHS 1,000 sale,
+   * not GHS 1,200 with GHS 200 taken off — so there is nothing to derive. It
+   * also could not survive the change: the field is `min: 0`, and a price above
+   * the listed one made it negative and failed validation outright.
+   */
+  discount?: number;
+  /** What the buyer actually paid, and what the sale IS. */
   total: number;
   /** Sum of unitCost × quantity. Internal only. */
   totalCost: number;
@@ -85,7 +101,8 @@ const hpSaleSchema = new Schema<HpSale>(
     buyerPhone: { type: String, trim: true },
     lines: { type: [hpSaleLineSchema], required: true },
     subtotal: moneyField,
-    discount: { ...moneyField, default: 0 },
+    // Legacy: no longer written. See the note on the interface.
+    discount: optionalMoneyField,
     total: moneyField,
     totalCost: moneyField,
     profit: { type: Number, required: true },

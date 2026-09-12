@@ -18,6 +18,7 @@ import { addMonthsClamped, allocateRepayment, buildSchedule } from '../../domain
 import {
   HP_ELIGIBILITY_MIN_MONTHS,
   HP_REDEMPTION_WINDOW_MONTHS,
+  agreementPrice,
   computeDepositSplit,
   computeHpFinancing,
   validatePricing,
@@ -542,6 +543,10 @@ export interface PublicHpAgreement {
   customerId: string;
   customerName?: string;
   item: { name: string; description?: string; sellingPrice: number };
+  /** What the customer agreed to pay — the figure the agreement is built from. */
+  agreedPrice: number;
+  /** What the shelf listed it at when this was signed. Reference only. */
+  listedPrice: number;
   depositRequired: number;
   financedAmount: number;
   durationMonths: number;
@@ -583,6 +588,10 @@ function toPublicAgreement(a: HpAgreement): PublicHpAgreement {
         : {}),
       sellingPrice: a.itemSnapshot.sellingPrice,
     },
+    // What the agreement is actually priced at, and what the shelf listed.
+    // Both, because the difference is the question the office asks.
+    agreedPrice: agreementPrice(a),
+    listedPrice: a.itemSnapshot.sellingPrice,
     depositRequired: a.depositRequired,
     financedAmount: a.financedAmount,
     durationMonths: a.durationMonths,
@@ -610,6 +619,10 @@ export function toHpAgreementExportRow(a: PublicHpAgreement): Record<string, unk
     id: a.id,
     customerName: a.customerName ?? '',
     itemName: a.item.name,
+    // Both figures, because the office reads reports to find where prices
+    // moved. `agreedPrice` is what the agreement was written on.
+    listedPrice: a.listedPrice,
+    agreedPrice: a.agreedPrice,
     depositRequired: a.depositRequired,
     financedAmount: a.financedAmount,
     interestRatePercent: a.interestRatePercent,
@@ -643,8 +656,12 @@ export async function createAgreement(
   if (item.quantityInStock < 1) {
     throw new AppError('OUT_OF_STOCK', 'Item is out of stock', 422);
   }
-  validatePricing(item.costPrice, item.sellingPrice);
-  const { depositRequired, financedAmount } = computeDepositSplit(item.sellingPrice);
+  // The price the counter and the customer settled on. It may be above or below
+  // the listed one — that is the point of asking — and everything downstream is
+  // built from it: the deposit, the financed half, the interest, the
+  // instalments, the receipts and the reports.
+  const agreedPrice = body.agreedPrice;
+  const { depositRequired, financedAmount } = computeDepositSplit(agreedPrice);
   const config = await getHpConfig();
   // Reserved before the session opens — the counter must not join the money
   // transaction (see lib/account-number.ts).
@@ -673,8 +690,10 @@ export async function createAgreement(
               name: item.name,
               ...(item.description !== undefined ? { description: item.description } : {}),
               costPrice: item.costPrice,
+              // The listed price, kept for comparison. The deal is agreedPrice.
               sellingPrice: item.sellingPrice,
             },
+            agreedPrice,
             depositRequired,
             financedAmount,
             durationMonths: body.durationMonths,
@@ -696,9 +715,15 @@ export async function createAgreement(
           action: 'hp.agreement.create',
           entityType: 'hp-agreement',
           entityId: agreement._id,
-          amountAfter: item.sellingPrice,
+          amountAfter: agreedPrice,
           after: {
             item: item.name,
+            listedPrice: item.sellingPrice,
+            agreedPrice,
+            // Not refused — the counter is allowed to settle where it settles —
+            // but a deal struck under what the item cost is worth being able to
+            // find later.
+            ...(agreedPrice < item.costPrice ? { belowCost: true } : {}),
             depositRequired,
             financedAmount,
             durationMonths: body.durationMonths,
@@ -1724,8 +1749,9 @@ export interface PublicHpSale {
   buyerName: string;
   buyerPhone?: string;
   lines: PublicHpSaleLine[];
-  subtotal: number;
-  discount: number;
+  /** What the basket would have come to at shelf prices. Reference only. */
+  listedTotal: number;
+  /** What the buyer actually paid, and what the sale IS. */
   total: number;
   channel: string;
   soldById: string;
@@ -1751,8 +1777,9 @@ export function toPublicSale(sale: HpSale): PublicHpSale {
       listPrice: l.listPrice,
       lineTotal: l.lineTotal,
     })),
-    subtotal: sale.subtotal,
-    discount: sale.discount,
+    // What the shelf would have come to, and what was actually charged. The
+    // office reads the gap between them; nobody owes the subtotal.
+    listedTotal: sale.subtotal,
     total: sale.total,
     channel: sale.channel,
     soldById: sale.soldById.toHexString(),
@@ -1773,8 +1800,7 @@ export function toSaleExportRow(sale: HpSale): Record<string, unknown> {
     buyerPhone: sale.buyerPhone ?? '',
     registeredCustomer: sale.customerId ? 'yes' : 'no',
     items: sale.lines.map((l) => `${l.name} x${String(l.quantity)}`).join('; '),
-    subtotal: sale.subtotal,
-    discount: sale.discount,
+    listedTotal: sale.subtotal,
     total: sale.total,
     totalCost: sale.totalCost,
     profit: sale.profit,
@@ -1855,7 +1881,10 @@ export async function recordSale(
     });
   }
 
-  const subtotal = lines.reduce((sum, l) => sum + l.listPrice * l.quantity, 0);
+  // Two different figures, and only the second one is the sale. `listedTotal`
+  // is what the shelf said; `total` is what was agreed and charged, which may
+  // land above the shelf price as easily as below it.
+  const listedTotal = lines.reduce((sum, l) => sum + l.listPrice * l.quantity, 0);
   const total = lines.reduce((sum, l) => sum + l.lineTotal, 0);
   const totalCost = lines.reduce((sum, l) => sum + l.unitCost * l.quantity, 0);
 
@@ -1884,8 +1913,7 @@ export async function recordSale(
             buyerName,
             ...(buyerPhone !== undefined ? { buyerPhone } : {}),
             lines,
-            subtotal,
-            discount: subtotal - total,
+            subtotal: listedTotal,
             total,
             totalCost,
             profit: total - totalCost,
@@ -1916,8 +1944,7 @@ export async function recordSale(
               quantity: l.quantity,
               unitPrice: l.unitPrice,
             })),
-            subtotal,
-            discount: subtotal - total,
+            listedTotal,
             total,
             profit: total - totalCost,
             channel: body.channel,
@@ -2102,15 +2129,11 @@ export async function saleReceipt(saleId: Types.ObjectId): Promise<SaleReceiptFi
 
   const lines: ReceiptLine[] = sale.lines.map((l) => ({
     label: `${l.name} x ${String(l.quantity)}`,
-    value:
-      l.unitPrice === l.listPrice
-        ? formatGhs(l.lineTotal)
-        : `${formatGhs(l.lineTotal)} (list ${formatGhs(l.listPrice * l.quantity)})`,
+    // The price agreed at the counter, and nothing beside it. A price settled
+    // on IS the price: printing the shelf figure next to it would tell the
+    // customer they were given a discount off something they never owed.
+    value: formatGhs(l.lineTotal),
   }));
-  if (sale.discount > 0) {
-    lines.push({ label: 'Subtotal at list', value: formatGhs(sale.subtotal) });
-    lines.push({ label: 'Discount', value: `less ${formatGhs(sale.discount)}` });
-  }
   lines.push({ label: 'Total paid', value: formatGhs(sale.total), emphasis: true });
   lines.push({ label: 'Payment method', value: sale.channel });
   if (sale.status === 'voided') {
@@ -2179,6 +2202,9 @@ export async function agreementPaymentReceipt(
   const paid = paidRows[0]?.paid ?? 0;
 
   const lines: ReceiptLine[] = [{ label: 'Item', value: agreement.itemSnapshot.name }];
+  // The customer's copy quotes the price they agreed to, not the shelf price.
+  // What was listed is the branch's business; what was settled on is theirs.
+  lines.push({ label: 'Agreed price', value: formatGhs(agreementPrice(agreement)) });
   if (payment.type === 'deposit') {
     lines.push({ label: 'Deposit required', value: formatGhs(agreement.depositRequired) });
     lines.push({ label: 'Amount financed', value: formatGhs(agreement.financedAmount) });

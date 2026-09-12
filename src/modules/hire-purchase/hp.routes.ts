@@ -110,7 +110,7 @@ hpRouter.get('/sales', validate({ query: listSalesQuery }), (req, res, next) => 
           filename: 'outright-sales',
           payload: null,
           rows,
-          moneyKeys: ['subtotal', 'discount', 'total', 'totalCost', 'profit'],
+          moneyKeys: ['listedTotal', 'total', 'totalCost', 'profit'],
           sheet: 'Sales',
         }),
       )
@@ -577,6 +577,8 @@ hpRouter.get('/agreements', validate({ query: listAgreementsQuery }), (req, res,
           payload: null,
           rows: list.items.map(hp.toHpAgreementExportRow),
           moneyKeys: [
+            'listedPrice',
+            'agreedPrice',
             'depositRequired',
             'financedAmount',
             'totalPayable',

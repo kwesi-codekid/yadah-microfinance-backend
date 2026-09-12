@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { computeDepositSplit, computeHpFinancing, validatePricing } from './hire-purchase.js';
+import {
+  agreementPrice,
+  computeDepositSplit,
+  computeHpFinancing,
+  validatePricing,
+} from './hire-purchase.js';
 
 describe('computeHpFinancing — flat interest, once, on the financed half', () => {
   it("client's example: 1,000 outstanding at 10% → owes 1,100", () => {
@@ -63,5 +68,35 @@ describe('validatePricing', () => {
     expect(() => {
       validatePricing(100_000, 99_999);
     }).toThrow();
+  });
+});
+
+describe('agreementPrice', () => {
+  it('is what the counter and the customer settled on', () => {
+    expect(agreementPrice({ agreedPrice: 100_000, itemSnapshot: { sellingPrice: 120_000 } })).toBe(
+      100_000,
+    );
+  });
+
+  it('takes a price above the listed one just as readily', () => {
+    // Bargaining runs both ways, and the higher figure is no less the price.
+    expect(agreementPrice({ agreedPrice: 140_000, itemSnapshot: { sellingPrice: 120_000 } })).toBe(
+      140_000,
+    );
+  });
+
+  it('falls back to the listed price on agreements that predate the field', () => {
+    expect(agreementPrice({ itemSnapshot: { sellingPrice: 120_000 } })).toBe(120_000);
+  });
+
+  it('is what the deposit is split off — never the listed price', () => {
+    const price = agreementPrice({
+      agreedPrice: 100_000,
+      itemSnapshot: { sellingPrice: 120_000 },
+    });
+    expect(computeDepositSplit(price)).toEqual({
+      depositRequired: 50_000,
+      financedAmount: 50_000,
+    });
   });
 });

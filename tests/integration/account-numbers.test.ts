@@ -15,9 +15,15 @@ import {
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
+import { asOfficer, makeCustomer, makeGuarantor, setupDb, teardownDb } from './helpers.js';
 
-beforeAll(setupDb);
+/** Stands behind every application in this file. One is enough: the rule is
+ *  about who the guarantor is, not how many loans they carry. */
+let guarantor: Types.ObjectId;
+beforeAll(async () => {
+  await setupDb();
+  guarantor = await makeGuarantor();
+});
 afterAll(teardownDb);
 
 const officer = asOfficer();
@@ -65,7 +71,7 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
 
   it('numbers loans at application, so even a rejected one is quotable', async () => {
     const customerId = await makeCustomer(true);
-    const loan = await loans.applyForLoan(officer, customerId, 500_000, 3);
+    const loan = await loans.applyForLoan(officer, customerId, 500_000, 3, guarantor);
     expect(loan.accountNumber).toMatch(new RegExp(`^LN${period}\\d{4}$`));
 
     const stored = await LoanModel.findById(new Types.ObjectId(loan.id));

@@ -209,9 +209,14 @@ const hpAgreement = z
     item: z.object({
       name: z.string(),
       description: z.string().optional(),
-      sellingPrice: z.number().int(),
+      sellingPrice: z.number().int().describe('The shelf price snapshotted at signing'),
     }),
-    depositRequired: z.number().int().describe('Exactly 50% of the selling price'),
+    agreedPrice: z
+      .number()
+      .int()
+      .describe('What the customer agreed to pay — the figure the agreement is built from'),
+    listedPrice: z.number().int().describe('What the shelf listed it at then. Reference only'),
+    depositRequired: z.number().int().describe('Exactly half the agreed price'),
     financedAmount: z.number().int().describe('The remaining half — interest applies (Stage B)'),
     durationMonths: z.number().int(),
     interestRatePercent: z.number().int().describe('Snapshotted at signing; flat, applied once'),
@@ -283,13 +288,20 @@ const hpSale = z
         name: z.string().describe('Snapshotted at the sale'),
         quantity: z.number().int(),
         unitPrice: z.number().int().describe('What was actually charged per unit'),
-        listPrice: z.number().int().describe('The listed price then — makes a discount visible'),
+        listPrice: z
+          .number()
+          .int()
+          .describe(
+            'The shelf price at the time, for comparison — may be above or below unitPrice',
+          ),
         lineTotal: z.number().int(),
       }),
     ),
-    subtotal: z.number().int().describe('What the basket would have cost at list'),
-    discount: z.number().int(),
-    total: z.number().int().describe('What the buyer paid'),
+    listedTotal: z
+      .number()
+      .int()
+      .describe('What the basket would have come to at shelf prices. Reference only'),
+    total: z.number().int().describe('What the buyer paid, and what the sale is'),
     channel: z.string(),
     soldById: z.string(),
     status: z.enum(['completed', 'voided']),
@@ -457,9 +469,9 @@ export const hpPaths: ZodOpenApiPathsObject = {
       tags: ['Hire Purchase'],
       summary: 'Printable sales receipt (office only)',
       description:
-        'A4 receipt with one line per basket item, then the totals. A discounted line ' +
-        'shows the list price alongside what was charged. A voided sale still prints, ' +
-        'stamped VOIDED with its reason. Binary response (application/pdf).',
+        'A4 receipt with one line per basket item at the price agreed for it, then the ' +
+        'total. A voided sale still prints, stamped VOIDED with its reason. ' +
+        'Binary response (application/pdf).',
       security,
       requestParams: { path: idParam },
       responses: {
@@ -694,7 +706,10 @@ export const hpPaths: ZodOpenApiPathsObject = {
       tags: ['Hire Purchase'],
       summary: 'Sign an agreement (decrements stock, snapshots prices)',
       description:
-        'Deposit = exactly 50% of the selling price, due before the item is released.' + stageB,
+        'The price is bargained at the counter, so `agreedPrice` is required and is what the ' +
+        'agreement is built on — above or below the shelf price, whichever was settled. ' +
+        'Deposit = exactly half of it, due before the item is released.' +
+        stageB,
       security,
       requestBody: jsonBody(createAgreementBody),
       responses: {

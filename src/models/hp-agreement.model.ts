@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField, trashFields, type TrashFields } from './shared.js';
+import { moneyField, optionalMoneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * A hire purchase agreement (HP guide). Lifecycle:
@@ -22,11 +22,26 @@ export interface HpAgreement extends TrashFields {
     name: string;
     description?: string;
     costPrice: number;
+    /** What the shelf listed it at when this was signed. Reference, not the deal. */
     sellingPrice: number;
   };
-  /** Exactly half the selling price (rounded up), due before release. */
+  /**
+   * What the customer actually agreed to pay for the item — the price the
+   * counter settled on, which may be above or below the listed one.
+   *
+   * This, and not the listed price, is what the agreement is built from: the
+   * deposit, the financed amount, the interest and every instalment. The listed
+   * price stays in `itemSnapshot` so a report can show what was asked beside
+   * what was agreed.
+   *
+   * Optional on the model because agreements signed before negotiated pricing
+   * have none; every read falls back to `itemSnapshot.sellingPrice`, which is
+   * what those agreements were actually built from.
+   */
+  agreedPrice?: number;
+  /** Exactly half the agreed price (rounded up), due before release. */
   depositRequired: number;
-  /** sellingPrice − depositRequired; interest applies on this (Stage B). */
+  /** agreedPrice − depositRequired; interest applies on this (Stage B). */
   financedAmount: number;
   durationMonths: number;
   /** Configured rate captured at signing. Flat, applied once (client-confirmed). */
@@ -80,6 +95,7 @@ const hpAgreementSchema = new Schema<HpAgreement>(
       ),
       required: true,
     },
+    agreedPrice: optionalMoneyField,
     depositRequired: moneyField,
     financedAmount: moneyField,
     durationMonths: { type: Number, required: true, min: 1, max: 24 },

@@ -105,18 +105,32 @@ let phoneCounter = 100;
 /** Where the uploads endpoint mints image URLs — the only host the schemas accept. */
 export const CLOUDINARY = 'https://res.cloudinary.com/demo/image/upload';
 
+/** A format-valid number per ID type, unique per customer. */
+const ID_NUMBERS: Record<string, (n: number) => string> = {
+  'ghana-card': (n) => `GHA-${String(100000000 + n)}-1`,
+  passport: (n) => `G${String(10000000 + n)}`,
+  'drivers-license': (n) => `DL${String(10000000 + n)}`,
+  'voter-id': (n) => String(10000000 + n),
+};
+
 /**
  * A registered customer with the photo and both ID scans on file, as the
  * office normally leaves them. Pass `withIdDocument: false` for the profile
  * that cannot open credit yet.
+ *
+ * `options.idType` records that type of ID instead of a Ghana Card — credit
+ * accepts any of them, and a fixture that only ever holds a card cannot show
+ * it. `withGhanaCard` stays the first argument because most callers only care
+ * whether there is an ID at all.
  */
 export async function makeCustomer(
   withGhanaCard = false,
   assignedCollectorId?: Types.ObjectId,
-  options: { withIdDocument?: boolean } = {},
+  options: { withIdDocument?: boolean; idType?: string } = {},
 ): Promise<Types.ObjectId> {
   phoneCounter += 1;
   const withIdDocument = options.withIdDocument ?? true;
+  const idType = options.idType ?? (withGhanaCard ? 'ghana-card' : null);
   const customer = await CustomerModel.create({
     fullName: `Test Customer ${String(phoneCounter)}`,
     phone: `05000${String(phoneCounter).padStart(5, '0')}`,
@@ -130,14 +144,23 @@ export async function makeCustomer(
         }
       : {}),
     ...(assignedCollectorId ? { assignedCollectorId } : {}),
-    ...(withGhanaCard
+    ...(idType
       ? {
           identification: {
-            idType: 'ghana-card',
-            idNumber: `GHA-${String(100000000 + phoneCounter)}-1`,
+            idType,
+            idNumber: (ID_NUMBERS[idType] ?? ID_NUMBERS['ghana-card'])(phoneCounter),
           },
         }
       : {}),
   });
   return customer._id;
+}
+
+/**
+ * Somebody fit to stand behind a loan: an ID recorded and both sides of it
+ * photographed. The default is a passport rather than a Ghana Card, so every
+ * happy path in the suite also shows that any ID type is accepted.
+ */
+export async function makeGuarantor(idType = 'passport'): Promise<Types.ObjectId> {
+  return makeCustomer(false, undefined, { idType });
 }
