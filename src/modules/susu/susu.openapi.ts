@@ -22,9 +22,19 @@ const susuAccount = z
     accountNumber: z
       .string()
       .describe(
-        'SU + YYMM + 4-digit monthly sequence + the cycle month, e.g. SU26090005-SEP. ' +
-          'Accounts opened before the cycle month carry no suffix; accounts opened ' +
-          'before the scheme keep their legacy 6 random digits.',
+        "The CUSTOMER's susu number plus this cycle's month, e.g. SU26090005-SEP. NOT " +
+          'unique: a customer is assigned one number for life and their books are ' +
+          'separated by month inside it, so two books opened for one customer in one ' +
+          'month carry the same string. Never key on it — use id, or show ref. ' +
+          'Customers registered before the scheme keep their legacy 6 digits as their ' +
+          'number, suffixed the same way.',
+      ),
+    ref: z
+      .string()
+      .describe(
+        'The account id rendered for people: when it was opened, to the second, plus ' +
+          'four characters of the id — 260912134501-a3f9. Always distinct, so it is ' +
+          'what tells two cycles of one customer apart on screen.',
       ),
     cycleMonth: z
       .enum(CYCLE_MONTHS)

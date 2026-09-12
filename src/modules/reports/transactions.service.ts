@@ -1,3 +1,4 @@
+import { accountRef } from '../../lib/account-number.js';
 import { Types, type PipelineStage } from 'mongoose';
 import { AppError } from '../../lib/errors.js';
 import {
@@ -769,7 +770,11 @@ export interface CustomerStatement {
   products: {
     susu: {
       accountId: string;
+      /** The customer's susu number — every book they hold carries it. */
       accountNumber: string;
+      /** The month this book is called, and the book's own distinct ref. */
+      cycleMonth?: string;
+      ref: string;
       status: string;
       dailyAmount: number;
       depositsCount: number;
@@ -880,9 +885,13 @@ export async function customerStatement(
     period: { from: window.from, to: window.to },
     generatedAt: new Date(),
     products: {
+      // A customer with two books in one month gets two panels titled
+      // identically unless the statement carries something that differs.
       susu: susuAccounts.map((a) => ({
         accountId: a._id.toHexString(),
         accountNumber: a.accountNumber,
+        ...(a.cycleMonth !== undefined ? { cycleMonth: a.cycleMonth } : {}),
+        ref: accountRef(a._id.toHexString(), a.createdAt),
         status: a.status,
         dailyAmount: a.dailyAmount,
         depositsCount: a.depositsCount,

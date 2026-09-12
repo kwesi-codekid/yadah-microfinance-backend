@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   accountNumberPattern,
+  accountRef,
   bareAccountNumber,
   CYCLE_MONTHS,
   cycleMonthFrom,
@@ -10,6 +11,8 @@ import {
   formatAccountNumber,
   LEGACY_SAVINGS_PATTERN,
   LEGACY_SUSU_PATTERN,
+  SUSU_STEM_PATTERN,
+  withCycleMonth,
 } from './account-number.js';
 
 describe('accountPeriodKey', () => {
@@ -61,14 +64,33 @@ describe('legacy numbers', () => {
   });
 
   it('are still accepted by the model regexes', () => {
-    const susuField = /^(SU\d{8}|\d{6})$/;
-    const savingsField = /^(SV\d{8}|\d{10})$/;
+    // Built the way the models build them, rather than hand-copied: a restated
+    // guess drifts silently, and this one already had — it predated the cycle
+    // month and would have kept passing through any change to the real rule.
+    const susuField = new RegExp(
+      `(?:${accountNumberPattern('SU').source})|(?:${LEGACY_SUSU_PATTERN.source})`,
+    );
+    const savingsField = new RegExp(
+      `(?:${accountNumberPattern('SV').source})|(?:${LEGACY_SAVINGS_PATTERN.source})`,
+    );
     expect(susuField.test('482913')).toBe(true);
     expect(susuField.test('SU26080001')).toBe(true);
     expect(savingsField.test('4829130000')).toBe(true);
     expect(savingsField.test('SV26080001')).toBe(true);
     // Wrong prefix for the product is rejected.
     expect(susuField.test('SV26080001')).toBe(false);
+  });
+
+  it('accepts a grandfathered susu number wearing a cycle month', () => {
+    // A legacy number becomes its owner's stem as it stands, and every stem
+    // takes a month. Without this the first carry-forward off an old book
+    // throws a validation error inside the money transaction.
+    const susuField = new RegExp(
+      `(?:${accountNumberPattern('SU').source})|(?:${LEGACY_SUSU_PATTERN.source})`,
+    );
+    expect(susuField.test('482913-SEP')).toBe(true);
+    expect(susuField.test('482913-SEPT')).toBe(false);
+    expect(susuField.test('482913-SEP-OCT')).toBe(false);
   });
 });
 
@@ -124,5 +146,92 @@ describe('susu cycle-month suffix', () => {
     expect(cycleMonthFrom('SU26090005-SEP')).toBe('SEP');
     expect(cycleMonthFrom('SU26090005')).toBeUndefined();
     expect(cycleMonthFrom('SU26090005-NOPE')).toBeUndefined();
+  });
+});
+
+/**
+ * One number per customer, for life, with their books separated by month
+ * inside it (client decision, 12 Sep 2026). These are the pure half of that
+ * rule — the half that can be checked without a database.
+ */
+describe('the customer susu number', () => {
+  const STEM = 'SU26090009';
+
+  it('gives two books opened in one month the identical string', () => {
+    // The whole of what the branch asked for: their second September book is
+    // not a different account number, it is the same one.
+    expect(withCycleMonth(STEM, 'SEP')).toBe('SU26090009-SEP');
+    expect(withCycleMonth(STEM, 'SEP')).toBe(withCycleMonth(STEM, 'SEP'));
+  });
+
+  it('changes only the month when the customer opens a later book', () => {
+    const sep = withCycleMonth(STEM, 'SEP');
+    const oct = withCycleMonth(STEM, 'OCT');
+    expect(sep).toBe('SU26090009-SEP');
+    expect(oct).toBe('SU26090009-OCT');
+    expect(bareAccountNumber(sep)).toBe(bareAccountNumber(oct));
+    expect(cycleMonthFrom(sep)).not.toBe(cycleMonthFrom(oct));
+  });
+
+  it('makes exactly twelve strings out of one stem', () => {
+    const family = CYCLE_MONTHS.map((m) => withCycleMonth(STEM, m));
+    expect(new Set(family).size).toBe(12);
+    expect(new Set(family.map(bareAccountNumber)).size).toBe(1);
+  });
+
+  it('never grows a second month onto a number that has one', () => {
+    // Callers pass whatever they are holding — an account number as often as a
+    // stem — so re-suffixing has to replace, not append.
+    expect(withCycleMonth('SU26090009-SEP', 'OCT')).toBe('SU26090009-OCT');
+    expect(accountNumberPattern('SU').test('SU26090009-SEP-OCT')).toBe(false);
+  });
+
+  it('keeps the month off when there is none to put on', () => {
+    expect(withCycleMonth(STEM)).toBe(STEM);
+    expect(withCycleMonth('SU26090009-SEP')).toBe(STEM);
+  });
+
+  it('suffixes a grandfathered stem as readily as a current one', () => {
+    // Their oldest customers keep the number in the passbook they are holding.
+    expect(withCycleMonth('482913', 'SEP')).toBe('482913-SEP');
+    expect(bareAccountNumber('482913-SEP')).toBe('482913');
+  });
+
+  it('tells a stem apart from a whole number', () => {
+    expect(SUSU_STEM_PATTERN.test(STEM)).toBe(true);
+    expect(SUSU_STEM_PATTERN.test('SU26090009-SEP')).toBe(false);
+    expect(SUSU_STEM_PATTERN.test('482913')).toBe(false);
+  });
+
+  it('freezes the issue month into the stem, whatever month the book is', () => {
+    // The stem records when the CUSTOMER joined, not when this book opened, so
+    // an August-issued number wearing -SEP is correct and stays that way.
+    const august = formatAccountNumber('SU', '2608', 12);
+    expect(withCycleMonth(august, 'SEP')).toBe('SU26080012-SEP');
+  });
+});
+
+describe('accountRef', () => {
+  const OPENED = new Date('2026-09-12T13:45:01.000Z');
+
+  it('is the opening second plus a tail of the id', () => {
+    expect(accountRef('68c3f1a2b4d5e6f7a8b9a3f9', OPENED)).toBe('260912134501-a3f9');
+  });
+
+  it('separates two books opened in the same second', () => {
+    // Which is the case that matters: a payment overflowing into a second book
+    // creates both inside one transaction, and a seed loop creates dozens.
+    const a = accountRef('aaaaaaaaaaaaaaaaaaaa1111', OPENED);
+    const b = accountRef('aaaaaaaaaaaaaaaaaaaa2222', OPENED);
+    expect(a).not.toBe(b);
+    expect(a.slice(0, 12)).toBe(b.slice(0, 12));
+  });
+
+  it('looks nothing like an account number', () => {
+    // Deliberate: the two sit in adjacent columns, and two strings of the same
+    // shape differing by one digit would be worse than no reference at all.
+    const ref = accountRef('68c3f1a2b4d5e6f7a8b9c0a3', OPENED);
+    expect(accountNumberPattern('SU').test(ref)).toBe(false);
+    expect(LEGACY_SUSU_PATTERN.test(ref)).toBe(false);
   });
 });

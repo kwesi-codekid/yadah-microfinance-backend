@@ -2,12 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Types } from 'mongoose';
 import {
   accountPeriodKey,
+  bareAccountNumber,
   cycleMonthOf,
   nextAccountNumber,
   raiseCounter,
 } from '../../src/lib/account-number.js';
 import {
   CounterModel,
+  CustomerModel,
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
@@ -30,23 +32,70 @@ const officer = asOfficer();
 const period = accountPeriodKey();
 
 describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
-  it('numbers susu accounts sequentially within the month', async () => {
+  // One number per customer, their books separated by month inside it (client
+  // decision, 12 Sep 2026). What used to be asserted here — that a second
+  // account is one higher — is now precisely the bug.
+  it('gives one customer the same number for every book in a month', async () => {
     const customerId = await makeCustomer();
     const first = await susu.openAccount(officer, customerId, 1_000);
     const second = await susu.openAccount(officer, customerId, 2_000);
 
-    // Susu numbers carry the cycle month, which defaults to the current one.
     const shape = new RegExp(
       `^SU${period}[0-9]{4}-(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$`,
     );
     expect(first.accountNumber).toMatch(shape);
-    expect(second.accountNumber).toMatch(shape);
     expect(first.cycleMonth).toBe(cycleMonthOf());
-    // Sequential, not random — the second number is exactly one higher.
-    // The slice is bounded so the cycle-month suffix cannot leak into it.
-    expect(Number(second.accountNumber.slice(6, 10))).toBe(
-      Number(first.accountNumber.slice(6, 10)) + 1,
-    );
+    // Byte for byte, which is the whole of what the branch asked for.
+    expect(second.accountNumber).toBe(first.accountNumber);
+    // Two books all the same: different accounts, different refs, one number.
+    expect(second.id).not.toBe(first.id);
+    expect(second.ref).not.toBe(first.ref);
+    expect(await SusuAccountModel.countDocuments({ customerId })).toBe(2);
+  });
+
+  it('keeps the number and changes the month for a later book', async () => {
+    const customerId = await makeCustomer();
+    const sep = await susu.openAccount(officer, customerId, 1_000, 'SEP');
+    const oct = await susu.openAccount(officer, customerId, 1_000, 'OCT');
+
+    expect(sep.accountNumber.endsWith('-SEP')).toBe(true);
+    expect(oct.accountNumber.endsWith('-OCT')).toBe(true);
+    expect(bareAccountNumber(oct.accountNumber)).toBe(bareAccountNumber(sep.accountNumber));
+  });
+
+  it('never gives two customers the same number', async () => {
+    const [a, b, c] = await Promise.all([makeCustomer(), makeCustomer(), makeCustomer()]);
+    const opened = await Promise.all([
+      susu.openAccount(officer, a, 1_000),
+      susu.openAccount(officer, b, 1_000),
+      susu.openAccount(officer, c, 1_000),
+    ]);
+    const stems = opened.map((o) => bareAccountNumber(o.accountNumber));
+    expect(new Set(stems).size).toBe(3);
+  });
+
+  it('stores the number on the customer, and spends one sequence value per customer', async () => {
+    const customerId = await makeCustomer();
+    const before = (await CounterModel.findById(`SU-${period}`))?.seq ?? 0;
+    const first = await susu.openAccount(officer, customerId, 1_000);
+    await susu.openAccount(officer, customerId, 1_000);
+    await susu.openAccount(officer, customerId, 1_000);
+    const after = (await CounterModel.findById(`SU-${period}`))?.seq ?? 0;
+
+    // Three books, one number, one counter value — not three.
+    expect(after - before).toBe(1);
+    const customer = await CustomerModel.findById(customerId);
+    expect(customer?.susuNumber).toBe(bareAccountNumber(first.accountNumber));
+  });
+
+  it('leaves the accountNumber index in place, and non-unique', async () => {
+    // Both halves matter: a surviving unique flag rejects a customer's second
+    // book outright, and dropping the index with it turns every account-number
+    // search into a collection scan.
+    const indexes = await SusuAccountModel.collection.indexes();
+    const onNumber = indexes.filter((i) => i.key.accountNumber === 1);
+    expect(onNumber.length).toBeGreaterThan(0);
+    expect(onNumber.every((i) => i.unique !== true)).toBe(true);
   });
 
   it('gives each product an independent sequence', async () => {

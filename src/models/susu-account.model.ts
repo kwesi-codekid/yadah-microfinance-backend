@@ -14,10 +14,28 @@ import { moneyField, optionalMoneyField, trashFields, type TrashFields } from '.
  */
 export interface SusuAccount extends TrashFields {
   _id: Types.ObjectId;
-  /** `SU` + YYMM + 4-digit monthly sequence + `-MMM` cycle month, e.g.
-   *  SU26090005-SEP. Accounts opened before the cycle month have no suffix;
-   *  accounts opened before the scheme keep their legacy 6 random digits. */
+  /**
+   * The CUSTOMER's susu number plus this cycle's month, e.g. SU26090005-SEP.
+   *
+   * Deliberately NOT unique (client decision, 12 Sep 2026): a customer is
+   * assigned one number for life and their books are separated by month inside
+   * it, exactly as the manual passbooks work, so two books opened for one
+   * customer in one month carry the same string byte for byte. The unique
+   * identifier is `_id`; `accountRef` renders it for people.
+   *
+   * Accounts opened before the scheme keep their legacy 6 digits as their
+   * owner's stem, and take the month suffix like any other.
+   */
   accountNumber: string;
+  /**
+   * What THIS account was originally issued, before its number was collapsed
+   * onto its owner's. Set by the migration only, and only where the two
+   * differ — nothing issues a per-account number any more.
+   *
+   * It exists so that a receipt already printed, or a number a customer quotes
+   * from an old slip, still finds the right book. Never displayed.
+   */
+  issuedNumber?: string;
   /**
    * The month this cycle is *called*, which the counter picks when opening
    * and which need not be the month the number was issued in — a cycle
@@ -69,12 +87,17 @@ const susuAccountSchema = new Schema<SusuAccount>(
     accountNumber: {
       type: String,
       required: true,
-      unique: true,
+      // No `unique` — see the field's doc. Indexed below all the same: both
+      // account-number lookups are anchored regexes and one sits inside an
+      // `$or`, where an unindexed branch drags the whole query to a scan.
       // Built from the shared pattern so the suffix rule is stated once.
       match: new RegExp(
         `(?:${accountNumberPattern('SU').source})|(?:${LEGACY_SUSU_PATTERN.source})`,
       ),
     },
+    // Written once, by the migration, with updateOne — so it cannot be
+    // `immutable` (mongoose would strip the write). Nothing else touches it.
+    issuedNumber: { type: String },
     cycleMonth: { type: String, enum: CYCLE_MONTHS, immutable: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     dailyAmount: { ...moneyField, immutable: true },
@@ -99,6 +122,10 @@ const susuAccountSchema = new Schema<SusuAccount>(
 );
 
 susuAccountSchema.index({ customerId: 1, status: 1 });
+susuAccountSchema.index({ accountNumber: 1 });
+// What a customer quotes off an old receipt. Sparse: only accounts the
+// migration collapsed carry one.
+susuAccountSchema.index({ issuedNumber: 1 }, { sparse: true });
 
 export const SusuAccountModel = model<SusuAccount>(
   'SusuAccount',

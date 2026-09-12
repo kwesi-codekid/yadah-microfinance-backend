@@ -13,7 +13,7 @@
  */
 import bcrypt from 'bcrypt';
 import { connectDb, disconnectDb } from '../lib/db.js';
-import { nextAccountNumber } from '../lib/account-number.js';
+import { cycleMonthOf, nextAccountNumber, withCycleMonth } from '../lib/account-number.js';
 import { accraDay } from '../lib/time.js';
 import { buildSchedule, computeInterest, addMonthsClamped } from '../domain/loans.js';
 import { SUSU_CYCLE_DEPOSITS } from '../domain/susu.js';
@@ -161,20 +161,31 @@ async function seed(): Promise<void> {
 
   // --- susu accounts: VIP mid-cycle + 14 others at varied progress
   const dailies = [500, 1000, 2000, 5000];
-  const susuTargets = [{ customer: vip, daily: 2000, progress: 20 }].concat(
-    customers.slice(0, 14).map((c, i) => ({
-      customer: c,
-      daily: pick(dailies, i),
-      progress: 3 + ((i * 5) % 26),
-    })),
-  );
+  const susuTargets = [{ customer: vip, daily: 2000, progress: 20 }]
+    .concat(
+      customers.slice(0, 14).map((c, i) => ({
+        customer: c,
+        daily: pick(dailies, i),
+        progress: 3 + ((i * 5) % 26),
+      })),
+    )
+    // A second book for the VIP, so the demo actually shows what the branch
+    // asked for: one customer, one number, two cycles.
+    .concat([{ customer: vip, daily: 1000, progress: 6 }]);
   let susuDocs = 0;
   for (const target of susuTargets) {
     const openedAt = daysAgo(target.progress + 4);
+    // One number per customer, minted on their first book and reused after —
+    // the same rule the service applies, so the demo data looks like real data.
+    const held = await CustomerModel.findById(target.customer._id, { susuNumber: 1 });
+    const stem = held?.susuNumber ?? (await nextAccountNumber('SU', openedAt));
+    if (!held?.susuNumber) {
+      await CustomerModel.updateOne({ _id: target.customer._id }, { $set: { susuNumber: stem } });
+    }
     const [account] = await SusuAccountModel.create([
       {
-        // Numbered by the month the account was (back)dated to, like real data.
-        accountNumber: await nextAccountNumber('SU', openedAt),
+        accountNumber: withCycleMonth(stem, cycleMonthOf(openedAt)),
+        cycleMonth: cycleMonthOf(openedAt),
         customerId: target.customer._id,
         dailyAmount: target.daily,
         depositsCount: target.progress,

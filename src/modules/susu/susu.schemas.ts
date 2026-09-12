@@ -32,12 +32,16 @@ export const listAccountsQuery = pagination
     /**
      * Current format (SU26090005-SEP), a number without its cycle month
      * (SU26090005 — what a customer reading off a receipt will quote), or a
-     * grandfathered 6-digit number.
+     * grandfathered 6-digit number, which now wears a month like any other.
+     *
+     * Matches the customer's whole susu history, not one book: the number
+     * belongs to them. A number quoted from a receipt printed before the
+     * numbers were collapsed matches too, through `issuedNumber`.
      */
     accountNumber: z
       .string()
       .regex(
-        /^(SU\d{8}(-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))?|\d{6})$/,
+        /^(SU\d{8}|\d{6})(-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))?$/,
         'Expected an account number like SU26090005-SEP',
       )
       .optional(),

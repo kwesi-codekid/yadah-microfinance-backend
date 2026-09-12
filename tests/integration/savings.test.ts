@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { SavingsAccountModel, SavingsTxnModel } from '../../src/models/index.js';
+import { MIN_BALANCE, WITHDRAWAL_FEE } from '../../src/domain/savings.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
 
@@ -27,16 +28,23 @@ describe('savings withdrawal race (WBS 7.2)', () => {
     expect(await SavingsTxnModel.countDocuments({ accountId, type: 'withdrawal' })).toBe(1);
   });
 
-  it('withdrawal never breaches the GHS 50 minimum', async () => {
+  it('withdrawal never breaches the minimum balance', async () => {
     const customerId = await makeCustomer();
     const opened = await savings.openAccount(officer, customerId, 10_000, randomUUID(), 'cash');
     const accountId = new Types.ObjectId(opened.account.id);
 
-    await expect(savings.withdraw(officer, accountId, 4_001, randomUUID())).rejects.toMatchObject({
+    // Derived from the constants, not written out. This test asserted a GHS 50
+    // floor for some time after the floor became GHS 10 (2203bce), and went on
+    // proving nothing but its own arithmetic.
+    const available = 10_000 - MIN_BALANCE - WITHDRAWAL_FEE;
+
+    await expect(
+      savings.withdraw(officer, accountId, available + 1, randomUUID()),
+    ).rejects.toMatchObject({
       code: 'EXCEEDS_AVAILABLE',
     });
 
-    const result = await savings.withdraw(officer, accountId, 4_000, randomUUID());
-    expect(result.account.balance).toBe(5_000); // lands exactly on the floor
+    const result = await savings.withdraw(officer, accountId, available, randomUUID());
+    expect(result.account.balance).toBe(MIN_BALANCE); // lands exactly on the floor
   });
 });

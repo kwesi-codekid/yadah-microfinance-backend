@@ -41,7 +41,14 @@ const portalAccounts = z
     susu: z.array(
       z.object({
         accountId: z.string(),
-        accountNumber: z.string(),
+        accountNumber: z
+          .string()
+          .describe(
+            "The customer's susu number — shared by every book they hold, so two " +
+              'cycles in one month carry the same string. Not an identifier.',
+          ),
+        cycleMonth: z.string().optional().describe('The month this book is called'),
+        ref: z.string().describe('The book itself, rendered: 260912134501-a3f9. Always distinct'),
         status: z.string(),
         dailyAmount: z.number().int(),
         depositsCount: z.number().int(),

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import { cycleMonthOf } from '../../src/lib/account-number.js';
+import { bareAccountNumber, cycleMonthOf } from '../../src/lib/account-number.js';
 import { SUSU_CYCLE_DEPOSITS } from '../../src/domain/susu.js';
 import { SusuAccountModel, SusuDepositModel } from '../../src/models/index.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
@@ -89,6 +89,32 @@ describe('susu carry-forward', () => {
     const opened = result.openedAccounts[0];
     expect(opened?.cycleMonth).toBe(cycleMonthOf());
     expect(opened?.accountNumber.endsWith(`-${cycleMonthOf()}`)).toBe(true);
+    // Same customer, so the same number underneath: only the month moved. The
+    // parent is a JAN book, so here the two strings still differ — open one in
+    // the current month and they are identical, which is the point.
+    expect(bareAccountNumber(opened?.accountNumber ?? '')).toBe(
+      bareAccountNumber(parent.accountNumber),
+    );
+  });
+
+  it('gives an overflow inside the same month the parent’s exact number', async () => {
+    const customerId = await makeCustomer();
+    const parent = await susu.openAccount(officer, customerId, DAILY);
+    const result = await susu.recordDeposit(
+      officer,
+      new Types.ObjectId(parent.id),
+      DAILY * (SUSU_CYCLE_DEPOSITS + 3),
+      randomUUID(),
+      'cash',
+    );
+
+    // The ordinary case: a book fills up and the balance starts the next one
+    // in the same month. Both are the customer's, so both read identically —
+    // which the unique index used to make impossible.
+    const opened = result.openedAccounts[0];
+    expect(opened?.accountNumber).toBe(parent.accountNumber);
+    expect(opened?.id).not.toBe(parent.id);
+    expect(opened?.ref).not.toBe(parent.ref);
   });
 
   it('links the two halves both ways', async () => {

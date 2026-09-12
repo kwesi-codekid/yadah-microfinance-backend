@@ -1,3 +1,4 @@
+import { accountRef } from '../../lib/account-number.js';
 import { Types } from 'mongoose';
 import { AppError } from '../../lib/errors.js';
 import {
@@ -29,7 +30,19 @@ import { remainingOn } from '../hire-purchase/hp.service.js';
 
 export interface PortalSusuAccount {
   accountId: string;
+  /**
+   * The customer's own susu number. Every book they hold carries it, so two
+   * cycles in one month read identically — see `cycleMonth` and `ref`.
+   */
   accountNumber: string;
+  /** The month this book is called: what separates one cycle from the next. */
+  cycleMonth?: string;
+  /**
+   * The book's own identity, rendered: `260912134501-a3f9`. The handset lists
+   * cycles to pick between — including for closure, which cannot be undone —
+   * so it needs something that always differs.
+   */
+  ref: string;
   status: string;
   dailyAmount: number;
   depositsCount: number;
@@ -121,6 +134,8 @@ export async function myAccounts(customerIdHex: string): Promise<PortalAccounts>
     return {
       accountId: a._id.toHexString(),
       accountNumber: a.accountNumber,
+      ...(a.cycleMonth !== undefined ? { cycleMonth: a.cycleMonth } : {}),
+      ref: accountRef(a._id.toHexString(), a.createdAt),
       status: a.status,
       dailyAmount: a.dailyAmount,
       depositsCount: a.depositsCount,

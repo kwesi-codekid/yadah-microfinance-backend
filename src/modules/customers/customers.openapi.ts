@@ -102,7 +102,11 @@ const customerStatement = z
       susu: z.array(
         z.object({
           accountId: z.string(),
-          accountNumber: z.string(),
+          accountNumber: z
+            .string()
+            .describe("The customer's susu number — shared by every book they hold"),
+          cycleMonth: z.string().optional().describe('The month this book is called'),
+          ref: z.string().describe('This book itself: 260912134501-a3f9. Always distinct'),
           status: z.string(),
           dailyAmount: z.number().int(),
           depositsCount: z.number().int(),

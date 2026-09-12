@@ -86,6 +86,9 @@ describe('collector scope lock', () => {
   });
 
   it('an account-number search cannot reach outside the round', async () => {
+    // bobCustomer already holds a book from an earlier test, so this is their
+    // second — and it carries the same number. The search therefore returns
+    // the family, and naming both is what keeps this test meaningful.
     const account = await susu.openAccount(officer, bobCustomer, 1_000);
     const found = await susu.listAccounts(alice, {
       ...page,
@@ -100,6 +103,9 @@ describe('collector scope lock', () => {
       format: 'json' as const,
     });
     expect(bobSees.items.map((a) => a.id)).toContain(account.id);
+    // Every hit is theirs, and they all carry the one number that was searched.
+    expect(bobSees.items.length).toBeGreaterThan(1);
+    expect(bobSees.items.every((a) => a.accountNumber === account.accountNumber)).toBe(true);
   });
 
   it('refuses a savings deposit onto another collector’s customer', async () => {

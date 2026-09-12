@@ -54,6 +54,23 @@ export interface Customer extends TrashFields {
    * unassigned customer is invisible in the field until an admin assigns one.
    */
   assignedCollectorId?: Types.ObjectId;
+  /**
+   * The customer's susu number, without a cycle month — `SU26090009`, or a
+   * grandfathered `482913`. Assigned once, the first time they open a susu
+   * book, and never changed: every book they ever hold is this plus `-MMM`
+   * (client decision, 12 Sep 2026).
+   *
+   * It lives here rather than being read off their oldest account because this
+   * is the one place it can be claimed atomically. Two tellers opening a first
+   * book for the same customer at the same instant would otherwise both find
+   * no account, both mint, and leave the customer with two numbers — the very
+   * thing the branch reported. A transaction would not help: with no document
+   * to conflict on, both snapshots commit.
+   *
+   * Absent on customers who have never opened a susu book, which is most of
+   * them — a number is burnt only when one is actually needed.
+   */
+  susuNumber?: string;
   registeredById: Types.ObjectId;
   status: 'active' | 'inactive';
   createdAt: Date;
@@ -101,6 +118,12 @@ const customerSchema = new Schema<Customer>(
     idDocumentBackUrl: { type: String },
 
     assignedCollectorId: { type: Schema.Types.ObjectId, ref: 'User' },
+    // Deliberately NOT `immutable`, though it is written exactly once and must
+    // never change afterwards: mongoose strips immutable paths from update
+    // operations, and the only thing that ever sets this is an atomic
+    // findOneAndUpdate claim, which would then silently write nothing. The
+    // claim's own filter (`susuNumber: null`) is what enforces write-once.
+    susuNumber: { type: String },
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     ...trashFields,
@@ -112,6 +135,10 @@ customerSchema.index({ fullName: 'text' });
 customerSchema.index({ status: 1 });
 // Every collector-scoped read filters on this.
 customerSchema.index({ assignedCollectorId: 1, status: 1 });
+// The one uniqueness the susu scheme still has: no two customers share a
+// number. It cannot be enforced on the accounts any more, because there the
+// duplicates are the point.
+customerSchema.index({ susuNumber: 1 }, { unique: true, sparse: true });
 // No two customers may share the same ID document (when one is recorded).
 customerSchema.index(
   { 'identification.idType': 1, 'identification.idNumber': 1 },
