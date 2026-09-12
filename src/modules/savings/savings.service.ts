@@ -1125,7 +1125,7 @@ export async function txnReceipt(
   if (txn.type === 'closure') {
     lines.push({ label: 'Account status', value: 'Closed' });
   } else {
-    // The GHS 50 minimum only comes out on closure, so it is worth stating.
+    // The minimum balance only comes out on closure, so it is worth stating.
     lines.push({
       label: 'Withdrawable now',
       value: formatGhs(availableToWithdraw(txn.balanceAfter)),

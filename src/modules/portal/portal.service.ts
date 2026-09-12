@@ -66,7 +66,7 @@ export interface PortalSavingsAccount {
   accountType: string;
   status: string;
   balance: number;
-  /** balance − GHS 50 minimum − GHS 10 fee. Never negative. */
+  /** balance − the GHS 10 minimum − the GHS 10 fee. Never negative. */
   available: number;
   minBalance: number;
   withdrawalFee: number;

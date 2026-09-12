@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Types } from 'mongoose';
 import { CustomerModel, PayoutRequestModel, PortalOtpModel } from '../../src/models/index.js';
 import * as portalAuth from '../../src/modules/portal/portal-auth.service.js';
+import { MIN_BALANCE, WITHDRAWAL_FEE } from '../../src/domain/savings.js';
 import * as portal from '../../src/modules/portal/portal.service.js';
 import * as requests from '../../src/modules/portal/payout-requests.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
@@ -123,9 +124,10 @@ describe('portal data is scoped to the token holder', () => {
     const accounts = await portal.myAccounts(customerId.toHexString());
     const savingsRow = accounts.savings.find((a) => a.accountId === account.id);
 
-    // GHS 200 balance − GHS 50 minimum − GHS 10 fee = GHS 140.
+    // Derived from the constants rather than written out: this asserted the
+    // GHS 50 floor for some time after it became GHS 10 (2203bce).
     expect(savingsRow?.balance).toBe(20_000);
-    expect(savingsRow?.available).toBe(14_000);
+    expect(savingsRow?.available).toBe(20_000 - MIN_BALANCE - WITHDRAWAL_FEE);
   });
 });
 

@@ -69,7 +69,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       {
         name: 'Savings',
         description:
-          'Min GHS 5 deposits, 1 withdrawal/day with flat GHS 10 fee, GHS 50 min balance',
+          'Min GHS 5 deposits, 1 withdrawal/day with flat GHS 10 fee, GHS 10 min balance',
       },
       {
         name: 'Notifications',

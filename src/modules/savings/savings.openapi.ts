@@ -28,7 +28,7 @@ const savingsAccount = z
     availableToWithdraw: z
       .number()
       .int()
-      .describe('balance − GHS 50 min balance − GHS 10 fee, never negative'),
+      .describe('balance − GHS 10 min balance − GHS 10 fee, never negative'),
     status: z.enum(['active', 'closed']),
     openedAt: z.iso.datetime(),
     closedAt: z.iso.datetime().optional(),
@@ -315,7 +315,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       description:
         'amount = what the customer receives; the flat GHS 10 fee is debited on top. ' +
         'Max one withdrawal per account per Accra day. The balance can never drop ' +
-        'below the GHS 50 minimum except via closure. SMS notification sent.',
+        'below the GHS 10 minimum except via closure. SMS notification sent.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(withdrawalBody),
@@ -333,7 +333,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       tags: ['Savings'],
       summary: 'Close the account (office only)',
       description:
-        'Releases the GHS 50 minimum balance; the flat GHS 10 fee applies to the ' +
+        'Releases the GHS 10 minimum balance; the flat GHS 10 fee applies to the ' +
         'closing payout too (GHS 200 balance → customer receives 190). `flagged` is ' +
         'true when the balance did not cover the fee.',
       security,
