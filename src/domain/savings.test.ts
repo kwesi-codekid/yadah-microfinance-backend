@@ -7,12 +7,17 @@ import {
   computeWithdrawal,
 } from './savings.js';
 
-describe('availableToWithdraw = balance − 50 − 10, never negative', () => {
+/** What a withdrawal cannot touch: the floor plus the fee that funds it. */
+const RESERVED = MIN_BALANCE + WITHDRAWAL_FEE;
+
+describe('availableToWithdraw = balance − the floor − the fee, never negative', () => {
   it('reserves min balance and fee', () => {
-    expect(availableToWithdraw(10000)).toBe(4000); // GHS 100 → 40
-    expect(availableToWithdraw(6001)).toBe(1);
-    expect(availableToWithdraw(6000)).toBe(0); // exactly min+fee
-    expect(availableToWithdraw(5999)).toBe(0);
+    // Derived from the constants rather than written out, so lowering the
+    // floor is a one-line change and these keep testing the rule.
+    expect(availableToWithdraw(10_000)).toBe(10_000 - RESERVED);
+    expect(availableToWithdraw(RESERVED + 1)).toBe(1);
+    expect(availableToWithdraw(RESERVED)).toBe(0); // exactly the reserve
+    expect(availableToWithdraw(RESERVED - 1)).toBe(0);
     expect(availableToWithdraw(0)).toBe(0);
   });
   it('rejects float balances', () => {
@@ -22,14 +27,15 @@ describe('availableToWithdraw = balance − 50 − 10, never negative', () => {
 
 describe('computeWithdrawal', () => {
   it('debits amount plus flat fee', () => {
-    const r = computeWithdrawal(10000, 4000); // withdraw the full available
+    const max = availableToWithdraw(10_000); // withdraw the full available
+    const r = computeWithdrawal(10_000, max);
     expect(r.fee).toBe(WITHDRAWAL_FEE);
-    expect(r.totalDebit).toBe(5000);
+    expect(r.totalDebit).toBe(max + WITHDRAWAL_FEE);
     expect(r.balanceAfter).toBe(MIN_BALANCE); // lands exactly on the floor
   });
 
   it('rejects one pesewa over available', () => {
-    expect(() => computeWithdrawal(10000, 4001)).toThrow(RangeError);
+    expect(() => computeWithdrawal(10_000, availableToWithdraw(10_000) + 1)).toThrow(RangeError);
   });
 
   it('rejects zero/negative/float amounts', () => {
@@ -39,7 +45,7 @@ describe('computeWithdrawal', () => {
   });
 
   it('never lets balanceAfter drop below the min balance', () => {
-    for (const balance of [6001, 7000, 10000, 100000]) {
+    for (const balance of [RESERVED + 1, 7_000, 10_000, 100_000]) {
       const max = availableToWithdraw(balance);
       if (max > 0) {
         expect(computeWithdrawal(balance, max).balanceAfter).toBeGreaterThanOrEqual(MIN_BALANCE);

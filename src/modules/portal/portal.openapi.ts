@@ -70,7 +70,7 @@ const portalAccounts = z
         available: z
           .number()
           .int()
-          .describe('balance − GHS 50 minimum − GHS 10 fee, floored at zero'),
+          .describe('balance − the minimum balance − the GHS 10 fee, floored at zero'),
         minBalance: z.number().int(),
         withdrawalFee: z.number().int(),
       }),
@@ -242,7 +242,7 @@ export const portalPaths: ZodOpenApiPathsObject = {
         'Submits a request for an office decision — **it never moves money by itself**. ' +
         'Withdrawals stay office-only; approval runs the same service a counter ' +
         'transaction would, so the susu closing commission, the GHS 10 savings fee, the ' +
-        'one-withdrawal-per-day rule and the GHS 50 minimum balance all still apply.\n\n' +
+        'one-withdrawal-per-day rule and the minimum balance all still apply.\n\n' +
         'The same limits are checked here at submission, so a customer is told what they ' +
         'can take now rather than after waiting for a rejection. One open request per ' +
         'account. `amount` is required except for `susu-closure`, where the payout is the ' +

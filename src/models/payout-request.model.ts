@@ -8,7 +8,7 @@ import { optionalMoneyField } from './shared.js';
  * Withdrawals stay office-only (client-confirmed): this record never moves
  * money by itself. On approval the office executes the SAME withdrawal service
  * a counter transaction would use, so every existing rule — the susu closing
- * commission, the savings GHS 10 fee, one withdrawal per Accra day, the GHS 50
+ * commission, the savings GHS 10 fee, one withdrawal per Accra day, the
  * minimum balance — applies unchanged.
  *
  * Status meaning, in order:

@@ -3,7 +3,7 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * Rules: min deposit GHS 5 · no interest · max 1 withdrawal per Accra day ·
- * flat GHS 10 fee per withdrawal (also on closure) · min balance GHS 50
+ * flat GHS 10 fee per withdrawal (also on closure) · min balance GHS 10
  * withdrawable only on closure. availableToWithdraw = balance − 5000 − 1000
  * is computed in the service layer, never stored.
  */

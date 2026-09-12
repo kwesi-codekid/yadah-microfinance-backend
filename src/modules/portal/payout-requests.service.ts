@@ -21,7 +21,7 @@ import {
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { maxPartialWithdrawal, susuBalance } from '../../domain/susu.js';
-import { availableToWithdraw } from '../../domain/savings.js';
+import { availableToWithdraw, MIN_BALANCE, WITHDRAWAL_FEE } from '../../domain/savings.js';
 import * as savings from '../savings/savings.service.js';
 import * as susu from '../susu/susu.service.js';
 import { assertOwnedSavings, assertOwnedSusu } from './portal.service.js';
@@ -115,7 +115,7 @@ export async function submitRequest(
     if (body.amount > available) {
       throw new AppError(
         'INSUFFICIENT_AVAILABLE',
-        `Only ${formatGhs(available)} is available after the ${formatGhs(1000)} fee and the ${formatGhs(5000)} minimum balance`,
+        `Only ${formatGhs(available)} is available after the ${formatGhs(WITHDRAWAL_FEE)} fee and the ${formatGhs(MIN_BALANCE)} minimum balance`,
         422,
         { available },
       );
