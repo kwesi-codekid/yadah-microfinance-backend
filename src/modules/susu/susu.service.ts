@@ -8,6 +8,7 @@ import {
   type CycleMonth,
 } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import { resolveOccurredAt } from '../../lib/backdating.js';
 import type { CorrectionOrigin, CorrectionPreparer } from '../../lib/corrections.js';
 import { escapeRegex, fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -524,7 +525,11 @@ export async function recordDeposit(
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
+  occurredOn?: string,
 ): Promise<DepositResult> {
+  // The day the cash actually changed hands. Resolved before anything is
+  // read, so a date the server will not accept costs nothing.
+  const at = resolveOccurredAt(actor, occurredOn);
   // Replay of a retried mobile request → return the original, write nothing.
   // A carried payment wrote several rows under derived keys, so all of them
   // have to come back, or a retry would look like it lost money.
@@ -584,11 +589,13 @@ export async function recordDeposit(
   // that kept counter writes out of caller transactions is satisfied by
   // construction rather than by care (see counter.model.ts).
   //
-  // The cycle month is today's, not the parent account's: the carried cycle
-  // begins now. When the parent's month is also today's — the ordinary case —
-  // the two books end up with byte-identical numbers, which is exactly what
-  // the branch's own passbooks do.
-  const month = cycleMonthOf();
+  // The cycle month is the month the payment was taken in, not the parent
+  // account's: the carried cycle begins with the overflow. When the parent's
+  // month is the same — the ordinary case — the two books end up with
+  // byte-identical numbers, which is exactly what the branch's passbooks do.
+  // On a backdated payment that month is the backdated one, so a cycle typed
+  // in for July is called JUL rather than whatever today happens to be.
+  const month = cycleMonthOf(at);
   const carriedNumber = withCycleMonth(bareAccountNumber(accountPre.accountNumber), month);
 
   // One attempt, no replay loop. The loop that used to wrap this existed to
@@ -647,9 +654,15 @@ export async function recordDeposit(
             seqEnd: head.seqEnd,
             channel,
             idempotencyKey,
+            // `createdAt` is the day the money moved and is what every report
+            // reads; `updatedAt` is when the row was written. They are the
+            // same instant on an ordinary collection and differ on a
+            // backdated one, which is the honest record of both facts.
+            createdAt: at,
+            updatedAt: new Date(),
           },
         ],
-        { session },
+        { session, timestamps: false },
       );
       const first = created as SusuDeposit;
       legDocs.push(first);
@@ -692,9 +705,13 @@ export async function recordDeposit(
               totalDeposited: chunkAmount,
               status: chunk.completesCycle ? 'completed' : 'active',
               carriedFromAccountId: parentAccountId,
+              // The book was opened by this payment, so it is as old as the
+              // payment is. Its ref is read off `createdAt` too.
+              createdAt: at,
+              updatedAt: new Date(),
             },
           ],
-          { session },
+          { session, timestamps: false },
         );
         const opened = openedDoc as SusuAccount;
         const [carriedDoc] = await SusuDepositModel.create(
@@ -711,9 +728,11 @@ export async function recordDeposit(
               idempotencyKey: carryKey(idempotencyKey, chunk.index),
               carriedFromDepositId: parentDeposit._id,
               carriedFromAccountId: parentAccountId,
+              createdAt: at,
+              updatedAt: new Date(),
             },
           ],
-          { session },
+          { session, timestamps: false },
         );
         const carried = carriedDoc as SusuDeposit;
         await SusuDepositModel.updateOne(
@@ -871,7 +890,10 @@ export async function collectAll(
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
+  occurredOn?: string,
 ): Promise<CollectAllResult> {
+  // The day the round was walked, which on a backdated entry is not today.
+  const at = resolveOccurredAt(actor, occurredOn);
   await assertCanActOnCustomer(actor, customerId);
   const customer = await loadCustomer(customerId);
 
@@ -968,9 +990,11 @@ export async function collectAll(
               channel,
               collectAllBatchId: batchId,
               idempotencyKey: `${idempotencyKey}#${String(i)}`,
+              createdAt: at,
+              updatedAt: new Date(),
             },
           ],
-          { session },
+          { session, timestamps: false },
         );
         created.push(dep as SusuDeposit);
         await audit(

@@ -5,6 +5,7 @@ import {
   exportFormat,
   fromToIssue,
   idempotencyKey,
+  isoDay,
   objectId,
   pagination,
   positiveMoneyPesewas,
@@ -55,10 +56,27 @@ export type AccountIdParams = z.infer<typeof accountIdParams>;
 export const txnIdParams = z.object({ id: objectId, txnId: objectId });
 export type TxnIdParams = z.infer<typeof txnIdParams>;
 
+/**
+ * The Accra day the money actually changed hands, for history typed in after
+ * the fact. Omit it and the transaction is dated now. Refused unless the
+ * server has backdating turned on (see lib/backdating.ts), and a backdated
+ * transaction is threaded into the account's running balance at the position
+ * its date puts it in, not simply appended.
+ */
+export const occurredOn = isoDay
+  .optional()
+  .describe(
+    'The Accra day the money actually changed hands (YYYY-MM-DD). Omit it and a transaction ' +
+      'is dated now, which is what every ordinary one is. Data-population stage only: ' +
+      'refused with BACKDATING_DISABLED unless the server has ALLOW_BACKDATED_ENTRY set, ' +
+      'and refused for a collector, whose day is the one being reconciled.',
+  );
+
 export const depositBody = z.object({
   amount: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 5'),
   idempotencyKey,
   channel,
+  occurredOn,
 });
 export type DepositBody = z.infer<typeof depositBody>;
 
@@ -66,6 +84,7 @@ export const withdrawalBody = z.object({
   /** What the customer receives; the flat GHS 10 fee is debited on top. */
   amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
+  occurredOn,
 });
 export type WithdrawalBody = z.infer<typeof withdrawalBody>;
 

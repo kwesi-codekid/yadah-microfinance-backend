@@ -5,6 +5,7 @@ import {
   exportFormat,
   fromToIssue,
   idempotencyKey,
+  isoDay,
   objectId,
   pagination,
   positiveMoneyPesewas,
@@ -56,6 +57,21 @@ export const listAccountsQuery = pagination
   });
 export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 
+/**
+ * The Accra day the money actually changed hands, for history typed in after
+ * the fact. Omit it and the transaction is dated now, which is what every
+ * ordinary collection does. Refused unless the server has backdating turned
+ * on for the data-population stage (see lib/backdating.ts).
+ */
+export const occurredOn = isoDay
+  .optional()
+  .describe(
+    'The Accra day the money actually changed hands (YYYY-MM-DD). Omit it and a collection ' +
+      'is dated now, which is what every ordinary one is. Data-population stage only: ' +
+      'refused with BACKDATING_DISABLED unless the server has ALLOW_BACKDATED_ENTRY set, ' +
+      'and refused for a collector, whose day is the one being reconciled.',
+  );
+
 export const accountIdParams = z.object({ id: objectId });
 export type AccountIdParams = z.infer<typeof accountIdParams>;
 
@@ -67,6 +83,7 @@ export const depositBody = z.object({
   amount: positiveMoneyPesewas,
   idempotencyKey,
   channel,
+  occurredOn,
 });
 export type DepositBody = z.infer<typeof depositBody>;
 
@@ -76,6 +93,7 @@ export const collectAllBody = z.object({
   amount: positiveMoneyPesewas,
   idempotencyKey,
   channel,
+  occurredOn,
 });
 export type CollectAllBody = z.infer<typeof collectAllBody>;
 

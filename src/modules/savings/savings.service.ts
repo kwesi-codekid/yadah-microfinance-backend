@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import { resolveOccurredAt } from '../../lib/backdating.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -130,6 +131,69 @@ async function loadCustomer(customerId: Types.ObjectId): Promise<Customer> {
   const customer = await CustomerModel.findById(customerId);
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   return customer;
+}
+
+/**
+ * What the account held at an instant, read off the statement rather than the
+ * account.
+ *
+ * `SavingsAccount.balance` is only ever the balance NOW. A transaction typed
+ * in for last Tuesday belongs between the rows either side of it, and what it
+ * leaves behind is last Tuesday's balance plus its own effect — so the figure
+ * it is built from has to be found where it sits, not at the end.
+ */
+async function balanceAsOf(
+  session: mongoose.ClientSession,
+  accountId: Types.ObjectId,
+  at: Date,
+): Promise<number> {
+  const last = await SavingsTxnModel.findOne(
+    { accountId, createdAt: { $lte: at }, ...NOT_TRASHED },
+    { balanceAfter: 1 },
+  )
+    .sort({ createdAt: -1, _id: -1 })
+    .session(session);
+  return last?.balanceAfter ?? 0;
+}
+
+/**
+ * Moves the running balance of everything recorded after an instant.
+ *
+ * Every savings row carries the balance the account stood at once it landed,
+ * and the statement is read down that column. Insert a row into the middle of
+ * that history and every figure below it is out by the amount inserted, so
+ * they are all moved together, inside the same transaction that writes the
+ * row. Appending to the end — the ordinary case — finds nothing to move.
+ *
+ * Money going out is checked before it is applied: history that has already
+ * happened cannot be made to show an overdrawn account by something typed in
+ * underneath it.
+ */
+async function shiftBalancesAfter(
+  session: mongoose.ClientSession,
+  accountId: Types.ObjectId,
+  at: Date,
+  delta: number,
+): Promise<void> {
+  if (delta === 0) return;
+  const later = { accountId, createdAt: { $gt: at }, ...NOT_TRASHED };
+  if (delta < 0) {
+    const lowest = await SavingsTxnModel.findOne(later, { balanceAfter: 1 })
+      .sort({ balanceAfter: 1 })
+      .session(session);
+    if (lowest && lowest.balanceAfter + delta < 0) {
+      throw new AppError(
+        'BACKDATE_OVERDRAWS',
+        'Taking that out on that day would leave the account overdrawn later in its history',
+        422,
+        {
+          lowestBalanceAfter: lowest.balanceAfter,
+          shortfall: -(lowest.balanceAfter + delta),
+        },
+      );
+    }
+  }
+  await SavingsTxnModel.updateMany(later, { $inc: { balanceAfter: delta } }, { session });
 }
 
 function mapDuplicateKey(err: unknown): never {
@@ -344,7 +408,11 @@ export async function deposit(
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
+  occurredOn?: string,
 ): Promise<TxnResult> {
+  // The day the money changed hands. Resolved before anything is read, so a
+  // date the server will not accept costs nothing.
+  const at = resolveOccurredAt(actor, occurredOn);
   const existing = await SavingsTxnModel.findOne({ idempotencyKey });
   if (existing) {
     if (existing.deletedAt) {
@@ -364,6 +432,7 @@ export async function deposit(
   await assertCanActOnCustomer(actor, pre.customerId);
   await loadCustomer(pre.customerId);
 
+  const backdated = occurredOn !== undefined;
   const session = await mongoose.startSession();
   let txn!: SavingsTxn;
   try {
@@ -384,6 +453,15 @@ export async function deposit(
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
       }
 
+      // Where this row sits in the statement. Dated now — every ordinary
+      // deposit — that is the end of it and the account's own balance is the
+      // answer; dated back, it is whatever the account held that day.
+      const opening = backdated ? await balanceAsOf(session, account._id, at) : account.balance;
+      // Only a dated-back row has anything below it to move. Skipped outright
+      // otherwise, so the path every ordinary deposit takes is the one it
+      // always took.
+      if (backdated) await shiftBalancesAfter(session, account._id, at, amount);
+
       const [created] = await SavingsTxnModel.create(
         [
           {
@@ -391,14 +469,19 @@ export async function deposit(
             customerId: account.customerId,
             type: 'deposit',
             amount,
-            balanceAfter: account.balance + amount,
+            balanceAfter: opening + amount,
             channel,
-            accraDay: accraDay(),
+            accraDay: accraDay(at),
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
+            // `createdAt` is the day the money moved and is what the ledger,
+            // the dashboard and the statement read; `updatedAt` is when the
+            // row was written. The two differ only on a backdated entry.
+            createdAt: at,
+            updatedAt: new Date(),
           },
         ],
-        { session },
+        { session, timestamps: false },
       );
       txn = created as SavingsTxn;
 
@@ -440,7 +523,11 @@ export async function withdraw(
   amount: number,
   idempotencyKey: string,
   requestId?: string,
+  occurredOn?: string,
 ): Promise<TxnResult> {
+  // The day the customer was handed the cash.
+  const at = resolveOccurredAt(actor, occurredOn);
+  const backdated = occurredOn !== undefined;
   const existing = await SavingsTxnModel.findOne({ idempotencyKey });
   if (existing) {
     if (existing.deletedAt) {
@@ -470,13 +557,17 @@ export async function withdraw(
       }).session(session);
       if (!account) throw new AppError('ACCOUNT_NOT_ACTIVE', 'Account is not active', 422);
 
-      const today = accraDay();
-      const todayCashOut = await SavingsTxnModel.findOne({
+      // One withdrawal per account per day, on the day it is dated — which on
+      // a backdated entry is not today. The unique index enforces the same
+      // rule underneath, so a race arrives as a duplicate key rather than a
+      // second withdrawal.
+      const day = accraDay(at);
+      const dayCashOut = await SavingsTxnModel.findOne({
         accountId: account._id,
-        accraDay: today,
+        accraDay: day,
         countsTowardDailyLimit: true,
       }).session(session);
-      if (todayCashOut) {
+      if (dayCashOut) {
         throw new AppError(
           'WITHDRAWAL_LIMIT',
           'Only one withdrawal is allowed per day on an account',
@@ -484,13 +575,17 @@ export async function withdraw(
         );
       }
 
+      // What the account could give up THAT day: the minimum balance and the
+      // fee are the rules that applied then, so they are applied to the
+      // balance as it stood then rather than to today's.
+      const opening = backdated ? await balanceAsOf(session, account._id, at) : account.balance;
       let computation;
       try {
-        computation = computeWithdrawal(account.balance, amount);
+        computation = computeWithdrawal(opening, amount);
       } catch (err) {
         if (err instanceof RangeError) {
           throw new AppError('EXCEEDS_AVAILABLE', 'Amount exceeds the available balance', 422, {
-            available: availableToWithdraw(account.balance),
+            available: availableToWithdraw(opening),
           });
         }
         throw err;
@@ -505,6 +600,12 @@ export async function withdraw(
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
       }
 
+      // Everything recorded after it drops by what left the account. Nothing
+      // is below an ordinary withdrawal, so it is skipped there.
+      if (backdated) {
+        await shiftBalancesAfter(session, account._id, at, -computation.totalDebit);
+      }
+
       const [created] = await SavingsTxnModel.create(
         [
           {
@@ -515,13 +616,15 @@ export async function withdraw(
             fee: computation.fee,
             balanceAfter: computation.balanceAfter,
             channel: 'cash',
-            accraDay: today,
+            accraDay: day,
             countsTowardDailyLimit: true,
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
+            createdAt: at,
+            updatedAt: new Date(),
           },
         ],
-        { session },
+        { session, timestamps: false },
       );
       txn = created as SavingsTxn;
 

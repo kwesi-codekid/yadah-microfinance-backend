@@ -14,3 +14,8 @@ if (!uri) throw new Error('MONGO_URI missing — integration tests need the clus
 const url = new URL(uri);
 url.pathname = '/yadah-test';
 process.env.MONGO_URI = url.toString();
+
+// Backdating is off in production until the branch asks for it, but the suite
+// has to be able to exercise it. The guard that refuses it when the flag is
+// off is covered by src/lib/backdating.test.ts, which mocks the config.
+process.env.ALLOW_BACKDATED_ENTRY = 'true';

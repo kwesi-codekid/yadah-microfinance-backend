@@ -263,6 +263,7 @@ savingsRouter.post(
         body.idempotencyKey,
         body.channel,
         req.id as string,
+        body.occurredOn,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
@@ -279,7 +280,14 @@ savingsRouter.post(
   (req, res, next) => {
     const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawalBody }>(req);
     savingsService
-      .withdraw(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .withdraw(
+        getAuth(req),
+        params.id,
+        body.amount,
+        body.idempotencyKey,
+        req.id as string,
+        body.occurredOn,
+      )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },

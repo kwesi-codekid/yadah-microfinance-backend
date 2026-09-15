@@ -24,6 +24,19 @@ const envSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().default(''),
   /** Contact URI push services can reach you on, e.g. mailto:ops@example.com. */
   VAPID_SUBJECT: z.string().default('mailto:support@yadah.example'),
+  /**
+   * Data-population stage only. Lets the office say which day a susu or
+   * savings transaction actually happened on, for history being typed in
+   * after the fact. Off by default and meant to be switched off again once
+   * the branch is caught up — see lib/backdating.ts.
+   *
+   * An enum rather than `coerce.boolean`, which follows JS truthiness and
+   * would read the string 'false' as true.
+   */
+  ALLOW_BACKDATED_ENTRY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);

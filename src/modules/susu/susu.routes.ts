@@ -238,6 +238,7 @@ susuRouter.post(
         body.idempotencyKey,
         body.channel,
         req.id as string,
+        body.occurredOn,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
@@ -254,6 +255,7 @@ susuRouter.post('/collect-all', validate({ body: collectAllBody }), (req, res, n
       body.idempotencyKey,
       body.channel,
       req.id as string,
+      body.occurredOn,
     )
     .then((result) => res.status(result.replayed ? 200 : 201).json(result))
     .catch(next);
