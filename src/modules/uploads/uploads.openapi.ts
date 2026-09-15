@@ -11,7 +11,11 @@ export const uploadPaths: ZodOpenApiPathsObject = {
       tags: ['Uploads'],
       summary: 'Upload an image, get back its URL',
       description:
-        'Multipart form with an `image` file field (JPEG/PNG/WebP, max 5 MB). ' +
+        'Multipart form with an `image` file field, max 10 MB. JPEG, PNG, WebP, ' +
+        'HEIC/HEIF (what an iPhone saves), AVIF, GIF, BMP and TIFF are all accepted; ' +
+        'a file whose type the browser could not name is judged by its extension ' +
+        'instead. Whatever arrives is stored as JPEG — or PNG, if PNG was sent — so ' +
+        'every URL this returns opens in any browser and embeds in a PDF. ' +
         'Returns the hosted URL for the frontend to include in a later form submit ' +
         '(e.g. customer photoUrl / idDocumentFrontUrl / idDocumentBackUrl). ' +
         'Use kind=document for ID scans (higher resolution) and kind=signature for a picture ' +
