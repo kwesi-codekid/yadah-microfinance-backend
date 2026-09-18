@@ -16,6 +16,13 @@ export interface AuditLog {
   before?: unknown; // snapshot of changed fields
   after?: unknown;
   requestId?: string;
+  /**
+   * Where the change came from, read off the request by lib/audit.ts. Absent
+   * on entries a background worker wrote — those are the system's own.
+   */
+  method?: string; // POST, PATCH…
+  path?: string; // /api/v1/susu/accounts/…/deposits — no query string
+  userAgent?: string; // the browser, or the collector app's HTTP client
   createdAt: Date;
 }
 
@@ -30,11 +37,18 @@ const auditLogSchema = new Schema<AuditLog>(
     before: { type: Schema.Types.Mixed },
     after: { type: Schema.Types.Mixed },
     requestId: { type: String },
+    method: { type: String },
+    path: { type: String },
+    userAgent: { type: String },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 
 auditLogSchema.index({ entityType: 1, entityId: 1, createdAt: -1 });
 auditLogSchema.index({ actorId: 1, createdAt: -1 });
+// The office reads the trail newest-first, whole or narrowed to one area of
+// the business by action prefix — see modules/audit-logs.
+auditLogSchema.index({ createdAt: -1 });
+auditLogSchema.index({ action: 1, createdAt: -1 });
 
 export const AuditLogModel = model<AuditLog>('AuditLog', auditLogSchema, 'audit-logs');

@@ -196,6 +196,7 @@ const hpItem = z
       .optional()
       .describe('What kind of thing it is — one of GET /hire-purchase/categories'),
     description: z.string().optional(),
+    imageUrl: z.string().optional().describe('A picture of the item'),
     quantityInStock: z.number().int(),
     costPrice: z.number().int().describe('What Yadah paid — office-only, never shown to customers'),
     sellingPrice: z.number().int().describe('What the customer pays'),

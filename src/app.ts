@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import { httpLogger } from './lib/logger.js';
+import { requestContext } from './lib/request-context.js';
 import { errorHandler, notFoundHandler } from './lib/errors.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { openapiRouter } from './openapi/routes.js';
@@ -23,12 +24,16 @@ import { reconciliationRouter } from './modules/reconciliation/reconciliation.ro
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { paymentsRouter, paystackWebhookHandler } from './modules/payments/payments.routes.js';
 import { correctionsRouter } from './modules/corrections/corrections.routes.js';
+import { auditLogsRouter } from './modules/audit-logs/audit-logs.routes.js';
 
 export function createApp(): express.Express {
   const app = express();
 
   app.disable('x-powered-by');
   app.use(httpLogger);
+  // Right after the logger, which mints `req.id`: from here on every audit
+  // entry knows the endpoint and the device it came through.
+  app.use(requestContext);
   // The Paystack webhook signature covers the raw bytes, so this route must
   // see the body BEFORE the global JSON parser touches it.
   app.post(
@@ -67,6 +72,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/notifications', notificationsRouter);
   app.use('/api/v1/payments', paymentsRouter);
   app.use('/api/v1/corrections', correctionsRouter);
+  app.use('/api/v1/audit-logs', auditLogsRouter);
   // Further routers mount here as modules land: /api/v1/{users|customers|susu|savings|loans|reports}
 
   app.use(notFoundHandler);

@@ -128,7 +128,7 @@ export const TAG_GROUPS = [
   },
   {
     name: 'Office — administration',
-    tags: ['Customers', 'Users', 'Notifications', 'Uploads'],
+    tags: ['Customers', 'Users', 'Audit Log', 'Notifications', 'Uploads'],
   },
 ];
 

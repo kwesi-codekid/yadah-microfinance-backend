@@ -18,6 +18,7 @@ import { paymentPaths } from '../modules/payments/payments.openapi.js';
 import { reconciliationPaths } from '../modules/reconciliation/reconciliation.openapi.js';
 import { notificationPaths } from '../modules/notifications/notifications.openapi.js';
 import { correctionPaths } from '../modules/corrections/corrections.openapi.js';
+import { auditLogPaths } from '../modules/audit-logs/audit-logs.openapi.js';
 import { applyAudienceTags, AUDIENCE_TAGS, TAG_GROUPS } from './audiences.js';
 
 /** Modules register their paths here as they land (users, customers, susu…). */
@@ -150,6 +151,12 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
           'Corrections to a figure already on the ledger: the office corrects outright ' +
           'on each module, a teller asks and the office decides here',
       },
+      {
+        name: 'Audit Log',
+        description:
+          'The read-only trail of every change made through the API: who did what to ' +
+          'which record, with the figures before and after. Office only.',
+      },
     ],
     paths: {
       ...authPaths,
@@ -171,6 +178,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...reconciliationPaths,
       ...notificationPaths,
       ...correctionPaths,
+      ...auditLogPaths,
     },
     components: {
       securitySchemes: {

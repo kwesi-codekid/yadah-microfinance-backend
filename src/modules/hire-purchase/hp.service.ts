@@ -77,6 +77,7 @@ export interface PublicHpItem {
   brand?: { id: string; name: string };
   category?: { id: string; name: string };
   description?: string;
+  imageUrl?: string;
   quantityInStock: number;
   costPrice: number;
   sellingPrice: number;
@@ -118,6 +119,7 @@ function toPublicItem(i: HpItem, names: Map<string, string>): PublicHpItem {
     ...(brand !== undefined ? { brand } : {}),
     ...(category !== undefined ? { category } : {}),
     ...(i.description !== undefined ? { description: i.description } : {}),
+    ...(i.imageUrl ? { imageUrl: i.imageUrl } : {}),
     quantityInStock: i.quantityInStock,
     costPrice: i.costPrice,
     sellingPrice: i.sellingPrice,
@@ -173,13 +175,14 @@ export async function createItem(
   body: CreateItemBody,
   requestId?: string,
 ): Promise<PublicHpItem> {
-  const { brandId, categoryId, description, condition, ...fields } = body;
+  const { brandId, categoryId, description, imageUrl, condition, ...fields } = body;
   await assertLabels(brandId, categoryId);
   const item = await HpItemModel.create({
     ...fields,
     ...(brandId !== undefined ? { brandId } : {}),
     ...(categoryId !== undefined ? { categoryId } : {}),
     ...(description !== undefined ? { description } : {}),
+    ...(imageUrl !== undefined ? { imageUrl } : {}),
     ...(condition !== undefined ? { condition } : {}),
     createdById: new Types.ObjectId(actor.sub),
   });
@@ -261,6 +264,15 @@ export async function updateItem(
       after[key] = value;
       if (value === undefined) item.set(key, undefined);
       else item[key] = value;
+    }
+  }
+  // Null takes the picture off, as with the labels.
+  if (patch.imageUrl !== undefined) {
+    const value = patch.imageUrl ?? undefined;
+    if (value !== item.imageUrl) {
+      before.imageUrl = item.imageUrl;
+      after.imageUrl = value;
+      item.set('imageUrl', value);
     }
   }
   validatePricing(item.costPrice, item.sellingPrice);

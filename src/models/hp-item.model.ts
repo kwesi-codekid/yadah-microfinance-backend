@@ -16,6 +16,8 @@ export interface HpItem extends TrashFields {
   /** What kind of thing it is — a managed label, likewise. */
   categoryId?: Types.ObjectId;
   description?: string;
+  /** A picture of the thing, from POST /uploads/images. */
+  imageUrl?: string;
   quantityInStock: number;
   costPrice: number; // pesewas — Yadah's private margin input
   sellingPrice: number; // pesewas — what the customer pays
@@ -33,6 +35,7 @@ const hpItemSchema = new Schema<HpItem>(
     brandId: { type: Schema.Types.ObjectId, ref: 'HpLabel' },
     categoryId: { type: Schema.Types.ObjectId, ref: 'HpLabel' },
     description: { type: String, trim: true },
+    imageUrl: { type: String, trim: true },
     quantityInStock: { type: Number, required: true, min: 0 },
     costPrice: moneyField,
     sellingPrice: moneyField,

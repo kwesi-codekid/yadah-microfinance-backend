@@ -22,6 +22,8 @@ export const createItemBody = z
     /** A category from GET /hire-purchase/categories. */
     categoryId: objectId.optional(),
     description: z.string().min(2).max(500).trim().optional(),
+    /** A picture of the item — from POST /uploads/images. */
+    imageUrl: uploadedImageUrl.optional(),
     quantityInStock: z.number().int().min(0),
     costPrice: positiveMoneyPesewas,
     sellingPrice: positiveMoneyPesewas,
@@ -47,6 +49,8 @@ export const updateItemBody = z
     brandId: objectId.nullable().optional(),
     categoryId: objectId.nullable().optional(),
     description: z.string().min(2).max(500).trim().optional(),
+    /** Null takes the picture off. */
+    imageUrl: uploadedImageUrl.nullable().optional(),
     costPrice: positiveMoneyPesewas.optional(),
     sellingPrice: positiveMoneyPesewas.optional(),
     status: z.enum(['active', 'discontinued']).optional(),
