@@ -56,13 +56,13 @@ export const nextOfKin = z.object({
   address: clearable(z.string().min(2).max(300).trim()).optional(),
 });
 
-const MIN_CUSTOMER_AGE_YEARS = 10;
-
-/** Evaluated per parse (not at module load) so long-running processes stay correct. */
-function isAtLeastYearsOld(dateOfBirth: Date, years: number): boolean {
-  const cutoff = new Date();
-  cutoff.setFullYear(cutoff.getFullYear() - years);
-  return dateOfBirth <= cutoff;
+/**
+ * No minimum age — the office opens accounts for children too. A birth date
+ * only has to have happened. Evaluated per parse (not at module load) so
+ * long-running processes stay correct.
+ */
+function isNotInFuture(dateOfBirth: Date): boolean {
+  return dateOfBirth.getTime() <= Date.now();
 }
 
 export const PHONES_DISTINCT_MESSAGE =
@@ -95,12 +95,7 @@ export function phoneClashes(v: {
  */
 export const profileRules = {
   fullName: z.string().min(2).max(120).trim(),
-  dateOfBirth: z.coerce
-    .date()
-    .refine(
-      (d) => isAtLeastYearsOld(d, MIN_CUSTOMER_AGE_YEARS),
-      `Customer must be at least ${String(MIN_CUSTOMER_AGE_YEARS)} years old`,
-    ),
+  dateOfBirth: z.coerce.date().refine(isNotInFuture, 'Date of birth cannot be in the future'),
   gender: z.enum(['male', 'female']),
   nationality: z.string().min(2).max(60).trim(),
   maritalStatus: z.enum(['single', 'married', 'other']),

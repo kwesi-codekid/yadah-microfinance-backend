@@ -91,26 +91,33 @@ describe('identification per-type formats', () => {
   });
 });
 
-describe('dateOfBirth minimum age', () => {
+describe('dateOfBirth — no minimum age, past dates only', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('rejects customers under 10 and evaluates the cutoff per parse', () => {
+  it('accepts a child', () => {
     vi.setSystemTime(new Date('2026-08-10T12:00:00Z'));
-    const nineYearsOld = { ...validBody, dateOfBirth: '2017-01-01' };
-    expect(createCustomerBody.safeParse(nineYearsOld).success).toBe(false);
-
-    // Same input becomes valid once the clock moves past the 10th birthday —
-    // proving the cutoff is not frozen at module load.
-    vi.setSystemTime(new Date('2027-01-02T12:00:00Z'));
-    expect(createCustomerBody.safeParse(nineYearsOld).success).toBe(true);
-  });
-
-  it('accepts a customer exactly 10 years old', () => {
-    vi.setSystemTime(new Date('2026-08-10T12:00:00Z'));
-    expect(createCustomerBody.safeParse({ ...validBody, dateOfBirth: '2016-08-10' }).success).toBe(
+    expect(createCustomerBody.safeParse({ ...validBody, dateOfBirth: '2024-03-01' }).success).toBe(
       true,
     );
+  });
+
+  it('accepts a birth date of today', () => {
+    vi.setSystemTime(new Date('2026-08-10T12:00:00Z'));
+    expect(createCustomerBody.safeParse({ ...validBody, dateOfBirth: '2026-08-10' }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects a future date and evaluates "now" per parse', () => {
+    vi.setSystemTime(new Date('2026-08-10T12:00:00Z'));
+    const tomorrow = { ...validBody, dateOfBirth: '2026-08-11' };
+    expect(createCustomerBody.safeParse(tomorrow).success).toBe(false);
+
+    // Same input becomes valid once the clock moves past it — proving "now"
+    // is not frozen at module load.
+    vi.setSystemTime(new Date('2026-08-12T12:00:00Z'));
+    expect(createCustomerBody.safeParse(tomorrow).success).toBe(true);
   });
 });
 

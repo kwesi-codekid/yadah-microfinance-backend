@@ -295,7 +295,7 @@ export const customerPaths: ZodOpenApiPathsObject = {
         'Phone, alternate phone and ' +
         'next-of-kin phone must all be different numbers. ID numbers are format-checked ' +
         'per type (Ghana Card GHA-123456789-0, voter ID 8 digits, passport G12345678, ' +
-        "driver's licence 10-20 alphanumerics). Customers must be at least 10 years old.",
+        "driver's licence 10-20 alphanumerics). Date of birth may be any past date (no minimum age).",
       security,
       requestBody: jsonBody(createCustomerBody),
       responses: {
