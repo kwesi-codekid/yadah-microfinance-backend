@@ -5,6 +5,7 @@ import {
   buildSchedule,
   computeInterest,
   escalationActionFor,
+  paperEscalationStart,
   tierFor,
 } from './loans.js';
 
@@ -121,5 +122,46 @@ describe('allocateRepayment — oldest first, partials allowed', () => {
   it('caps at what is owed', () => {
     const lines = [{ amountDue: 100, amountPaid: 0 }];
     expect(allocateRepayment(lines, 500)).toEqual([100]);
+  });
+});
+
+describe('paperEscalationStart — the paper rate stands on the day of entry', () => {
+  const entered = new Date('2026-09-29T10:00:00Z');
+
+  it('keeps the disbursement as the clock while the paper rate still covers the loan', () => {
+    const disbursed = new Date('2026-08-01T10:00:00Z'); // two months old, 10% covers three
+    expect(paperEscalationStart(10, disbursed, entered)).toEqual(disbursed);
+    expect(escalationActionFor(10, disbursed, entered)).toBeNull();
+  });
+
+  it('gives an overtaken 10% a full three months from entry', () => {
+    const disbursed = new Date('2026-01-29T10:00:00Z'); // eight months old, still on 10%
+    const start = paperEscalationStart(10, disbursed, entered);
+    expect(start).toEqual(entered);
+    expect(escalationActionFor(10, start, entered)).toBeNull();
+    expect(escalationActionFor(10, start, new Date('2026-12-30T10:00:00Z'))).toEqual({
+      type: 'escalate',
+      newRatePercent: 20,
+    });
+  });
+
+  it('gives an overtaken 20% its three-month step from entry', () => {
+    const disbursed = new Date('2025-11-01T10:00:00Z'); // eleven months old, on 20%
+    const start = paperEscalationStart(20, disbursed, entered);
+    expect(start).toEqual(new Date('2026-06-29T10:00:00Z'));
+    expect(escalationActionFor(20, start, new Date('2026-12-29T10:00:00Z'))).toBeNull();
+    expect(escalationActionFor(20, start, new Date('2026-12-30T10:00:00Z'))).toEqual({
+      type: 'escalate',
+      newRatePercent: 30,
+    });
+  });
+
+  it('gives an overtaken 30% six months before it freezes', () => {
+    const disbursed = new Date('2024-01-01T10:00:00Z'); // years old, on 30%
+    const start = paperEscalationStart(30, disbursed, entered);
+    expect(escalationActionFor(30, start, new Date('2027-03-29T10:00:00Z'))).toBeNull();
+    expect(escalationActionFor(30, start, new Date('2027-03-30T10:00:00Z'))).toEqual({
+      type: 'freeze',
+    });
   });
 });

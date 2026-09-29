@@ -40,6 +40,12 @@ export interface Loan extends TrashFields {
     idType?: string;
     idNumber?: string;
   };
+  /**
+   * Anybody else standing behind the loan, after the first. Paper loans may
+   * name several; the first stays in `guarantorSnapshot`, where every screen,
+   * receipt and export already reads it.
+   */
+  moreGuarantors?: { fullName: string; phone: string; idNumber?: string }[];
   tier: 'small' | 'big';
   principal: number; // pesewas, never changes
   durationMonths: 3 | 6 | 12;
@@ -61,6 +67,22 @@ export interface Loan extends TrashFields {
   rejectionReason?: string;
   /** A picture of the customer's signature on the application. */
   signatureUrl?: string;
+  /**
+   * `paper` for a loan the branch made before the system existed, copied in
+   * from its paper record (see `recordPaperLoan`). Absent on every loan that
+   * went through the application flow.
+   */
+  origin?: 'paper';
+  /** The number written on the paper form, where it has one. */
+  paperRef?: string;
+  /** A photograph of the paper form. */
+  paperPhotoUrl?: string;
+  /**
+   * Where the escalation clock counts from, when that is not the disbursement.
+   * Set on a paper loan whose paper rate would otherwise be overtaken the
+   * night it is entered — see `paperEscalationStart`.
+   */
+  escalationFrom?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -82,6 +104,19 @@ const loanSchema = new Schema<Loan>(
         { _id: false },
       ),
       required: false,
+    },
+    moreGuarantors: {
+      type: [
+        new Schema(
+          {
+            fullName: { type: String, required: true, trim: true },
+            phone: { type: String, required: true, trim: true },
+            idNumber: { type: String },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
     },
     tier: { type: String, enum: ['small', 'big'], required: true },
     principal: { ...moneyField, immutable: true },
@@ -106,6 +141,10 @@ const loanSchema = new Schema<Loan>(
     repaidOnTime: { type: Boolean },
     signatureUrl: { type: String },
     rejectionReason: { type: String, trim: true },
+    origin: { type: String, enum: ['paper'] },
+    paperRef: { type: String, trim: true },
+    paperPhotoUrl: { type: String },
+    escalationFrom: { type: Date },
     ...trashFields,
   },
   { timestamps: true },
@@ -116,5 +155,7 @@ loanSchema.index({ customerId: 1, status: 1 });
 // guarantor again, and on their own record.
 loanSchema.index({ guarantorId: 1, status: 1 });
 loanSchema.index({ status: 1, dueDate: 1 }); // overdue cron scans
+// A paper form is copied in once: the same number twice is a double entry.
+loanSchema.index({ paperRef: 1 }, { sparse: true });
 
 export const LoanModel = model<Loan>('Loan', loanSchema, 'loans');

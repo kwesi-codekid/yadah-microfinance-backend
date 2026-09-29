@@ -3,7 +3,11 @@ import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { AppError } from '../../lib/errors.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireCounter, requireOffice } from '../../middleware/rbac.js';
+import { acceptSheet } from '../../middleware/sheet-upload.js';
 import { getValidated, validate } from '../../middleware/validate.js';
+import { z } from 'zod';
+import { exportFormat } from '../../schemas/common.js';
+import { importRowsBody, type ImportRowsBody } from '../customers/customers.schemas.js';
 import {
   applyBody,
   customerIdParams,
@@ -11,6 +15,7 @@ import {
   loanIdParams,
   repaymentIdParams,
   loanTrashQuery,
+  paperLoanBody,
   putConfigBody,
   rejectBody,
   repayBody,
@@ -22,6 +27,7 @@ import {
   type LoanIdParams,
   type RepaymentIdParams,
   type LoanTrashQuery,
+  type PaperLoanBody,
   type PutConfigBody,
   type RejectBody,
   type RepayBody,
@@ -36,6 +42,8 @@ import {
 } from '../corrections/corrections.schemas.js';
 import * as corrections from '../corrections/corrections.service.js';
 import * as loansService from './loans.service.js';
+import * as paperLoans from './paper-loans.service.js';
+import * as paperImport from './paper-loans.import.js';
 
 // Loans are office territory throughout (admin ≡ manager for now).
 export const loansRouter = Router();
@@ -79,7 +87,7 @@ loansRouter.get(
 loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next) => {
   const { body } = getValidated<{ body: ApplyBody }>(req);
   // The schema insists on exactly one; this only tells the compiler so.
-  const guarantor = body.guarantorId ?? body.guarantor;
+  const guarantor = body.guarantorId ?? body.guarantor ?? body.guarantors;
   if (guarantor === undefined) {
     next(new AppError('VALIDATION_ERROR', 'Give the guarantor', 400));
     return;
@@ -97,6 +105,62 @@ loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next
     .then((loan) => res.status(201).json({ loan }))
     .catch(next);
 });
+
+// A loan made on paper before the system existed, copied in as history. Only
+// while ALLOW_BACKDATED_ENTRY is on — the backlog is closed by turning it off.
+loansRouter.post('/paper', requireOffice, validate({ body: paperLoanBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: PaperLoanBody }>(req);
+  paperLoans
+    .recordPaperLoan(getAuth(req), body, req.id as string)
+    .then((loan) => res.status(201).json({ loan }))
+    .catch(next);
+});
+
+const templateQuery = z.object({ format: exportFormat });
+type TemplateQuery = z.infer<typeof templateQuery>;
+
+// The blank sheet for copying the paper loan book in: one row per payment.
+loansRouter.get(
+  '/paper/import/template',
+  requireOffice,
+  validate({ query: templateQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: TemplateQuery }>(req);
+    sendExport(res, {
+      format: query.format === 'json' ? 'xlsx' : query.format,
+      filename: 'paper-loans-template',
+      payload: null,
+      rows: paperImport.templateRows(),
+      sheet: 'Paper loans',
+    }).catch(next);
+  },
+);
+
+// Check an uploaded sheet. Writes nothing.
+loansRouter.post('/paper/import/preview', requireOffice, acceptSheet, (req, res, next) => {
+  if (!req.file) {
+    next(new AppError('VALIDATION_ERROR', 'A "file" field carrying the sheet is required', 400));
+    return;
+  }
+  paperImport
+    .previewImportFile(req.file)
+    .then((preview) => res.json(preview))
+    .catch(next);
+});
+
+// Record the loans the sheet describes, loan by loan.
+loansRouter.post(
+  '/paper/import',
+  requireOffice,
+  validate({ body: importRowsBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: ImportRowsBody }>(req);
+    paperImport
+      .importPaperLoans(getAuth(req), body.rows, req.id as string)
+      .then((result) => res.status(201).json(result))
+      .catch(next);
+  },
+);
 
 loansRouter.get('/', validate({ query: listLoansQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: ListLoansQuery }>(req);

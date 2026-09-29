@@ -7,6 +7,7 @@ import {
 } from '../corrections/corrections.openapi.js';
 import {
   applyBody,
+  paperLoanBody,
   listLoansQuery,
   loanTrashQuery,
   putConfigBody,
@@ -150,6 +151,54 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/loans/paper': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Record a loan made on paper before the system existed',
+      description:
+        'Only while ALLOW_BACKDATED_ENTRY is on, and never by a collector (BACKDATING_DISABLED, ' +
+        'FORBIDDEN). Written as history: dated on disbursedOn, at the rate the paper says is ' +
+        'owed now, with each repayment on the day it was paid. No limit on how far back. ' +
+        'Created active, or repaid when the payments cover the total. Still refused when it ' +
+        'would be a second open loan (LOAN_EXISTS) or sit beside open hire purchase (HP_EXISTS). ' +
+        'The ID scans, signature and saving history are not required. Marked origin=paper.',
+      security,
+      requestBody: jsonBody(paperLoanBody),
+      responses: {
+        '201': jsonResponse('Paper loan recorded', loanResult),
+        '409': errorResponse(
+          'LOAN_EXISTS, HP_EXISTS, or PAPER_DUPLICATE (paperRef already entered)',
+        ),
+        '422': errorResponse(
+          'BACKDATING_DISABLED, DATE_IN_FUTURE, PAPER_DATES, PAPER_RATE, or EXCEEDS_BALANCE',
+        ),
+      },
+    },
+  },
+  '/loans/paper/import/template': {
+    get: {
+      tags: ['Loans'],
+      summary: 'Blank sheet for importing paper loans — one row per payment',
+      security,
+      responses: { '200': { description: 'The template (xlsx or csv)' } },
+    },
+  },
+  '/loans/paper/import/preview': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Check a paper-loan sheet (multipart field "file"). Writes nothing.',
+      security,
+      responses: { '200': { description: 'Rows, the loans they make up, and what blocks each' } },
+    },
+  },
+  '/loans/paper/import': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Record the loans a paper-loan sheet describes, loan by loan',
+      security,
+      responses: { '201': { description: 'What was recorded, and what failed and why' } },
+    },
+  },
   '/loans/applications': {
     post: {
       tags: ['Loans'],
@@ -186,7 +235,9 @@ export const loanPaths: ZodOpenApiPathsObject = {
       summary: 'List loans',
       description:
         'Pass format=csv or format=xlsx to download the filtered list as a ' +
-        'spreadsheet (pagination is ignored; capped at 10,000 rows).',
+        'spreadsheet (pagination is ignored; capped at 10,000 rows). `totals` covers the ' +
+        'whole filter rather than the page, and counts only disbursed loans ' +
+        '(active, arrears, repaid) — pending and rejected applications moved no cash.',
       security,
       requestParams: { query: listLoansQuery },
       responses: {
@@ -197,6 +248,15 @@ export const loanPaths: ZodOpenApiPathsObject = {
             page: z.number(),
             limit: z.number(),
             total: z.number(),
+            totals: z.object({
+              disbursed: z.number().int().describe('Principal disbursed, pesewas'),
+              disbursedCount: z.number().int(),
+              repaid: z.number().int().describe('Collected against those loans, pesewas'),
+              outstanding: z.number().int().describe('Owed on active + arrears loans, pesewas'),
+              outstandingCount: z.number().int(),
+              arrears: z.number().int().describe('Owed on arrears loans alone, pesewas'),
+              arrearsCount: z.number().int(),
+            }),
           }),
         ),
       },

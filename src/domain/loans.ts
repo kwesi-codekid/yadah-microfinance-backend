@@ -148,3 +148,33 @@ export function allocateRepayment(instalments: InstalmentLike[], amount: number)
     return applied;
   });
 }
+
+/**
+ * Where a paper loan's escalation clock starts.
+ *
+ * A loan copied in from paper carries the rate the paper says is owed today.
+ * The ladder normally counts from disbursement — 10% covers the first three
+ * months, 20% up to six, 30% up to twelve — so an old loan still on its first
+ * rate would be escalated the very night it was entered, overruling the paper.
+ * The client's rule (29 Sep 2026) is that the paper stands, and the app only
+ * raises the rate from there if the customer stays late.
+ *
+ * So: when the paper rate's window has not yet run out, the clock is the
+ * disbursement, as for any loan. When it has, the day of entry is treated as
+ * the start of that rate's step — it gets its full step (three months for 10%
+ * and 20%, six for 30%) before the next one applies.
+ */
+export function paperEscalationStart(
+  ratePercent: number,
+  disbursedAt: Date,
+  enteredAt: Date,
+  rates: LoanRates = DEFAULT_RATES,
+): Date {
+  const covered = monthsCoveredByRate(ratePercent, rates);
+  if (addMonthsClamped(disbursedAt, covered).getTime() >= enteredAt.getTime()) {
+    return disbursedAt;
+  }
+  const idx = LOAN_DURATIONS.indexOf(covered);
+  const stepStartsAt = idx === 0 ? 0 : (LOAN_DURATIONS[idx - 1] ?? 0);
+  return addMonthsClamped(enteredAt, -stepStartsAt);
+}

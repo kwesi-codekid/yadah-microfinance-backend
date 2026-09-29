@@ -5,6 +5,7 @@ import {
   SheetLayout,
   caps,
   matchEnum,
+  normalizeDay,
   normalizeHeader,
   plain,
   readSheet,
@@ -111,19 +112,6 @@ export function blankRow(): Record<ImportField, string> {
 }
 
 // ---------------------------------------------------------------- normalising cells
-
-/** `12/04/1990` and `12-04-1990` are how people write dates here. */
-function normalizeDay(value: string): string | undefined {
-  const v = value.trim();
-  if (v === '') return undefined;
-  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
-  const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(v);
-  if (dmy) {
-    const [, d, m, y] = dmy as unknown as [string, string, string, string];
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-  }
-  return v; // handed on as-is so the schema is the one that refuses it
-}
 
 const GENDERS = ['male', 'female'] as const;
 const MARITAL_STATUSES = ['single', 'married', 'other'] as const;

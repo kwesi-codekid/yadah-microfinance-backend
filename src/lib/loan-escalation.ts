@@ -25,7 +25,9 @@ export async function runEscalationPass(
 
   const candidates = await LoanModel.find({ status: 'active', frozen: false, ...NOT_TRASHED });
   for (const loan of candidates) {
-    const start = loan.disbursedAt ?? loan.approvedAt;
+    // A paper loan may carry its own clock, so the rate its paper names is
+    // not overtaken the night it is entered (see paperEscalationStart).
+    const start = loan.escalationFrom ?? loan.disbursedAt ?? loan.approvedAt;
     if (!start) continue;
     const action = escalationActionFor(loan.ratePercent, start, now, activeRates);
     if (!action) continue;

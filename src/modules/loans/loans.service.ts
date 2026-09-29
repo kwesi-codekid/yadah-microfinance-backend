@@ -110,6 +110,8 @@ export interface PublicLoan {
     idType?: string;
     idNumber?: string;
   };
+  /** Anybody else standing behind it, after the first (paper loans may name several). */
+  moreGuarantors?: { fullName: string; phone: string; idNumber?: string }[];
   tier: 'small' | 'big';
   principal: number;
   durationMonths: number;
@@ -130,6 +132,10 @@ export interface PublicLoan {
   rejectionReason?: string;
   /** A picture of the customer's signature on the application. */
   signatureUrl?: string;
+  /** `paper` for a loan copied in from the branch's pre-system records. */
+  origin?: 'paper';
+  paperRef?: string;
+  paperPhotoUrl?: string;
 }
 
 export function toPublicLoan(l: Loan): PublicLoan {
@@ -139,6 +145,7 @@ export function toPublicLoan(l: Loan): PublicLoan {
     customerId: l.customerId.toHexString(),
     ...(l.guarantorId !== undefined ? { guarantorId: l.guarantorId.toHexString() } : {}),
     ...(l.guarantorSnapshot !== undefined ? { guarantor: l.guarantorSnapshot } : {}),
+    ...(l.moreGuarantors?.length ? { moreGuarantors: l.moreGuarantors } : {}),
     tier: l.tier,
     principal: l.principal,
     durationMonths: l.durationMonths,
@@ -158,6 +165,9 @@ export function toPublicLoan(l: Loan): PublicLoan {
     ...(l.repaidOnTime !== undefined ? { repaidOnTime: l.repaidOnTime } : {}),
     ...(l.rejectionReason !== undefined ? { rejectionReason: l.rejectionReason } : {}),
     ...(l.signatureUrl !== undefined ? { signatureUrl: l.signatureUrl } : {}),
+    ...(l.origin !== undefined ? { origin: l.origin } : {}),
+    ...(l.paperRef !== undefined ? { paperRef: l.paperRef } : {}),
+    ...(l.paperPhotoUrl !== undefined ? { paperPhotoUrl: l.paperPhotoUrl } : {}),
   };
 }
 
@@ -187,7 +197,7 @@ export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
 }
 
 /** Loan states that count as "the customer already has a loan". */
-const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
+export const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
 
 // ---------------------------------------------------------------- eligibility
 
@@ -333,7 +343,7 @@ export async function applyForLoan(
   principal: number,
   durationMonths: LoanDuration,
   /** A registered customer, or anybody at all by name and phone. */
-  guarantor: Types.ObjectId | GuarantorDetails,
+  guarantor: Types.ObjectId | GuarantorDetails | GuarantorDetails[],
   signatureUrl?: string,
   requestId?: string,
 ): Promise<PublicLoan> {
@@ -385,15 +395,24 @@ export async function applyForLoan(
   // rather than about the tier.
   // A guarantor off the books is taken as written: there is no record to hold
   // them to, and the paper they signed is the evidence.
+  // Several may be named: the first goes where every screen, receipt and
+  // export already reads the guarantor, the rest beside it.
+  const typed = (g: GuarantorDetails): NonNullable<Loan['guarantorSnapshot']> => ({
+    fullName: g.fullName,
+    phone: g.phone,
+    ...(g.idNumber !== undefined ? { idNumber: g.idNumber } : {}),
+  });
   const guarantorId = guarantor instanceof Types.ObjectId ? guarantor : undefined;
+  const [firstTyped, ...moreGuarantors] = Array.isArray(guarantor) ? guarantor.map(typed) : [];
   const guarantorSnapshot: NonNullable<Loan['guarantorSnapshot']> =
     guarantor instanceof Types.ObjectId
       ? await resolveGuarantor(customerId, guarantor)
-      : {
-          fullName: guarantor.fullName,
-          phone: guarantor.phone,
-          ...(guarantor.idNumber !== undefined ? { idNumber: guarantor.idNumber } : {}),
-        };
+      : Array.isArray(guarantor)
+        ? (firstTyped ?? typed({ fullName: '', phone: '' }))
+        : typed(guarantor);
+  if (guarantorSnapshot.fullName === '') {
+    throw new AppError('VALIDATION_ERROR', 'Give the guarantor', 400);
+  }
 
   const config = await getLoanConfig();
   const tier = tierFor(principal, config.tiers);
@@ -419,6 +438,7 @@ export async function applyForLoan(
     customerId,
     ...(guarantorId !== undefined ? { guarantorId } : {}),
     guarantorSnapshot,
+    ...(moreGuarantors.length > 0 ? { moreGuarantors } : {}),
     tier,
     principal,
     durationMonths,
@@ -585,9 +605,32 @@ export async function rejectLoan(
 
 // ---------------------------------------------------------------- listing
 
-export async function listLoans(
-  query: ListLoansQuery,
-): Promise<{ items: PublicLoan[]; page: number; limit: number; total: number }> {
+/**
+ * The book in money, across the whole filter rather than the page. Only loans
+ * that were actually disbursed count — pending and rejected applications never
+ * moved cash.
+ */
+export interface LoanTotals {
+  /** Principal handed out, and how many loans that was. */
+  disbursed: number;
+  disbursedCount: number;
+  /** Cash collected against those loans. */
+  repaid: number;
+  /** Still owed on active and arrears loans. */
+  outstanding: number;
+  outstandingCount: number;
+  /** Still owed on loans in arrears alone. */
+  arrears: number;
+  arrearsCount: number;
+}
+
+export async function listLoans(query: ListLoansQuery): Promise<{
+  items: PublicLoan[];
+  page: number;
+  limit: number;
+  total: number;
+  totals: LoanTotals;
+}> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.status) filter.status = query.status;
@@ -597,13 +640,53 @@ export async function listLoans(
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
 
-  const [loans, total] = await Promise.all([
+  const [loans, total, byStatus] = await Promise.all([
     LoanModel.find(filter)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
     LoanModel.countDocuments(filter),
+    LoanModel.aggregate<{
+      _id: string;
+      count: number;
+      principal: number;
+      repaid: number;
+      owed: number;
+    }>([
+      { $match: filter },
+      { $match: { status: { $in: ['active', 'arrears', 'repaid'] } } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          principal: { $sum: '$principal' },
+          repaid: { $sum: '$totalRepaid' },
+          owed: { $sum: { $subtract: ['$totalDue', '$totalRepaid'] } },
+        },
+      },
+    ]),
   ]);
+  const totals: LoanTotals = {
+    disbursed: 0,
+    disbursedCount: 0,
+    repaid: 0,
+    outstanding: 0,
+    outstandingCount: 0,
+    arrears: 0,
+    arrearsCount: 0,
+  };
+  for (const g of byStatus) {
+    totals.disbursed += g.principal;
+    totals.disbursedCount += g.count;
+    totals.repaid += g.repaid;
+    if (g._id === 'repaid') continue;
+    totals.outstanding += g.owed;
+    totals.outstandingCount += g.count;
+    if (g._id === 'arrears') {
+      totals.arrears = g.owed;
+      totals.arrearsCount = g.count;
+    }
+  }
   const unique = [...new Set(loans.map((l) => l.customerId.toHexString()))];
   const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
   const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
@@ -615,6 +698,7 @@ export async function listLoans(
     page: query.page,
     limit: query.limit,
     total,
+    totals,
   };
 }
 

@@ -60,18 +60,7 @@ export function resolveOccurredAt(actor: AccessTokenPayload, occurredOn: string 
     );
   }
 
-  const at = new Date(`${occurredOn}T${now.toISOString().slice(11)}`);
-  // The schema already insists on YYYY-MM-DD, which still admits the 31st of
-  // February. Javascript does not refuse that date — it rolls it forward to
-  // the 3rd of March — so the day that comes back out is compared with the
-  // day that went in. A date nobody meant must not be quietly corrected into
-  // one they did not choose either.
-  if (Number.isNaN(at.getTime()) || at.toISOString().slice(0, 10) !== occurredOn) {
-    throw new AppError('VALIDATION_ERROR', `${occurredOn} is not a real date`, 400);
-  }
-  if (at.getTime() > now.getTime()) {
-    throw new AppError('DATE_IN_FUTURE', 'A transaction cannot be recorded before it happens', 422);
-  }
+  const at = dayAt(occurredOn, now);
   if (now.getTime() - at.getTime() > MAX_BACKDATE_DAYS * DAY_MS) {
     throw new AppError(
       'DATE_TOO_OLD',
@@ -80,4 +69,49 @@ export function resolveOccurredAt(actor: AccessTokenPayload, occurredOn: string 
     );
   }
   return at;
+}
+
+/**
+ * The chosen day at the clock time of entry, refused if it is not a real day
+ * or has not happened yet.
+ */
+function dayAt(day: string, now: Date): Date {
+  const at = new Date(`${day}T${now.toISOString().slice(11)}`);
+  // The schema already insists on YYYY-MM-DD, which still admits the 31st of
+  // February. Javascript does not refuse that date — it rolls it forward to
+  // the 3rd of March — so the day that comes back out is compared with the
+  // day that went in. A date nobody meant must not be quietly corrected into
+  // one they did not choose either.
+  if (Number.isNaN(at.getTime()) || at.toISOString().slice(0, 10) !== day) {
+    throw new AppError('VALIDATION_ERROR', `${day} is not a real date`, 400);
+  }
+  if (at.getTime() > now.getTime()) {
+    throw new AppError('DATE_IN_FUTURE', 'A transaction cannot be recorded before it happens', 422);
+  }
+  return at;
+}
+
+/**
+ * Copying in a loan the branch made on paper before the system existed.
+ *
+ * Behind the same switch as backdating, and closed to collectors for the same
+ * reason. Unlike a backdated deposit there is no limit on how far back: some
+ * of the paper is years old (client decision, 29 Sep 2026).
+ */
+export function assertPaperEntryOpen(actor: AccessTokenPayload): void {
+  if (!env.ALLOW_BACKDATED_ENTRY) {
+    throw new AppError(
+      'BACKDATING_DISABLED',
+      'Paper loans can no longer be entered — the backlog has been closed',
+      422,
+    );
+  }
+  if (actor.role === 'collector') {
+    throw new AppError('FORBIDDEN', 'Paper loans are entered by the office', 403);
+  }
+}
+
+/** A day from a paper record: real, not in the future, however old. */
+export function paperDay(day: string, now: Date = new Date()): Date {
+  return dayAt(day, now);
 }

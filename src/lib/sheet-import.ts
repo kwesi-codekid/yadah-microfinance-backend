@@ -227,3 +227,20 @@ export function wholeNumber(value: string): number | undefined {
   if (v === '') return undefined;
   return /^-?\d+$/.test(v) ? Number(v) : Number.NaN;
 }
+
+/**
+ * A date cell as `YYYY-MM-DD`. `12/04/1990` and `12-04-1990` are how people
+ * write dates here — day first. Anything else is handed on as-is so the schema
+ * is the one that refuses it.
+ */
+export function normalizeDay(value: string): string | undefined {
+  const v = value.trim();
+  if (v === '') return undefined;
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(v);
+  if (dmy) {
+    const [, d, m, y] = dmy as unknown as [string, string, string, string];
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  return v;
+}

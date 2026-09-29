@@ -5,6 +5,7 @@ import {
   exportFormat,
   fromToIssue,
   ghanaPhone,
+  isoDay,
   idempotencyKey,
   objectId,
   pagination,
@@ -34,24 +35,57 @@ export const applyBody = z
      * borrower — an ID recorded and both sides of it photographed.
      */
     guarantorId: objectId.optional(),
-    /** Or anybody at all, by name and phone. Exactly one of the two is given. */
+    /** Or anybody at all, by name and phone. */
     guarantor: guarantorDetails.optional(),
+    /** Or several people, by name and phone, the first one first. */
+    guarantors: z.array(guarantorDetails).min(1).max(10).optional(),
     /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
     signatureUrl: uploadedImageUrl,
   })
   .check((ctx) => {
+    // Exactly one of the three ways of naming the guarantor.
     const given =
-      Number(ctx.value.guarantorId !== undefined) + Number(ctx.value.guarantor !== undefined);
+      Number(ctx.value.guarantorId !== undefined) +
+      Number(ctx.value.guarantor !== undefined) +
+      Number(ctx.value.guarantors !== undefined);
     if (given !== 1) {
       ctx.issues.push({
         code: 'custom',
         input: ctx.value,
         path: ['guarantor'],
-        message: 'Give the guarantor — either guarantorId or guarantor details, not both',
+        message: 'Give the guarantor one way — guarantorId, guarantor or guarantors',
       });
     }
   });
 export type ApplyBody = z.infer<typeof applyBody>;
+
+/**
+ * A loan the branch made on paper before the system existed, copied in as the
+ * paper records it. See `recordPaperLoan`.
+ */
+export const paperLoanBody = z.object({
+  customerId: objectId,
+  principal: positiveMoneyPesewas,
+  durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]),
+  /** The rate the paper says is owed today — escalation carries on from here. */
+  ratePercent: z.union([z.literal(10), z.literal(20), z.literal(30)]),
+  /** The day the money was handed over. */
+  disbursedOn: isoDay,
+  /** The day the application was written, when the paper says; else the disbursement. */
+  appliedOn: isoDay.optional(),
+  /** Everybody the paper names as standing behind the loan, first one first. */
+  guarantors: z.array(guarantorDetails).max(10).default([]),
+  /** Every payment the paper records, each on the day it was made. */
+  repayments: z
+    .array(z.object({ paidOn: isoDay, amount: positiveMoneyPesewas }))
+    .max(200)
+    .default([]),
+  /** The number written on the paper form. */
+  paperRef: z.string().trim().min(1).max(40).optional(),
+  /** A photograph of the paper form, from POST /uploads/images?kind=document. */
+  paperPhotoUrl: uploadedImageUrl.optional(),
+});
+export type PaperLoanBody = z.infer<typeof paperLoanBody>;
 
 export const listLoansQuery = pagination
   .extend({
