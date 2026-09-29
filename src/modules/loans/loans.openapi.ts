@@ -159,11 +159,12 @@ export const loanPaths: ZodOpenApiPathsObject = {
         'sides of the ID document on the profile (ID_DOCUMENT_REQUIRED; checked again at ' +
         'approval). One open loan per customer — a second application is always ' +
         'refused. Big tier requires a previous small loan repaid on time. ' +
-        'A GUARANTOR is required: another registered customer who is active, is not ' +
-        'the borrower, and is identified as fully as the borrower — an ID recorded ' +
-        'and both sides of it photographed. Any of the four ID types is accepted for ' +
-        'either party. The guarantor is snapshotted onto the loan, so the undertaking ' +
-        'keeps the name, phone and ID it was signed against.',
+        'A GUARANTOR is required, given one of two ways. `guarantorId`: a registered ' +
+        'customer who is active, is not the borrower, and is identified as fully as ' +
+        'the borrower — an ID recorded and both sides of it photographed. Or ' +
+        '`guarantor`: anybody at all, by full name and phone (ID number optional), ' +
+        'taken as written. Exactly one of the two. The guarantor is snapshotted onto ' +
+        'the loan, so the undertaking keeps the name, phone and ID it was signed against.',
       security,
       requestBody: jsonBody(applyBody),
       responses: {

@@ -42,7 +42,12 @@ import {
 import { computeClosure, susuBalance } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
-import type { ListLoansQuery, LoanTrashQuery, PutConfigBody } from './loans.schemas.js';
+import type {
+  GuarantorDetails,
+  ListLoansQuery,
+  LoanTrashQuery,
+  PutConfigBody,
+} from './loans.schemas.js';
 
 // ---------------------------------------------------------------- config
 
@@ -327,7 +332,8 @@ export async function applyForLoan(
   customerId: Types.ObjectId,
   principal: number,
   durationMonths: LoanDuration,
-  guarantorId: Types.ObjectId,
+  /** A registered customer, or anybody at all by name and phone. */
+  guarantor: Types.ObjectId | GuarantorDetails,
   signatureUrl?: string,
   requestId?: string,
 ): Promise<PublicLoan> {
@@ -377,7 +383,17 @@ export async function applyForLoan(
   // Checked before the numbers are worked out: a loan with no valid guarantor
   // is not going to be written, and the counter should hear about the guarantor
   // rather than about the tier.
-  const guarantorSnapshot = await resolveGuarantor(customerId, guarantorId);
+  // A guarantor off the books is taken as written: there is no record to hold
+  // them to, and the paper they signed is the evidence.
+  const guarantorId = guarantor instanceof Types.ObjectId ? guarantor : undefined;
+  const guarantorSnapshot: NonNullable<Loan['guarantorSnapshot']> =
+    guarantor instanceof Types.ObjectId
+      ? await resolveGuarantor(customerId, guarantor)
+      : {
+          fullName: guarantor.fullName,
+          phone: guarantor.phone,
+          ...(guarantor.idNumber !== undefined ? { idNumber: guarantor.idNumber } : {}),
+        };
 
   const config = await getLoanConfig();
   const tier = tierFor(principal, config.tiers);
@@ -401,7 +417,7 @@ export async function applyForLoan(
   const loan = await LoanModel.create({
     accountNumber: await nextAccountNumber('LN'),
     customerId,
-    guarantorId,
+    ...(guarantorId !== undefined ? { guarantorId } : {}),
     guarantorSnapshot,
     tier,
     principal,
@@ -424,7 +440,7 @@ export async function applyForLoan(
       durationMonths,
       tier,
       ratePercent,
-      guarantorId: guarantorId.toHexString(),
+      ...(guarantorId !== undefined ? { guarantorId: guarantorId.toHexString() } : {}),
       guarantorName: guarantorSnapshot.fullName,
     },
     ...(requestId !== undefined ? { requestId } : {}),

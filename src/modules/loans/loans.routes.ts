@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
+import { AppError } from '../../lib/errors.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
@@ -77,13 +78,19 @@ loansRouter.get(
 // approves it below, which is what makes that safe.
 loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next) => {
   const { body } = getValidated<{ body: ApplyBody }>(req);
+  // The schema insists on exactly one; this only tells the compiler so.
+  const guarantor = body.guarantorId ?? body.guarantor;
+  if (guarantor === undefined) {
+    next(new AppError('VALIDATION_ERROR', 'Give the guarantor', 400));
+    return;
+  }
   loansService
     .applyForLoan(
       getAuth(req),
       body.customerId,
       body.principal,
       body.durationMonths,
-      body.guarantorId,
+      guarantor,
       body.signatureUrl,
       req.id as string,
     )

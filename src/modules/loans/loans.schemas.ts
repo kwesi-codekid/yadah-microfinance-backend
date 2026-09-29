@@ -4,6 +4,7 @@ import {
   dateRangeFields,
   exportFormat,
   fromToIssue,
+  ghanaPhone,
   idempotencyKey,
   objectId,
   pagination,
@@ -11,19 +12,45 @@ import {
   uploadedImageUrl,
 } from '../../schemas/common.js';
 
-export const applyBody = z.object({
-  customerId: objectId,
-  principal: positiveMoneyPesewas,
-  durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]),
-  /**
-   * Another registered customer who stands behind the loan. Required: they must
-   * be active, must not be the borrower, and must be identified as fully as the
-   * borrower — an ID recorded and both sides of it photographed.
-   */
-  guarantorId: objectId,
-  /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
-  signatureUrl: uploadedImageUrl,
+/**
+ * A guarantor who need not be on the books — anybody willing to stand behind
+ * the loan, written down as the paper names them.
+ */
+export const guarantorDetails = z.object({
+  fullName: z.string().trim().min(2).max(120),
+  phone: ghanaPhone,
+  idNumber: z.string().trim().min(1).max(40).optional(),
 });
+export type GuarantorDetails = z.infer<typeof guarantorDetails>;
+
+export const applyBody = z
+  .object({
+    customerId: objectId,
+    principal: positiveMoneyPesewas,
+    durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]),
+    /**
+     * A registered customer who stands behind the loan. They must be active,
+     * must not be the borrower, and must be identified as fully as the
+     * borrower — an ID recorded and both sides of it photographed.
+     */
+    guarantorId: objectId.optional(),
+    /** Or anybody at all, by name and phone. Exactly one of the two is given. */
+    guarantor: guarantorDetails.optional(),
+    /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
+    signatureUrl: uploadedImageUrl,
+  })
+  .check((ctx) => {
+    const given =
+      Number(ctx.value.guarantorId !== undefined) + Number(ctx.value.guarantor !== undefined);
+    if (given !== 1) {
+      ctx.issues.push({
+        code: 'custom',
+        input: ctx.value,
+        path: ['guarantor'],
+        message: 'Give the guarantor — either guarantorId or guarantor details, not both',
+      });
+    }
+  });
 export type ApplyBody = z.infer<typeof applyBody>;
 
 export const listLoansQuery = pagination

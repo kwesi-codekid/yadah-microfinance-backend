@@ -102,7 +102,25 @@ describe('the guarantor', () => {
     ).rejects.toMatchObject({ code: 'GUARANTOR_IS_BORROWER' });
   });
 
-  it('refuses a guarantor who is not on the books', async () => {
+  // Client request 2026-09-29: the guarantor can be anybody, not only a
+  // customer. Named on the paper, they are taken as written.
+  it('accepts anybody as guarantor by name and phone', async () => {
+    const customerId = await makeCustomer(true);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, {
+      fullName: 'Kofi Mensah',
+      phone: '0241234567',
+      idNumber: 'GHA-000000000-1',
+    });
+    expect(applied.status).toBe('pending');
+    expect(applied.guarantorId).toBeUndefined();
+    expect(applied.guarantor).toMatchObject({
+      fullName: 'Kofi Mensah',
+      phone: '0241234567',
+      idNumber: 'GHA-000000000-1',
+    });
+  });
+
+  it('refuses a guarantorId that is not on the books', async () => {
     const customerId = await makeCustomer(true);
     await expect(
       loans.applyForLoan(officer, customerId, 100_000, 3, new Types.ObjectId()),
