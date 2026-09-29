@@ -403,14 +403,14 @@ export async function applyForLoan(
     ...(g.idNumber !== undefined ? { idNumber: g.idNumber } : {}),
   });
   const guarantorId = guarantor instanceof Types.ObjectId ? guarantor : undefined;
-  const [firstTyped, ...moreGuarantors] = Array.isArray(guarantor) ? guarantor.map(typed) : [];
-  const guarantorSnapshot: NonNullable<Loan['guarantorSnapshot']> =
-    guarantor instanceof Types.ObjectId
-      ? await resolveGuarantor(customerId, guarantor)
-      : Array.isArray(guarantor)
-        ? (firstTyped ?? typed({ fullName: '', phone: '' }))
-        : typed(guarantor);
-  if (guarantorSnapshot.fullName === '') {
+  const named = guarantor instanceof Types.ObjectId ? [] : [guarantor].flat().map(typed);
+  const [firstNamed, ...moreGuarantors] = named;
+  let guarantorSnapshot: NonNullable<Loan['guarantorSnapshot']>;
+  if (guarantor instanceof Types.ObjectId) {
+    guarantorSnapshot = await resolveGuarantor(customerId, guarantor);
+  } else if (firstNamed) {
+    guarantorSnapshot = firstNamed;
+  } else {
     throw new AppError('VALIDATION_ERROR', 'Give the guarantor', 400);
   }
 

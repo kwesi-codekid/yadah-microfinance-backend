@@ -120,6 +120,17 @@ describe('the guarantor', () => {
     });
   });
 
+  it('takes several guarantors, the first where every screen reads it', async () => {
+    const customerId = await makeCustomer(true);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, [
+      { fullName: 'Kofi Mensah', phone: '0241234567' },
+      { fullName: 'Efua Owusu', phone: '0551234567', idNumber: 'GHA-2' },
+    ]);
+    expect(applied.guarantor).toMatchObject({ fullName: 'Kofi Mensah' });
+    expect(applied.moreGuarantors).toMatchObject([
+      { fullName: 'Efua Owusu', phone: '0551234567', idNumber: 'GHA-2' },
+    ]);
+  });
   it('refuses a guarantorId that is not on the books', async () => {
     const customerId = await makeCustomer(true);
     await expect(
