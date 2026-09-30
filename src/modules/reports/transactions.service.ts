@@ -25,9 +25,10 @@ import {
   UserModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
-import { rangeToWindow } from '../../lib/time.js';
+import { rangeToWindow, type DayRange } from '../../lib/time.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 import { PAYSTACK_KEY_PREFIX } from '../payments/payments.service.js';
+import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type { TransactionsQuery } from './reports.schemas.js';
 
 /** Automated debt-recovery moves are recorded by this well-known actor. */
@@ -137,9 +138,13 @@ function buildBranches(
   customerId?: Types.ObjectId,
   modules?: TxnModule[],
   includePending = false,
+  recordedById?: Types.ObjectId,
 ): Branch[] {
   const createdAt = { $gte: window.start, $lt: window.end };
   const byCustomer = customerId ? { customerId } : {};
+  // Each collection names the member of staff under its own field — the one
+  // every branch below projects to `recordedById`.
+  const by = (field: string) => (recordedById ? { [field]: recordedById } : {});
   const wanted = new Set<TxnModule>(modules ?? [...TXN_MODULES]);
   const branches: Branch[] = [];
 
@@ -148,7 +153,7 @@ function buildBranches(
       {
         coll: 'susu-deposits',
         stages: [
-          { $match: { createdAt, ...byCustomer, ...NOT_TRASHED } },
+          { $match: { createdAt, ...byCustomer, ...by('collectorId'), ...NOT_TRASHED } },
           {
             $project: {
               type: { $literal: 'susu-deposit' },
@@ -169,7 +174,7 @@ function buildBranches(
       {
         coll: 'susu-payouts',
         stages: [
-          { $match: { createdAt, ...byCustomer } },
+          { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
           {
             $project: {
               // A partial withdrawal leaves the account open, so it reads as a
@@ -201,7 +206,7 @@ function buildBranches(
     branches.push({
       coll: 'savings-txns',
       stages: [
-        { $match: { createdAt, ...byCustomer, ...NOT_TRASHED } },
+        { $match: { createdAt, ...byCustomer, ...by('recordedById'), ...NOT_TRASHED } },
         {
           $project: {
             type: { $concat: ['savings-', '$type'] },
@@ -231,6 +236,8 @@ function buildBranches(
             $match: {
               disbursedAt: { $gte: window.start, $lt: window.end },
               ...byCustomer,
+              // Approval and disbursement are one step: the approver handed it out.
+              ...by('approvedById'),
               ...NOT_TRASHED,
             },
           },
@@ -253,7 +260,7 @@ function buildBranches(
       {
         coll: 'repayments',
         stages: [
-          { $match: { createdAt, ...byCustomer } },
+          { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
           {
             $project: {
               type: { $literal: 'loan-repayment' },
@@ -278,7 +285,7 @@ function buildBranches(
     branches.push({
       coll: 'hp-payments',
       stages: [
-        { $match: { createdAt, ...byCustomer } },
+        { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
         {
           $project: {
             type: { $concat: ['hp-', '$type'] },
@@ -304,7 +311,7 @@ function buildBranches(
       stages: [
         // Voided sales are excluded: the row stays in its own collection for
         // the audit trail, but it is no longer money the business took.
-        { $match: { createdAt, status: 'completed', ...byCustomer } },
+        { $match: { createdAt, status: 'completed', ...byCustomer, ...by('soldById') } },
         {
           $project: {
             type: { $literal: 'hp-sale' },
@@ -329,7 +336,7 @@ function buildBranches(
     branches.push({
       coll: 'transfers',
       stages: [
-        { $match: { createdAt, ...byCustomer } },
+        { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
         {
           $project: {
             type: { $literal: 'transfer' },
@@ -364,6 +371,7 @@ function buildBranches(
           $match: {
             createdAt,
             ...byCustomer,
+            ...by('initiatedById'),
             kind: { $in: pendingKinds },
             // Applied charges are already in the feed as the deposit/repayment
             // they created — including them here would double-count.
@@ -677,8 +685,18 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
     query.customerId,
     query.module ? [query.module] : undefined,
     query.includePending,
+    query.recordedById,
   );
+  return runFeed(window, branches, query.page, query.limit);
+}
 
+/** One page of a union, its full count, and totals over every matching row. */
+async function runFeed(
+  window: DayRange,
+  branches: Branch[],
+  page: number,
+  limit: number,
+): Promise<TransactionsFeed> {
   const [facet] = await SusuDepositModel.aggregate<{
     rows: RawRow[];
     total: { n: number }[];
@@ -688,7 +706,7 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
     { $sort: { createdAt: -1, _id: -1 } },
     {
       $facet: {
-        rows: [{ $skip: (query.page - 1) * query.limit }, { $limit: query.limit }],
+        rows: [{ $skip: (page - 1) * limit }, { $limit: limit }],
         total: [{ $count: 'n' }],
         groups: [
           {
@@ -708,11 +726,27 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
     from: window.from,
     to: window.to,
     items: await resolveRows(facet?.rows ?? []),
-    page: query.page,
-    limit: query.limit,
+    page,
+    limit,
     total: facet?.total[0]?.n ?? 0,
     totals: totalsFromGroups(facet?.groups ?? []),
   };
+}
+
+// ---------------------------------------------------------------- who may read whose rows
+
+/**
+ * The feed is open to every role, but only the office sees the whole branch.
+ * Office roles may narrow it to one member of staff (`recordedById`) or not;
+ * everybody else is always narrowed to their own entries — naming someone
+ * else simply has no effect, as with the collector views.
+ */
+export function scopeTransactionsQuery(
+  actor: AccessTokenPayload,
+  query: TransactionsQuery,
+): TransactionsQuery {
+  const office = actor.role === 'admin' || actor.role === 'manager';
+  return office ? query : { ...query, recordedById: new Types.ObjectId(actor.sub) };
 }
 
 /** Flat rows for CSV export — same filters, no pagination, capped. */
@@ -725,6 +759,7 @@ export async function transactionsCsvRows(
     query.customerId,
     query.module ? [query.module] : undefined,
     query.includePending,
+    query.recordedById,
   );
   const raw = await SusuDepositModel.aggregate<RawRow>([
     ...unionStages(branches),

@@ -31,6 +31,11 @@ export const transactionsQuery = pagination
     module: z.enum(TXN_MODULES).optional(),
     customerId: objectId.optional(),
     /**
+     * Only rows this member of staff put on the ledger. Honoured for office
+     * roles; everyone else is always narrowed to their own entries.
+     */
+    recordedById: objectId.optional(),
+    /**
      * Include Paystack charges that have not been applied yet. Off by default:
      * these rows are money that has not moved, and they are excluded from
      * `totals` even when shown.

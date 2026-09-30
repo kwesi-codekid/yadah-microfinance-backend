@@ -198,7 +198,14 @@ export const reportPaths: ZodOpenApiPathsObject = {
         'Set `includePending=true` to also show Paystack charges that have not been ' +
         'applied yet — money still in flight. Those rows carry `status: "pending"` (or ' +
         '`"failed"` when Paystack took the money but it could not be posted) and are ' +
-        'never counted in `totals`.' +
+        'never counted in `totals`.\n\n' +
+        '**Open to every staff role.** `recordedById` narrows the feed to the entries ' +
+        'one member of staff put on the ledger — deposits they collected, payouts and ' +
+        'withdrawals they handed over, loans they approved and disbursed, repayments, ' +
+        'hire purchase payments, counter sales and transfers — so `totals.in` is what ' +
+        'they took in and `totals.out` what they issued out. Admins and managers may ' +
+        'pass any id or none; tellers and collectors are always narrowed to their own ' +
+        'entries, whatever they pass.' +
         csvNote,
       security,
       requestParams: { query: transactionsQuery },

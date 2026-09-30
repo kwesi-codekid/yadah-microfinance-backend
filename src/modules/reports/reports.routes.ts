@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { sendExport } from '../../lib/exports.js';
 import { workerStatuses } from '../../lib/worker-status.js';
-import { requireAuth } from '../../middleware/auth.js';
+import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireOffice, requireRole } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
@@ -15,25 +15,15 @@ import * as reportsService from './reports.service.js';
 import * as transactionsService from './transactions.service.js';
 
 export const reportsRouter = Router();
-reportsRouter.use(requireAuth, requireOffice);
+reportsRouter.use(requireAuth);
 
-// Ops visibility: background-worker heartbeats (admin only; in-memory,
-// resets on restart — every worker also runs immediately at startup).
-reportsRouter.get('/workers', requireRole('admin'), (_req, res) => {
-  res.json({ workers: workerStatuses() });
-});
-
-// Deprecated alias for GET /dashboard/summary, kept so anything already wired
-// to this path keeps working. New callers should use the dashboard group.
-reportsRouter.get('/dashboard', (_req, res, next) => {
-  dashboardService
-    .dashboardMetrics()
-    .then((metrics) => res.json(metrics))
-    .catch(next);
-});
-
+// The ledger, open to every role. Registered BEFORE the office gate below,
+// which is what opens it to tellers and collectors; the service narrows them
+// to the entries they recorded themselves, so each sees their own day — what
+// they took in and what they issued out — and never anyone else's.
 reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req, res, next) => {
-  const { query } = getValidated<{ query: TransactionsQuery }>(req);
+  const { query: asked } = getValidated<{ query: TransactionsQuery }>(req);
+  const query = transactionsService.scopeTransactionsQuery(getAuth(req), asked);
   if (query.format !== 'json') {
     transactionsService
       .transactionsCsvRows(query)
@@ -53,6 +43,24 @@ reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req,
   transactionsService
     .listTransactions(query)
     .then((feed) => res.json(feed))
+    .catch(next);
+});
+
+// Everything from here down is office only.
+reportsRouter.use(requireOffice);
+
+// Ops visibility: background-worker heartbeats (admin only; in-memory,
+// resets on restart — every worker also runs immediately at startup).
+reportsRouter.get('/workers', requireRole('admin'), (_req, res) => {
+  res.json({ workers: workerStatuses() });
+});
+
+// Deprecated alias for GET /dashboard/summary, kept so anything already wired
+// to this path keeps working. New callers should use the dashboard group.
+reportsRouter.get('/dashboard', (_req, res, next) => {
+  dashboardService
+    .dashboardMetrics()
+    .then((metrics) => res.json(metrics))
     .catch(next);
 });
 
