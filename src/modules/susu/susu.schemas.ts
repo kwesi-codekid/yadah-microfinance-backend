@@ -118,6 +118,10 @@ export type ListPayoutsQuery = z.infer<typeof listPayoutsQuery>;
 /** The susu data update: false reports what would change, true writes it. */
 export const migrateBody = z.object({ apply: z.boolean() });
 export type MigrateBody = z.infer<typeof migrateBody>;
+
+/** Renumber this month's accounts into the continuing sequence: false previews, true writes. */
+export const renumberBody = z.object({ apply: z.boolean() });
+export type RenumberBody = z.infer<typeof renumberBody>;
 export type ListCyclesQuery = z.infer<typeof listCyclesQuery>;
 
 export const depositIdParams = z.object({ id: objectId, depositId: objectId });

@@ -2,11 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import {
+  CustomerModel,
+  AuditLogModel,
   SusuAccountModel,
   SusuCycleModel,
   SusuDepositModel,
   SusuPayoutModel,
 } from '../../src/models/index.js';
+import { accountPeriodKey } from '../../src/lib/account-number.js';
+import { renumberThisMonth } from '../../src/modules/susu/susu.renumber.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
 
@@ -597,3 +601,44 @@ describe('the trash', () => {
 function r0(account: susu.PublicSusuAccount): string {
   return account.plans[0]!.id;
 }
+
+describe('renumbering this month’s accounts from the office screen (1 Oct 2026)', () => {
+  it('carries this month’s numbers on from last month, moving the customer’s number too', async () => {
+    const period = accountPeriodKey();
+    const last = accountPeriodKey(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000));
+    const staff = new Types.ObjectId();
+    // Earlier tests opened accounts this month under the live counter; start clean.
+    await SusuAccountModel.deleteMany({});
+    await CustomerModel.updateMany({}, { $unset: { susuNumber: '' } });
+    const older = await makeCustomer();
+    const newer = await makeCustomer();
+    for (const [customerId, number, daysAgo] of [
+      [older, `SU${last}0012`, 35],
+      [newer, `SU${period}0001`, 0.02],
+    ] as const) {
+      await SusuAccountModel.collection.insertOne({
+        accountNumber: number,
+        customerId,
+        balance: 0,
+        status: 'active',
+        openedById: staff,
+        deletedAt: null,
+        createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      });
+      await CustomerModel.updateOne({ _id: customerId }, { $set: { susuNumber: number } });
+    }
+
+    const dry = await renumberThisMonth(officer, false);
+    expect(dry.changes).toEqual([{ from: `SU${period}0001`, to: `SU${period}0013` }]);
+    expect((await CustomerModel.findById(newer))?.susuNumber).toBe(`SU${period}0001`);
+
+    const applied = await renumberThisMonth(officer, true);
+    expect(applied.counter).toBe(13);
+    expect((await SusuAccountModel.findOne({ customerId: newer }))?.accountNumber).toBe(
+      `SU${period}0013`,
+    );
+    expect((await CustomerModel.findById(newer))?.susuNumber).toBe(`SU${period}0013`);
+    expect(await AuditLogModel.countDocuments({ action: 'susu.account.renumber-month' })).toBe(1);
+  });
+});

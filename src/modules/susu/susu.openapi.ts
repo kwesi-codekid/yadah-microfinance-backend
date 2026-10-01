@@ -11,6 +11,7 @@ import {
   listCyclesQuery,
   listPayoutsQuery,
   migrateBody,
+  renumberBody,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
@@ -363,6 +364,32 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Stopped', planResult.extend({ commission: z.number().int() })),
         '404': errorResponse('NOT_FOUND'),
         '422': errorResponse('PLAN_STOPPED, ACCOUNT_CLOSED'),
+      },
+    },
+  },
+  '/susu/renumber': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Renumber this month’s susu accounts into the continuing sequence (office only)',
+      description:
+        'Accounts opened this month under the old monthly-restart rule are renumbered, in ' +
+        'opening order, to carry on from the highest number any earlier month reached; the ' +
+        'customer’s stored susu number moves with the account, and the susu counter is set so ' +
+        'the next account follows. `apply: false` previews and writes nothing; `apply: true` ' +
+        'writes and is audited. Susu only. One run at a time.',
+      security,
+      requestBody: jsonBody(renumberBody),
+      responses: {
+        '200': jsonResponse(
+          'What changed, or would',
+          z.object({
+            apply: z.boolean(),
+            changes: z.array(z.object({ from: z.string(), to: z.string() })),
+            counter: z.number().int().describe('The next account is this plus one'),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '409': errorResponse('RENUMBER_RUNNING'),
       },
     },
   },

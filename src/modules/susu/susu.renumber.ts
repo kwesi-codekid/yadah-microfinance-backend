@@ -3,11 +3,15 @@ import { renumberMonthFor, type RenumberReport } from '../../lib/renumber-month.
 
 export type { RenumberReport };
 
-/** This month's savings numbers into the continuing sequence — see lib/renumber-month. */
+/**
+ * This month's susu numbers into the continuing sequence — see
+ * lib/renumber-month. A susu number is also held on the customer, and the
+ * script moves it along with the account.
+ */
 export function renumberThisMonth(
   actor: AccessTokenPayload,
   apply: boolean,
   requestId?: string,
 ): Promise<RenumberReport> {
-  return renumberMonthFor('SV', actor, apply, requestId);
+  return renumberMonthFor('SU', actor, apply, requestId);
 }

@@ -3,6 +3,7 @@ import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
 import { requireAdmin, requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { runSusuMigration } from './susu.migration.js';
+import { renumberThisMonth } from './susu.renumber.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { trashBody, type TrashBody } from '../../schemas/common.js';
 import {
@@ -15,6 +16,7 @@ import {
   listCyclesQuery,
   listPayoutsQuery,
   migrateBody,
+  renumberBody,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
@@ -32,6 +34,7 @@ import {
   type ListCyclesQuery,
   type ListPayoutsQuery,
   type MigrateBody,
+  type RenumberBody,
   type ListDepositsQuery,
   type ListTrashQuery,
   type OpenAccountBody,
@@ -410,6 +413,14 @@ susuRouter.get('/summary', validate({ query: summaryQuery }), (req, res, next) =
   susuService
     .dailySummary(getAuth(req), query)
     .then((summary) => res.json(summary))
+    .catch(next);
+});
+
+// Bring this month's susu numbers into the continuing sequence. Office only.
+susuRouter.post('/renumber', requireOffice, validate({ body: renumberBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: RenumberBody }>(req);
+  renumberThisMonth(getAuth(req), body.apply, req.id as string)
+    .then((report) => res.json(report))
     .catch(next);
 });
 
