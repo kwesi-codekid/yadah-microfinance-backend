@@ -1,4 +1,3 @@
-import { accountRef } from '../../lib/account-number.js';
 import { Types } from 'mongoose';
 import { AppError } from '../../lib/errors.js';
 import {
@@ -6,16 +5,16 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
+  SusuPlanModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { availableToWithdraw, MIN_BALANCE, WITHDRAWAL_FEE } from '../../domain/savings.js';
 import {
-  computeClosure,
-  maxPartialWithdrawal,
-  remainingDeposits,
-  susuBalance,
-  SUSU_CYCLE_DEPOSITS,
-} from '../../domain/susu.js';
+  lockedAmount,
+  maxWithdrawal,
+  SUSU_CYCLE_PAYMENTS,
+  type PlanState,
+} from '../../domain/susu-plans.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 
 /**
@@ -28,36 +27,29 @@ import { remainingOn } from '../hire-purchase/hp.service.js';
  * Amounts are integer pesewas, as everywhere else.
  */
 
+export interface PortalSusuPlan {
+  planId: string;
+  dailyAmount: number;
+  /** Payments made in the cycle in progress, 0..30. */
+  paidInCycle: number;
+  cycleLength: number;
+  cycleNumber: number;
+  status: string;
+}
+
 export interface PortalSusuAccount {
   accountId: string;
-  /**
-   * The customer's own susu number. Every book they hold carries it, so two
-   * cycles in one month read identically — see `cycleMonth` and `ref`.
-   */
+  /** The customer's susu number — one per customer, for life. */
   accountNumber: string;
-  /** The month this book is called: what separates one cycle from the next. */
-  cycleMonth?: string;
-  /**
-   * The book's own identity, rendered: `260912134501-a3f9`. The handset lists
-   * cycles to pick between — including for closure, which cannot be undone —
-   * so it needs something that always differs.
-   */
-  ref: string;
   status: string;
-  dailyAmount: number;
-  depositsCount: number;
-  cycleLength: number;
-  daysRemaining: number;
-  totalDeposited: number;
-  withdrawnAmount: number;
   balance: number;
-  /**
-   * Most the customer could take while keeping the account open — one day's
-   * deposit stays reserved so the closing commission is always collectable.
-   */
-  maxPartialWithdrawal: number;
-  /** What closing the cycle today would pay out, after commission. */
-  closurePreview: { commission: number; payout: number };
+  /** One payment per plan with a cycle in progress — the part nothing may take. */
+  locked: number;
+  /** Most the customer could take while keeping the account open. */
+  availableToWithdraw: number;
+  /** Σ daily amounts of the active plans. */
+  dailyTotal: number;
+  plans: PortalSusuPlan[];
 }
 
 export interface PortalSavingsAccount {
@@ -128,24 +120,35 @@ export async function myAccounts(customerIdHex: string): Promise<PortalAccounts>
     HpAgreementModel.find({ customerId, ...NOT_TRASHED }).sort({ createdAt: -1 }),
   ]);
 
+  const plans = await SusuPlanModel.find({
+    accountId: { $in: susuAccounts.map((a) => a._id) },
+  }).sort({ createdAt: 1 });
   const susu: PortalSusuAccount[] = susuAccounts.map((a) => {
-    const balance = susuBalance(a.totalDeposited, a.withdrawnAmount);
-    const closure = computeClosure(balance, a.dailyAmount);
+    const mine = plans.filter((p) => p.accountId.equals(a._id));
+    const states: PlanState[] = mine.map((p) => ({
+      planId: p._id.toHexString(),
+      dailyAmount: p.dailyAmount,
+      paidInCycle: p.paidInCycle,
+      cyclesCompleted: p.cyclesCompleted,
+      status: p.status,
+    }));
+    const open = a.status === 'active';
     return {
       accountId: a._id.toHexString(),
       accountNumber: a.accountNumber,
-      ...(a.cycleMonth !== undefined ? { cycleMonth: a.cycleMonth } : {}),
-      ref: accountRef(a._id.toHexString(), a.createdAt),
       status: a.status,
-      dailyAmount: a.dailyAmount,
-      depositsCount: a.depositsCount,
-      cycleLength: SUSU_CYCLE_DEPOSITS,
-      daysRemaining: remainingDeposits(a.depositsCount),
-      totalDeposited: a.totalDeposited,
-      withdrawnAmount: a.withdrawnAmount,
-      balance,
-      maxPartialWithdrawal: maxPartialWithdrawal(balance, a.dailyAmount),
-      closurePreview: { commission: closure.commission, payout: closure.payout },
+      balance: a.balance,
+      locked: open ? lockedAmount(states) : 0,
+      availableToWithdraw: open ? maxWithdrawal(a.balance, states) : 0,
+      dailyTotal: mine.reduce((sum, p) => (p.status === 'active' ? sum + p.dailyAmount : sum), 0),
+      plans: mine.map((p) => ({
+        planId: p._id.toHexString(),
+        dailyAmount: p.dailyAmount,
+        paidInCycle: p.paidInCycle,
+        cycleLength: SUSU_CYCLE_PAYMENTS,
+        cycleNumber: p.cyclesCompleted + 1,
+        status: p.status,
+      })),
     };
   });
 
@@ -188,9 +191,7 @@ export async function myAccounts(customerIdHex: string): Promise<PortalAccounts>
   // Only OPEN products count toward the headline figures — a closed susu
   // cycle or a repaid loan is history, not a current position.
   const saved =
-    susu
-      .filter((a) => a.status === 'active' || a.status === 'completed')
-      .reduce((sum, a) => sum + a.balance, 0) +
+    susu.filter((a) => a.status === 'active').reduce((sum, a) => sum + a.balance, 0) +
     savings.filter((a) => a.status === 'active').reduce((sum, a) => sum + a.balance, 0);
   const owed =
     portalLoans

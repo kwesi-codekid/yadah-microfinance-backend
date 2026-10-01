@@ -43,7 +43,7 @@ async function initiateSusuCharge(): Promise<{
   env.PAYSTACK_SECRET_KEY = SECRET;
   stubPaystackFetch();
   const customerId = await makeCustomer();
-  const account = await susu.openAccount(officer, customerId, 1_000);
+  const { account } = await susu.openAccount(officer, customerId, 1_000);
   const accountId = new Types.ObjectId(account.id);
   const charge = await payments.initiateCharge(officer, {
     kind: 'susu-deposit',
@@ -58,7 +58,7 @@ async function initiateSusuCharge(): Promise<{
 describe('paystack charges', () => {
   it('answers 503 when the secret key is not configured', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     await expect(
       payments.initiateCharge(officer, {
         kind: 'susu-deposit',
@@ -74,12 +74,12 @@ describe('paystack charges', () => {
     env.PAYSTACK_SECRET_KEY = SECRET;
     stubPaystackFetch();
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     await expect(
       payments.initiateCharge(officer, {
         kind: 'susu-deposit',
         targetId: new Types.ObjectId(account.id),
-        amount: 1_500, // not a multiple of the daily amount
+        amount: 500, // short of one payment on the plan
         phone: '0594213496',
         provider: 'mtn',
       }),
@@ -103,10 +103,10 @@ describe('paystack charges', () => {
     const deposit = await SusuDepositModel.findOne({ accountId });
     expect(deposit).toMatchObject({
       amount: 2_000,
-      daysCovered: 2,
       channel: 'paystack',
       idempotencyKey: `paystack:${reference}`,
     });
+    expect(deposit?.lines[0]).toMatchObject({ payments: 2, seqEnd: 2 });
 
     // Duplicate delivery: no double-record.
     await payments.handleWebhookEvent({
@@ -130,7 +130,7 @@ describe('paystack charges', () => {
 
   it('holds a paid charge whose target state changed (success but not applied)', async () => {
     const { accountId, reference } = await initiateSusuCharge();
-    await susu.terminateAccount(officer, accountId); // empty account, terminable
+    await susu.closeAccount(officer, accountId); // the customer left in between
 
     await payments.handleWebhookEvent({
       event: 'charge.success',
@@ -139,7 +139,7 @@ describe('paystack charges', () => {
     const charge = await payments.getCharge(officer, reference);
     expect(charge.status).toBe('success');
     expect(charge.executionStatus).toBe('failed');
-    expect(charge.failureReason).toContain('ACCOUNT_NOT_ACTIVE');
+    expect(charge.failureReason).toMatch(/ACCOUNT_CLOSED|NO_ACTIVE_PLANS/);
   });
 
   it('ignores unknown references', async () => {

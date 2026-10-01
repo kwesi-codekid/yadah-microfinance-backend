@@ -41,30 +41,25 @@ const portalAccounts = z
     susu: z.array(
       z.object({
         accountId: z.string(),
-        accountNumber: z
-          .string()
-          .describe(
-            "The customer's susu number — shared by every book they hold, so two " +
-              'cycles in one month carry the same string. Not an identifier.',
-          ),
-        cycleMonth: z.string().optional().describe('The month this book is called'),
-        ref: z.string().describe('The book itself, rendered: 260912134501-a3f9. Always distinct'),
+        accountNumber: z.string().describe("The customer's susu number — one per customer"),
         status: z.string(),
-        dailyAmount: z.number().int(),
-        depositsCount: z.number().int(),
-        cycleLength: z.number().int().describe('Always 31'),
-        daysRemaining: z.number().int(),
-        totalDeposited: z.number().int(),
-        withdrawnAmount: z.number().int(),
         balance: z.number().int(),
-        maxPartialWithdrawal: z
+        locked: z
           .number()
           .int()
-          .describe('Most that can be taken with the account left open — one day stays reserved'),
-        closurePreview: z.object({
-          commission: z.number().int().describe("Exactly one day's deposit"),
-          payout: z.number().int(),
-        }),
+          .describe('One payment per plan with a cycle in progress — the part nothing may take'),
+        availableToWithdraw: z.number().int(),
+        dailyTotal: z.number().int().describe('Σ daily amounts of the active plans'),
+        plans: z.array(
+          z.object({
+            planId: z.string(),
+            dailyAmount: z.number().int(),
+            paidInCycle: z.number().int().describe('Payments made in the cycle in progress, 0..30'),
+            cycleLength: z.number().int().describe('Always 31'),
+            cycleNumber: z.number().int(),
+            status: z.string(),
+          }),
+        ),
       }),
     ),
     savings: z.array(

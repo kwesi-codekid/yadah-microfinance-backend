@@ -67,9 +67,10 @@ const repaymentResult = z.object({
   repayment: z.object({ id: z.string(), amount: z.number().int(), source: z.string() }),
   loan: publicLoan,
   replayed: z.boolean(),
-  susuClosure: z
-    .object({ accountId: z.string(), commission: z.number().int(), payout: z.number().int() })
-    .optional(),
+  susuWithdrawal: z
+    .object({ accountId: z.string(), amount: z.number().int(), balanceAfter: z.number().int() })
+    .optional()
+    .describe('Present when the repayment was taken from the customer’s susu balance'),
 });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Loan id') });
@@ -81,7 +82,7 @@ const repaymentIdParam = z.object({
 const repaymentTxn = z.object({
   id: z.string(),
   amount: z.number().int(),
-  source: z.enum(['cash', 'susu-closure', 'transfer']),
+  source: z.enum(['cash', 'susu', 'susu-closure', 'transfer']),
   channel: z.string(),
   recordedById: z.string(),
   createdAt: z.iso.datetime(),
@@ -140,7 +141,7 @@ export const loanPaths: ZodOpenApiPathsObject = {
             susu: z.object({
               accounts: z.number(),
               activeAccounts: z.number(),
-              totalDeposited: z.number(),
+              balance: z.number().describe('What the susu account holds now'),
             }),
             savings: z.object({ accounts: z.number(), totalBalance: z.number() }),
             openLoan: publicLoan.nullable(),
@@ -398,25 +399,25 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
-  '/loans/{id}/repayments/susu-closure': {
+  '/loans/{id}/repayments/susu': {
     post: {
       tags: ['Loans'],
-      summary: 'Repay by closing a susu account (atomic across modules)',
+      summary: 'Repay from the customer’s susu balance (atomic across modules)',
       description:
-        'One transaction: the susu account stops with normal commission math and its ' +
-        'payout is applied to the loan (capped at the remaining balance). Any excess ' +
-        'either stays in the susu account pending withdrawal (default — collect via ' +
-        'POST /susu/accounts/{id}/payout) or, with excessTo=savings, is credited to ' +
-        'the customer’s active savings account in the same transaction.',
+        'One transaction: the amount leaves the susu account as a withdrawal — no ' +
+        'commission, cycles untouched, and never below the account’s lock — and is ' +
+        'applied to the loan. At most the loan’s remaining balance and at most the ' +
+        'account’s availableToWithdraw.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(susuRepayBody),
       responses: {
-        '201': jsonResponse('Closed and applied', repaymentResult),
+        '201': jsonResponse('Applied', repaymentResult),
         '200': jsonResponse('Replay of an earlier request', repaymentResult),
         '409': errorResponse('ALREADY_CLOSED'),
         '422': errorResponse(
-          'PAYOUT_EXCEEDS_BALANCE, CUSTOMER_MISMATCH, NO_PAYOUT, or LOAN_NOT_OPEN',
+          'EXCEEDS_BALANCE (details.remaining), EXCEEDS_AVAILABLE (details.available, ' +
+            'details.locked), CUSTOMER_MISMATCH, or LOAN_NOT_OPEN',
         ),
       },
     },

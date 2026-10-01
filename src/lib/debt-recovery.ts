@@ -4,11 +4,13 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
+  SusuPlanModel,
   type HpAgreement,
   type Loan,
 } from '../models/index.js';
 import { NOT_TRASHED } from '../models/shared.js';
 import { availableToWithdraw } from '../domain/savings.js';
+import { maxWithdrawal, type PlanState } from '../domain/susu-plans.js';
 import { remainingOn } from '../modules/hire-purchase/hp.service.js';
 import { transfer } from '../modules/transfers/transfers.service.js';
 import { accraDay } from './time.js';
@@ -22,10 +24,9 @@ import type { AccessTokenPayload } from '../modules/auth/auth.service.js';
  * is overdue, the customer's own money — susu and savings — is debited toward
  * the remaining balance. Sweep order is least-harm-first:
  *
- *   1. susu pending-payout balances (money already loose)
+ *   1. susu — a withdrawal from the balance: no commission, the cycles are
+ *      untouched, and the lock for cycles in progress is kept
  *   2. savings — NORMAL withdrawal rules (GHS 10 fee, 1/day, min balance kept)
- *   3. completed susu cycles (stop → commission once → remainder pending)
- *   4. active susu cycles (same — the cycle ends, nothing is forfeited)
  *
  * Every step reuses the atomic transfers machinery, so each debit is a real
  * transfer: audited both sides, SMS to the customer, idempotent. Keys are
@@ -66,7 +67,7 @@ async function refreshRemaining(debt: Debt): Promise<number> {
 async function attempt(
   debt: Debt,
   from: { type: 'susu' | 'savings'; accountId: Types.ObjectId },
-  amount: number | undefined,
+  amount: number,
   recovered: { total: number },
 ): Promise<void> {
   const debtId = debt.doc._id.toHexString();
@@ -75,7 +76,7 @@ async function attempt(
     const result = await transfer(systemActor, {
       from,
       to: toSide(debt),
-      ...(amount !== undefined ? { amount } : {}),
+      amount,
       idempotencyKey: key,
     });
     if (!result.replayed && result.transfer.amountCredited > 0) {
@@ -101,19 +102,28 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
   let remaining = debtRemaining(debt);
   if (remaining < 1) return;
 
-  // 1. Pending-payout susu balances.
-  const pending = await SusuAccountModel.find({
+  // 1. Susu — whatever the balance holds above the lock.
+  const susuAccounts = await SusuAccountModel.find({
     customerId,
-    status: 'pending-payout',
-    payoutRemaining: { $gt: 0 },
+    status: 'active',
     ...NOT_TRASHED,
   });
-  for (const account of pending) {
+  for (const account of susuAccounts) {
     if (remaining < 1) return;
+    const plans = await SusuPlanModel.find({ accountId: account._id });
+    const states: PlanState[] = plans.map((p) => ({
+      planId: p._id.toHexString(),
+      dailyAmount: p.dailyAmount,
+      paidInCycle: p.paidInCycle,
+      cyclesCompleted: p.cyclesCompleted,
+      status: p.status,
+    }));
+    const available = maxWithdrawal(account.balance, states);
+    if (available < 1) continue;
     await attempt(
       debt,
       { type: 'susu', accountId: account._id },
-      Math.min(account.payoutRemaining, remaining),
+      Math.min(available, remaining),
       recovered,
     );
     remaining = await refreshRemaining(debt);
@@ -132,17 +142,6 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
       recovered,
     );
     remaining = await refreshRemaining(debt);
-  }
-
-  // 3 & 4. Completed cycles first, then active ones — stopping takes the
-  // one-day commission once; any excess stays pending for the customer.
-  for (const status of ['completed', 'active'] as const) {
-    const accounts = await SusuAccountModel.find({ customerId, status, ...NOT_TRASHED });
-    for (const account of accounts) {
-      if (remaining < 1) return;
-      await attempt(debt, { type: 'susu', accountId: account._id }, undefined, recovered);
-      remaining = await refreshRemaining(debt);
-    }
   }
 }
 

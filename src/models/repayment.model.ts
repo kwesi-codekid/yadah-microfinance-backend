@@ -1,15 +1,19 @@
 import { Schema, model, type Types } from 'mongoose';
 import { CHANNELS, moneyField, type Channel } from './shared.js';
 
-/** A repayment against a loan — cash, or the payout of a closed susu account. */
+/**
+ * A repayment against a loan — cash, money taken from the customer's susu
+ * balance, or an internal transfer. 'susu-closure' is history: repayments
+ * made when paying from susu meant closing the book.
+ */
 export interface Repayment {
   _id: Types.ObjectId;
   loanId: Types.ObjectId;
   customerId: Types.ObjectId;
   amount: number; // pesewas
-  source: 'cash' | 'susu-closure' | 'transfer';
+  source: 'cash' | 'susu' | 'susu-closure' | 'transfer';
   channel: Channel;
-  /** Set when source is susu-closure: the account whose payout paid this. */
+  /** Set when source is susu (or susu-closure): the account the money came from. */
   susuAccountId?: Types.ObjectId;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
@@ -22,7 +26,7 @@ const repaymentSchema = new Schema<Repayment>(
     loanId: { type: Schema.Types.ObjectId, ref: 'Loan', required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     amount: moneyField,
-    source: { type: String, enum: ['cash', 'susu-closure', 'transfer'], required: true },
+    source: { type: String, enum: ['cash', 'susu', 'susu-closure', 'transfer'], required: true },
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     susuAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },

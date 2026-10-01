@@ -45,9 +45,7 @@ async function seedCustomer(): Promise<{
   const susuAccount = await SusuAccountModel.create({
     accountNumber: String(Math.floor(100000 + Math.random() * 900000)),
     customerId,
-    dailyAmount: 1_000,
-    depositsCount: 1,
-    totalDeposited: 1_000,
+    balance: 500,
     openedById: staffId,
   });
   await SusuDepositModel.create({
@@ -55,9 +53,18 @@ async function seedCustomer(): Promise<{
     customerId,
     collectorId: staffId,
     amount: 1_000, // in
-    daysCovered: 1,
-    seqStart: 1,
-    seqEnd: 1,
+    lines: [
+      {
+        planId: new Types.ObjectId(),
+        dailyAmount: 1_000,
+        cycleNumber: 1,
+        payments: 1,
+        seqStart: 1,
+        seqEnd: 1,
+        amount: 1_000,
+        commissionAmount: 0,
+      },
+    ],
     channel: 'cash',
   });
   await SusuPayoutModel.create({

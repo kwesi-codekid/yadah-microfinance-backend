@@ -588,7 +588,7 @@ export async function trashCustomer(
     SusuAccountModel.countDocuments({
       customerId: id,
       ...NOT_TRASHED,
-      status: { $in: ['active', 'completed', 'pending-payout'] },
+      status: 'active',
     }),
     SavingsAccountModel.countDocuments({ customerId: id, ...NOT_TRASHED, status: 'active' }),
     openCreditCounts(id),

@@ -14,6 +14,7 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  SusuPlanModel,
   TxnCorrectionModel,
   UserModel,
 } from '../../src/models/index.js';
@@ -74,9 +75,18 @@ const oid = (id: string): Types.ObjectId => new Types.ObjectId(id);
 /** A susu account with one deposit of three days on it, ready to be corrected. */
 async function susuFixture(): Promise<{ accountId: Types.ObjectId; depositId: Types.ObjectId }> {
   const customerId = await makeCustomer();
-  const account = await susu.openAccount(officer, customerId, 1_000);
+  const { account } = await susu.openAccount(officer, customerId, 1_000);
   const accountId = oid(account.id);
-  const rec = await susu.recordDeposit(officer, accountId, 3_000, randomUUID(), 'cash');
+  const rec = await susu.recordDeposit(
+    officer,
+    accountId,
+    3_000,
+    randomUUID(),
+    'cash',
+    undefined,
+    undefined,
+    [{ planId: account.plans[0]!.id, payments: 3 }],
+  );
   return { accountId, depositId: oid(rec.deposit.id) };
 }
 
@@ -101,14 +111,13 @@ describe('asking for a correction', () => {
       requestedByName: 'Asking Teller',
     });
     expect(correction.targetNumber).toMatch(/^SU/);
-    expect(correction.targetLabel).toMatch(/^\d{12}-[a-f0-9]{4}$/);
 
     // The ledger is exactly as it was.
     const deposit = await SusuDepositModel.findById(depositId);
     expect(deposit?.amount).toBe(3_000);
     const account = await SusuAccountModel.findById(accountId);
-    expect(account?.depositsCount).toBe(3);
-    expect(account?.totalDeposited).toBe(3_000);
+    expect(account?.balance).toBe(3_000);
+    expect((await SusuPlanModel.findOne({ accountId }))?.paidInCycle).toBe(3);
 
     // The office hears about it; the audit trail has the asking.
     const notified = await NotificationModel.findOne({
@@ -131,10 +140,9 @@ describe('asking for a correction', () => {
     const ask = (amount: number): Promise<unknown> =>
       corrections.propose(teller, 'susu-deposit', accountId, depositId, { amount, reason: 'typo' });
 
-    // Not a whole number of days; already that amount; past the cycle's end.
-    await expect(ask(2_500)).rejects.toMatchObject({ code: 'AMOUNT_MISMATCH', status: 422 });
+    // Already that amount; far past what one deposit may credit.
     await expect(ask(3_000)).rejects.toMatchObject({ code: 'NO_CHANGE', status: 422 });
-    await expect(ask(32_000)).rejects.toMatchObject({ code: 'EXCEEDS_REMAINING', status: 422 });
+    await expect(ask(63_000)).rejects.toMatchObject({ code: 'INVALID_SPLIT', status: 422 });
 
     // Not the newest deposit once another lands after it.
     await susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash');
@@ -173,8 +181,9 @@ describe('deciding a correction', () => {
     expect(result.correction.status).toBe('approved');
     expect(result.correction.reviewedById).toBe(officer.sub);
     expect(result.correction.reviewedByName).toBe('The Office');
-    expect(result.txn).toMatchObject({ amount: 2_000, daysCovered: 2, seqEnd: 2 });
-    expect(result.target).toMatchObject({ depositsCount: 2, totalDeposited: 2_000 });
+    expect(result.txn).toMatchObject({ amount: 2_000, payments: 2 });
+    expect(result.target).toMatchObject({ balance: 2_000 });
+    expect((result.target as { plans: { paidInCycle: number }[] }).plans[0]?.paidInCycle).toBe(2);
 
     // The ledger's own audit entry names the approver as actor and the teller
     // as the one who asked, so both questions can be answered.
@@ -506,8 +515,17 @@ describe('loan repayments', () => {
 /** A customer with the four months of susu history hire purchase asks for. */
 async function eligibleCustomer(): Promise<Types.ObjectId> {
   const customerId = await makeCustomer();
-  const account = await susu.openAccount(officer, customerId, 1_000);
-  await susu.recordDeposit(officer, oid(account.id), 5_000, randomUUID(), 'cash');
+  const { account } = await susu.openAccount(officer, customerId, 1_000);
+  await susu.recordDeposit(
+    officer,
+    oid(account.id),
+    5_000,
+    randomUUID(),
+    'cash',
+    undefined,
+    undefined,
+    [{ planId: account.plans[0]!.id, payments: 5 }],
+  );
   await SusuDepositModel.updateMany(
     { customerId },
     { $set: { createdAt: new Date(Date.now() - 130 * 24 * 60 * 60 * 1000) } },

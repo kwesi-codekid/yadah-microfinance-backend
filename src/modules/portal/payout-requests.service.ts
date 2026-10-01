@@ -16,11 +16,12 @@ import { enqueueSms } from '../../lib/sms.js';
 import {
   CustomerModel,
   PayoutRequestModel,
+  SusuPlanModel,
   type PayoutRequest,
   type PayoutRequestKind,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
-import { maxPartialWithdrawal, susuBalance } from '../../domain/susu.js';
+import { maxWithdrawal, type PlanState } from '../../domain/susu-plans.js';
 import { availableToWithdraw, MIN_BALANCE, WITHDRAWAL_FEE } from '../../domain/savings.js';
 import * as savings from '../savings/savings.service.js';
 import * as susu from '../susu/susu.service.js';
@@ -123,33 +124,34 @@ export async function submitRequest(
   } else {
     const account = await assertOwnedSusu(customerIdHex, body.targetId);
     if (!account) throw new AppError('NOT_FOUND', 'Susu account not found', 404);
-    if (account.status === 'closed' || account.status === 'terminated') {
+    if (account.status !== 'active') {
       throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
     }
-    const balance = susuBalance(account.totalDeposited, account.withdrawnAmount);
 
     if (body.kind === 'susu-partial-withdrawal') {
       if (body.amount === undefined) {
         throw new AppError('AMOUNT_REQUIRED', 'Specify how much to withdraw', 422);
       }
-      const max = maxPartialWithdrawal(balance, account.dailyAmount);
+      const plans = await SusuPlanModel.find({ accountId: account._id });
+      const states: PlanState[] = plans.map((p) => ({
+        planId: p._id.toHexString(),
+        dailyAmount: p.dailyAmount,
+        paidInCycle: p.paidInCycle,
+        cyclesCompleted: p.cyclesCompleted,
+        status: p.status,
+      }));
+      const max = maxWithdrawal(account.balance, states);
       if (body.amount > max) {
         throw new AppError(
           'EXCEEDS_MAX_PARTIAL',
-          `At most ${formatGhs(max)} can be taken while the account stays open`,
+          `At most ${formatGhs(max)} can be taken while the cycles in progress keep their commission covered`,
           422,
           { max },
         );
       }
-    } else if (balance < account.dailyAmount) {
-      // Closing below one day's deposit cannot pay the commission — the office
-      // handles that case with `terminate`, which is not a customer action.
-      throw new AppError(
-        'BELOW_COMMISSION',
-        'This account holds less than one day’s deposit — visit the office to close it',
-        422,
-      );
     }
+    // A closure request needs no check: closing charges the cycles in
+    // progress and pays out the rest, whatever the balance.
   }
 
   // The unique partial index on (targetId, status:'pending') is the real guard
@@ -311,9 +313,8 @@ export async function approveRequest(
 
   // ---- 1. the ledger write, through the ordinary office service
   let netAmount: number;
-  // Only the savings path exposes the created record's id; the susu results
-  // return figures rather than the payout document.
-  let resultRecordId: Types.ObjectId | undefined;
+  // The ledger row each path wrote: the savings transaction, or the susu payout.
+  let resultRecordId: Types.ObjectId;
 
   if (request.kind === 'savings-withdrawal') {
     const result = await savings.withdraw(
@@ -328,7 +329,7 @@ export async function approveRequest(
     netAmount = request.amount ?? 0;
     resultRecordId = new Types.ObjectId(result.txn.id);
   } else if (request.kind === 'susu-partial-withdrawal') {
-    const result = await susu.withdrawPartial(
+    const result = await susu.withdraw(
       actor,
       request.targetId,
       request.amount ?? 0,
@@ -336,17 +337,20 @@ export async function approveRequest(
       requestId,
     );
     netAmount = result.amount;
+    resultRecordId = new Types.ObjectId(result.payoutId);
   } else {
-    // Closure computes its own payout: balance less exactly one day's commission.
+    // Closure computes its own payout: the balance less one payment per
+    // plan with a cycle in progress.
     const closure = await susu.closeAccount(actor, request.targetId, requestId);
     netAmount = closure.payout;
+    resultRecordId = new Types.ObjectId(closure.payoutId);
   }
 
   request.status = 'approved';
   request.netAmount = netAmount;
   request.reviewedById = new Types.ObjectId(actor.sub);
   request.reviewedAt = new Date();
-  if (resultRecordId) request.resultRecordId = resultRecordId;
+  request.resultRecordId = resultRecordId;
   await request.save();
 
   await audit({

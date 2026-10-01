@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { CustomerModel, PayoutRequestModel, PortalOtpModel } from '../../src/models/index.js';
 import * as portalAuth from '../../src/modules/portal/portal-auth.service.js';
@@ -98,13 +99,14 @@ describe('portal data is scoped to the token holder', () => {
 
     const accounts = await portal.myAccounts(mine.toHexString());
     expect(accounts.susu).toHaveLength(1);
-    expect(accounts.susu[0]?.dailyAmount).toBe(1_000);
+    expect(accounts.susu[0]?.plans[0]?.dailyAmount).toBe(1_000);
+    expect(accounts.susu[0]?.dailyTotal).toBe(1_000);
   });
 
   it('404s on someone else’s account rather than confirming it exists', async () => {
     const mine = await makeCustomer();
     const theirs = await makeCustomer();
-    const other = await susu.openAccount(officer, theirs, 2_000);
+    const { account: other } = await susu.openAccount(officer, theirs, 2_000);
 
     await expect(
       portal.assertOwnedSusu(mine.toHexString(), new Types.ObjectId(other.id)),
@@ -203,18 +205,29 @@ describe('withdrawal requests', () => {
     expect(request.status).toBe('pending');
   });
 
-  it('refuses a susu closure that cannot cover the commission', async () => {
+  it('refuses a susu withdrawal into the lock, before the office ever sees it', async () => {
     const customerId = await makeCustomer();
-    // Opened but never deposited into: balance 0, below one day's commission.
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
+    const accountId = new Types.ObjectId(account.id);
+    await susu.recordDeposit(
+      officer,
+      accountId,
+      5_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 5 }],
+    );
 
     await expect(
       requests.submitRequest(customerId.toHexString(), {
-        kind: 'susu-closure',
-        targetId: new Types.ObjectId(account.id),
+        kind: 'susu-partial-withdrawal',
+        targetId: accountId,
+        amount: 4_001,
         payoutProvider: 'mtn',
       }),
-    ).rejects.toMatchObject({ code: 'BELOW_COMMISSION' });
+    ).rejects.toMatchObject({ code: 'EXCEEDS_MAX_PARTIAL', details: { max: 4_000 } });
   });
 
   it('rejecting moves nothing and records the reason', async () => {

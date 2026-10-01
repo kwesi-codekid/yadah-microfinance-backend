@@ -132,9 +132,9 @@ export type RepayBody = z.infer<typeof repayBody>;
 
 export const susuRepayBody = z.object({
   susuAccountId: objectId,
+  /** Taken from the susu balance — at most its availableToWithdraw, and at most what the loan still owes. */
+  amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
-  /** Where any excess payout goes (client-confirmed options). */
-  excessTo: z.enum(['pending-withdrawal', 'savings']).default('pending-withdrawal'),
 });
 export type SusuRepayBody = z.infer<typeof susuRepayBody>;
 

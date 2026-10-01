@@ -90,7 +90,7 @@ export interface Loan extends TrashFields {
 const loanSchema = new Schema<Loan>(
   {
     // Sparse: pre-scheme loans carry no number until the migration runs.
-    accountNumber: { type: String, unique: true, sparse: true, match: /^LN\d{8}$/ },
+    accountNumber: { type: String, unique: true, sparse: true, match: /^LN\d{8,}$/ },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     guarantorId: { type: Schema.Types.ObjectId, ref: 'Customer' },
     guarantorSnapshot: {

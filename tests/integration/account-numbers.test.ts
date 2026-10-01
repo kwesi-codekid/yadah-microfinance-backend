@@ -1,12 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Types } from 'mongoose';
-import {
-  accountPeriodKey,
-  bareAccountNumber,
-  cycleMonthOf,
-  nextAccountNumber,
-  raiseCounter,
-} from '../../src/lib/account-number.js';
+import { accountPeriodKey, nextAccountNumber, raiseCounter } from '../../src/lib/account-number.js';
 import {
   CounterModel,
   CustomerModel,
@@ -31,36 +25,20 @@ afterAll(teardownDb);
 const officer = asOfficer();
 const period = accountPeriodKey();
 
-describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
-  // One number per customer, their books separated by month inside it (client
-  // decision, 12 Sep 2026). What used to be asserted here — that a second
-  // account is one higher — is now precisely the bug.
-  it('gives one customer the same number for every book in a month', async () => {
+describe('account numbers: PREFIX + YYMM + a sequence that runs on for the product', () => {
+  // One susu account per customer, for life (client decision, 30 Sep 2026):
+  // the number is issued once and never changes.
+  it('gives a susu customer one number, issued once', async () => {
     const customerId = await makeCustomer();
-    const first = await susu.openAccount(officer, customerId, 1_000);
-    const second = await susu.openAccount(officer, customerId, 2_000);
+    const opened = await susu.openAccount(officer, customerId, 1_000);
+    expect(opened.account.accountNumber).toMatch(new RegExp(`^SU${period}[0-9]{4}$`));
 
-    const shape = new RegExp(
-      `^SU${period}[0-9]{4}-(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$`,
-    );
-    expect(first.accountNumber).toMatch(shape);
-    expect(first.cycleMonth).toBe(cycleMonthOf());
-    // Byte for byte, which is the whole of what the branch asked for.
-    expect(second.accountNumber).toBe(first.accountNumber);
-    // Two books all the same: different accounts, different refs, one number.
-    expect(second.id).not.toBe(first.id);
-    expect(second.ref).not.toBe(first.ref);
-    expect(await SusuAccountModel.countDocuments({ customerId })).toBe(2);
-  });
-
-  it('keeps the number and changes the month for a later book', async () => {
-    const customerId = await makeCustomer();
-    const sep = await susu.openAccount(officer, customerId, 1_000, 'SEP');
-    const oct = await susu.openAccount(officer, customerId, 1_000, 'OCT');
-
-    expect(sep.accountNumber.endsWith('-SEP')).toBe(true);
-    expect(oct.accountNumber.endsWith('-OCT')).toBe(true);
-    expect(bareAccountNumber(oct.accountNumber)).toBe(bareAccountNumber(sep.accountNumber));
+    // Closed and reopened, it is the same account under the same number.
+    await susu.closeAccount(officer, new Types.ObjectId(opened.account.id));
+    const again = await susu.openAccount(officer, customerId, 1_000);
+    expect(again.account.accountNumber).toBe(opened.account.accountNumber);
+    expect(again.account.id).toBe(opened.account.id);
+    expect(await SusuAccountModel.countDocuments({ customerId })).toBe(1);
   });
 
   it('never gives two customers the same number', async () => {
@@ -70,32 +48,27 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
       susu.openAccount(officer, b, 1_000),
       susu.openAccount(officer, c, 1_000),
     ]);
-    const stems = opened.map((o) => bareAccountNumber(o.accountNumber));
-    expect(new Set(stems).size).toBe(3);
+    expect(new Set(opened.map((o) => o.account.accountNumber)).size).toBe(3);
   });
 
   it('stores the number on the customer, and spends one sequence value per customer', async () => {
     const customerId = await makeCustomer();
-    const before = (await CounterModel.findById(`SU-${period}`))?.seq ?? 0;
+    const before = (await CounterModel.findById('SU'))?.seq ?? 0;
     const first = await susu.openAccount(officer, customerId, 1_000);
+    await susu.closeAccount(officer, new Types.ObjectId(first.account.id));
     await susu.openAccount(officer, customerId, 1_000);
-    await susu.openAccount(officer, customerId, 1_000);
-    const after = (await CounterModel.findById(`SU-${period}`))?.seq ?? 0;
+    const after = (await CounterModel.findById('SU'))?.seq ?? 0;
 
-    // Three books, one number, one counter value — not three.
     expect(after - before).toBe(1);
     const customer = await CustomerModel.findById(customerId);
-    expect(customer?.susuNumber).toBe(bareAccountNumber(first.accountNumber));
+    expect(customer?.susuNumber).toBe(first.account.accountNumber);
   });
 
-  it('leaves the accountNumber index in place, and non-unique', async () => {
-    // Both halves matter: a surviving unique flag rejects a customer's second
-    // book outright, and dropping the index with it turns every account-number
-    // search into a collection scan.
+  it('keeps the accountNumber index in place, and unique among live accounts', async () => {
     const indexes = await SusuAccountModel.collection.indexes();
     const onNumber = indexes.filter((i) => i.key.accountNumber === 1);
     expect(onNumber.length).toBeGreaterThan(0);
-    expect(onNumber.every((i) => i.unique !== true)).toBe(true);
+    expect(onNumber.some((i) => i.unique === true)).toBe(true);
   });
 
   it('gives each product an independent sequence', async () => {
@@ -110,10 +83,10 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
     );
 
     expect(account.accountNumber).toMatch(new RegExp(`^SV${period}\\d{4}$`));
-    // Savings counts from its own counter, so opening susu accounts above did
-    // not advance it.
-    const susuCounter = await CounterModel.findById(`SU-${period}`);
-    const savingsCounter = await CounterModel.findById(`SV-${period}`);
+    // Savings counts from its own counter — one per product, not per month —
+    // so opening susu accounts above did not advance it.
+    const susuCounter = await CounterModel.findById('SU');
+    const savingsCounter = await CounterModel.findById('SV');
     expect(susuCounter?.seq).toBeGreaterThan(0);
     expect(savingsCounter?.seq).toBe(1);
   });
@@ -127,7 +100,9 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
     expect(stored?.accountNumber).toBe(loan.accountNumber);
   });
 
-  it('restarts the sequence in a new month', async () => {
+  it('runs the sequence on into a new month — the month segment changes, the count does not', async () => {
+    // A number that went back to 0001 each month read to customers as
+    // starting over (client decision, 1 Oct 2026).
     const august = new Date('2026-08-15T00:00:00.000Z');
     const september = new Date('2026-09-15T00:00:00.000Z');
 
@@ -137,16 +112,15 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
 
     expect(aug1).toBe('HP26080001');
     expect(aug2).toBe('HP26080002');
-    // September starts over at 1 — the YYMM segment is what keeps it unique.
-    expect(sep1).toBe('HP26090001');
+    expect(sep1).toBe('HP26090003');
   });
 
   it('never reissues a number a backfill already used', async () => {
-    await raiseCounter('LN', '2501', 40);
+    await raiseCounter('LN', 40);
     expect(await nextAccountNumber('LN', new Date('2025-01-10T00:00:00.000Z'))).toBe('LN25010041');
 
     // raiseCounter only moves the counter up, so re-running a migration is safe.
-    await raiseCounter('LN', '2501', 10);
+    await raiseCounter('LN', 10);
     expect(await nextAccountNumber('LN', new Date('2025-01-10T00:00:00.000Z'))).toBe('LN25010042');
   });
 
@@ -156,7 +130,6 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
     const legacySusu = await SusuAccountModel.create({
       accountNumber: '482913',
       customerId,
-      dailyAmount: 1_000,
       openedById: new Types.ObjectId(),
     });
     const legacySavings = await SavingsAccountModel.create({
@@ -175,7 +148,6 @@ describe('account numbers: PREFIX + YYMM + 4-digit monthly sequence', () => {
       SusuAccountModel.create({
         accountNumber: 'SV26080001', // savings prefix on a susu account
         customerId,
-        dailyAmount: 1_000,
         openedById: new Types.ObjectId(),
       }),
     ).rejects.toThrow();

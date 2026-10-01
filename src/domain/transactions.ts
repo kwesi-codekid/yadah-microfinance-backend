@@ -11,8 +11,10 @@
 export const TXN_TYPES = [
   'susu-deposit',
   'susu-payout',
-  /** Part of a balance taken while the account stays open — no commission. */
+  /** Money taken while the account stays open — no commission. */
   'susu-withdrawal',
+  /** A plan stopped mid-cycle: its one payment charged, no cash moving. */
+  'susu-commission',
   'savings-deposit',
   'savings-withdrawal',
   'savings-closure',
@@ -54,6 +56,7 @@ export function moduleOf(type: TxnType): TxnModule {
     case 'susu-deposit':
     case 'susu-payout':
     case 'susu-withdrawal':
+    case 'susu-commission':
       return 'susu';
     case 'savings-deposit':
     case 'savings-withdrawal':
@@ -101,6 +104,7 @@ export function directionOf(
       return detail === 'cash' ? 'in' : 'internal';
     case 'loan-disbursement':
       return 'out';
+    case 'susu-commission':
     case 'transfer':
       return 'internal';
   }
@@ -110,15 +114,22 @@ export function directionOf(
  * Whether a row's `fee` is money the company KEPT, as opposed to a charge
  * mirrored onto another row for display.
  *
- * Three row types carry real revenue: the two savings charges, and a susu
- * payout that stopped its account (one cycle-day's commission, charged once —
- * every later instalment of the same closure carries zero, so counting the
- * type here cannot double-charge). `transfer` is excluded deliberately: its
- * fee mirrors the savings leg's, and counting both would bill the customer
- * twice on paper. `susu-withdrawal` is a partial draw and never charges.
+ * The two savings charges, and susu commission wherever a cycle ended: on the
+ * deposit that landed a 31st payment, on the payout that closed an account
+ * with cycles in progress, and on a plan stopped mid-cycle. Each cycle's
+ * commission sits on exactly one row, so none is counted twice. `transfer`
+ * is excluded deliberately: its fee mirrors the savings leg's, and counting
+ * both would bill the customer twice on paper. `susu-withdrawal` never
+ * charges.
  */
 export function isRevenueFee(type: TxnType): boolean {
-  return type === 'savings-withdrawal' || type === 'savings-closure' || type === 'susu-payout';
+  return (
+    type === 'savings-withdrawal' ||
+    type === 'savings-closure' ||
+    type === 'susu-deposit' ||
+    type === 'susu-payout' ||
+    type === 'susu-commission'
+  );
 }
 
 /**

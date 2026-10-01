@@ -17,15 +17,16 @@ const roundStop = z
       z.object({
         accountId: z.string(),
         accountNumber: z.string(),
+        planId: z.string(),
         dailyAmount: z.number().int(),
-        depositsCount: z.number().int(),
-        daysRemainingInCycle: z.number().int(),
+        paidInCycle: z.number().int().describe("Payments in the plan's cycle in progress, 0..30"),
+        cycleTarget: z.literal(31),
         collectedToday: z.number().int(),
-        stillDue: z.number().int().describe("One day's deposit less anything already taken today"),
+        stillDue: z.number().int().describe('One payment less anything already taken today'),
       }),
     ),
     totalStillDue: z.number().int(),
-    done: z.boolean().describe("True once every susu account has today's deposit"),
+    done: z.boolean().describe("True once every plan has today's payment"),
   })
   .meta({ id: 'RoundStop' });
 

@@ -5,7 +5,7 @@ import {
   HpSaleModel,
   LoanModel,
   SavingsTxnModel,
-  SusuAccountModel,
+  SusuCycleModel,
   SusuDepositModel,
   UserModel,
 } from '../../models/index.js';
@@ -223,13 +223,13 @@ export async function commissionEarned(from?: string, to?: string): Promise<Comm
   const window = rangeToWindow(from, to);
 
   const [susu, savings, sales] = await Promise.all([
-    SusuAccountModel.aggregate<{ count: number; amount: number }>([
+    // One row per ended cycle: completed at its 31st payment, or cut short by
+    // a plan stop or the account closing. Each charged one payment's amount.
+    SusuCycleModel.aggregate<{ count: number; amount: number }>([
       {
         $match: {
-          status: 'closed',
-          closedAt: { $gte: window.start, $lt: window.end },
+          endedAt: { $gte: window.start, $lt: window.end },
           commissionAmount: { $gt: 0 },
-          ...NOT_TRASHED,
         },
       },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$commissionAmount' } } },

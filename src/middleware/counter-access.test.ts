@@ -99,12 +99,14 @@ const THE_COUNTER = [
   'GET /collectors',
   'PATCH /customers/{id}/collector',
 
-  // Susu: open a cycle, take the daily, pay it out at the end.
+  // Susu: open the account, run its plans, take the daily, pay out when the
+  // customer leaves.
   'POST /susu/accounts',
+  'POST /susu/accounts/{id}/plans',
+  'PATCH /susu/accounts/{id}/plans/{planId}',
+  'POST /susu/accounts/{id}/plans/{planId}/stop',
   'POST /susu/accounts/{id}/deposits',
-  'POST /susu/collect-all',
   'POST /susu/accounts/{id}/withdraw',
-  'POST /susu/accounts/{id}/payout',
   'POST /susu/accounts/{id}/close',
   // A figure already on the ledger is the office's to change. The counter may
   // ask, read the queue, and take its own request back.
@@ -126,7 +128,7 @@ const THE_COUNTER = [
   'POST /loans/applications',
   'POST /hire-purchase/agreements',
   'POST /loans/{id}/repayments',
-  'POST /loans/{id}/repayments/susu-closure',
+  'POST /loans/{id}/repayments/susu',
   'POST /hire-purchase/sales',
   'POST /hire-purchase/agreements/{id}/deposit',
   'POST /hire-purchase/agreements/{id}/payments',
@@ -207,7 +209,6 @@ const NOT_THE_COUNTER = [
   'POST /customers/{id}/restore',
   'GET /customers/trash',
   'DELETE /susu/accounts/{id}',
-  'POST /susu/accounts/{id}/terminate',
   'DELETE /savings/accounts/{id}',
   'DELETE /hire-purchase/items/{id}',
   'POST /hire-purchase/items/{id}/restore',

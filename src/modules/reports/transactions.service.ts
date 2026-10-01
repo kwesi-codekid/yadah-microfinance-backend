@@ -1,4 +1,3 @@
-import { accountRef } from '../../lib/account-number.js';
 import { Types, type PipelineStage } from 'mongoose';
 import { AppError } from '../../lib/errors.js';
 import {
@@ -12,7 +11,6 @@ import {
   type TxnStatus,
   type TxnType,
 } from '../../domain/transactions.js';
-import { susuBalance } from '../../domain/susu.js';
 import {
   CustomerModel,
   HpAgreementModel,
@@ -22,6 +20,7 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  SusuPlanModel,
   UserModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
@@ -158,7 +157,9 @@ function buildBranches(
             $project: {
               type: { $literal: 'susu-deposit' },
               amount: 1,
-              fee: { $literal: 0 },
+              // Commission taken out of this deposit as a plan's 31st payment
+              // landed — one payment's amount per cycle completed.
+              fee: { $ifNull: ['$commissionAmount', 0] },
               customerId: 1,
               refId: '$accountId',
               refKind: { $literal: 'susu-account' },
@@ -177,16 +178,14 @@ function buildBranches(
           { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
           {
             $project: {
-              // A partial withdrawal leaves the account open, so it reads as a
-              // different event from the payout that ends one.
+              // A withdrawal leaves the account open, so it reads as a
+              // different event from the payout that closes one.
               type: {
-                $cond: [{ $eq: ['$kind', 'partial-withdrawal'] }, 'susu-withdrawal', 'susu-payout'],
+                $cond: [{ $eq: ['$kind', 'withdrawal'] }, 'susu-withdrawal', 'susu-payout'],
               },
               amount: 1,
-              // The one-day commission charged as the account stopped. Only
-              // the row that stopped it carries a value; instalments of the
-              // same closure, and partial withdrawals, carry zero. Rows
-              // written before the field existed have none, and read as zero.
+              // The commission charged as the account closed — one payment per
+              // plan that was mid-cycle. Zero on a withdrawal.
               fee: { $ifNull: ['$commissionAmount', 0] },
               customerId: 1,
               refId: '$accountId',
@@ -195,6 +194,36 @@ function buildBranches(
               detail: '$destination',
               recordedById: 1,
               createdAt: 1,
+            },
+          },
+        ],
+      },
+      {
+        // A plan stopped mid-cycle charges its one payment with no cash
+        // moving. Completed cycles and closures are already on the deposit
+        // and payout rows above, so only stops are read from here.
+        coll: 'susu-cycles',
+        stages: [
+          {
+            $match: {
+              endedAt: createdAt,
+              endReason: 'plan-stopped',
+              ...byCustomer,
+              ...by('endedById'),
+            },
+          },
+          {
+            $project: {
+              type: { $literal: 'susu-commission' },
+              amount: { $literal: 0 },
+              fee: '$commissionAmount',
+              customerId: 1,
+              refId: '$accountId',
+              refKind: { $literal: 'susu-account' },
+              channel: { $literal: null },
+              detail: { $literal: 'plan-stopped' },
+              recordedById: '$endedById',
+              createdAt: '$endedAt',
             },
           },
         ],
@@ -805,18 +834,18 @@ export interface CustomerStatement {
   products: {
     susu: {
       accountId: string;
-      /** The customer's susu number — every book they hold carries it. */
       accountNumber: string;
-      /** The month this book is called, and the book's own distinct ref. */
-      cycleMonth?: string;
-      ref: string;
       status: string;
-      dailyAmount: number;
-      depositsCount: number;
-      totalDeposited: number;
-      withdrawnAmount: number;
       balance: number;
-      payoutRemaining: number;
+      /** Σ daily amounts of the active plans. */
+      dailyTotal: number;
+      plans: {
+        planId: string;
+        dailyAmount: number;
+        paidInCycle: number;
+        cycleNumber: number;
+        status: string;
+      }[];
     }[];
     savings: {
       accountId: string;
@@ -887,6 +916,10 @@ export async function customerStatement(
     ]),
   ]);
 
+  const susuPlans = await SusuPlanModel.find({
+    accountId: { $in: susuAccounts.map((a) => a._id) },
+  }).sort({ createdAt: 1 });
+
   const truncated = raw.length > STATEMENT_MAX_ROWS;
   if (truncated) raw.pop();
   const transactions = await resolveRows(raw);
@@ -920,21 +953,26 @@ export async function customerStatement(
     period: { from: window.from, to: window.to },
     generatedAt: new Date(),
     products: {
-      // A customer with two books in one month gets two panels titled
-      // identically unless the statement carries something that differs.
-      susu: susuAccounts.map((a) => ({
-        accountId: a._id.toHexString(),
-        accountNumber: a.accountNumber,
-        ...(a.cycleMonth !== undefined ? { cycleMonth: a.cycleMonth } : {}),
-        ref: accountRef(a._id.toHexString(), a.createdAt),
-        status: a.status,
-        dailyAmount: a.dailyAmount,
-        depositsCount: a.depositsCount,
-        totalDeposited: a.totalDeposited,
-        withdrawnAmount: a.withdrawnAmount,
-        balance: susuBalance(a.totalDeposited, a.withdrawnAmount),
-        payoutRemaining: a.payoutRemaining,
-      })),
+      susu: susuAccounts.map((a) => {
+        const mine = susuPlans.filter((p) => p.accountId.equals(a._id));
+        return {
+          accountId: a._id.toHexString(),
+          accountNumber: a.accountNumber,
+          status: a.status,
+          balance: a.balance,
+          dailyTotal: mine.reduce(
+            (sum, p) => (p.status === 'active' ? sum + p.dailyAmount : sum),
+            0,
+          ),
+          plans: mine.map((p) => ({
+            planId: p._id.toHexString(),
+            dailyAmount: p.dailyAmount,
+            paidInCycle: p.paidInCycle,
+            cycleNumber: p.cyclesCompleted + 1,
+            status: p.status,
+          })),
+        };
+      }),
       savings,
       loans: loans.map((l) => ({
         loanId: l._id.toHexString(),

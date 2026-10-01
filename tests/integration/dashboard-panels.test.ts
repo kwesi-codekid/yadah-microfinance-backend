@@ -19,6 +19,21 @@ afterAll(teardownDb);
 
 const staffId = new Types.ObjectId();
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A deposit line on a throwaway plan id — the feed reads amounts, not plans. */
+function line(dailyAmount: number, seqStart: number, seqEnd: number) {
+  const payments = seqEnd - seqStart + 1;
+  return {
+    planId: new Types.ObjectId(),
+    dailyAmount,
+    cycleNumber: 1,
+    payments,
+    seqStart,
+    seqEnd,
+    amount: dailyAmount * payments,
+    commissionAmount: 0,
+  };
+}
 const today = accraDay();
 const yesterday = accraDay(new Date(Date.now() - DAY_MS));
 
@@ -108,7 +123,7 @@ describe('dashboard summary', () => {
       metrics.portfolio.loans.arrears + metrics.portfolio.hirePurchase.inArrears,
     );
     expect(metrics.kpis.amountCollectedToday).toBe(metrics.today.cashIn.amount);
-    expect(metrics.kpis.pendingSusuPayouts).toEqual(metrics.portfolio.susu.pendingPayout);
+    expect(metrics.kpis.activeSusuPlans).toBe(metrics.portfolio.susu.activePlans);
   });
 
   it('reports no change rather than a fake percentage when yesterday took nothing', async () => {
@@ -127,7 +142,7 @@ describe('pending money in the feed', () => {
     const account = await SusuAccountModel.create({
       accountNumber: '900001',
       customerId,
-      dailyAmount: 1_000,
+      balance: 1_000,
       openedById: staffId,
     });
     // Real, settled money: a cash deposit.
@@ -136,9 +151,7 @@ describe('pending money in the feed', () => {
       customerId,
       collectorId: staffId,
       amount: 1_000,
-      daysCovered: 1,
-      seqStart: 1,
-      seqEnd: 1,
+      lines: [line(1_000, 1, 1)],
       channel: 'cash',
     });
     // Money still in flight: initiated, Paystack has not confirmed.
@@ -187,7 +200,7 @@ describe('pending money in the feed', () => {
     const account = await SusuAccountModel.create({
       accountNumber: '900002',
       customerId,
-      dailyAmount: 1_000,
+      balance: 2_000,
       openedById: staffId,
     });
     const deposit = await SusuDepositModel.create({
@@ -195,9 +208,7 @@ describe('pending money in the feed', () => {
       customerId,
       collectorId: staffId,
       amount: 2_000,
-      daysCovered: 2,
-      seqStart: 1,
-      seqEnd: 2,
+      lines: [line(1_000, 1, 2)],
       channel: 'paystack',
     });
     await PaystackChargeModel.create({
@@ -230,27 +241,6 @@ describe('pending money in the feed', () => {
 });
 
 describe('dashboard alerts', () => {
-  it('surfaces susu payouts waiting, with the money behind them', async () => {
-    const customerId = await makeCustomer();
-    await SusuAccountModel.create({
-      accountNumber: '900003',
-      customerId,
-      dailyAmount: 1_000,
-      depositsCount: 31,
-      totalDeposited: 31_000,
-      status: 'pending-payout',
-      payoutRemaining: 30_000,
-      openedById: staffId,
-    });
-
-    const { alerts } = await dashboardAlerts();
-    const payout = alerts.find((a) => a.key === 'susu-payouts-pending');
-    expect(payout).toBeDefined();
-    expect(payout?.count).toBe(1);
-    expect(payout?.amount).toBe(30_000);
-    expect(payout?.target).toEqual({ module: 'susu', filter: { status: 'pending-payout' } });
-  });
-
   it('flags mobile money taken but not applied as critical', async () => {
     const customerId = await makeCustomer();
     await PaystackChargeModel.create({

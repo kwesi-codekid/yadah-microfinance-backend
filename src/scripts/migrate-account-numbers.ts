@@ -95,11 +95,10 @@ async function backfill(
     );
   }
 
-  for (const [period, seq] of seqByPeriod) {
-    await raiseCounter(prefix, period, seq);
-  }
+  // One counter per product now: it must clear every month's highest.
+  await raiseCounter(prefix, Math.max(0, ...seqByPeriod.values()));
   console.log(
-    `${label}: ${String(missing.length)} numbered, ${String(seqByPeriod.size)} month counters set`,
+    `${label}: ${String(missing.length)} numbered, counter raised past ${String(seqByPeriod.size)} month(s)`,
   );
 }
 

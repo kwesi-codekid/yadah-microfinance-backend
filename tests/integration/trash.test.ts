@@ -28,8 +28,17 @@ const officer = asOfficer();
 /** Customer with 4 months of backdated susu history (HP eligibility). */
 async function makeEligibleCustomer(): Promise<Types.ObjectId> {
   const customerId = await makeCustomer();
-  const account = await susu.openAccount(officer, customerId, 1_000);
-  await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5_000, randomUUID(), 'cash');
+  const { account } = await susu.openAccount(officer, customerId, 1_000);
+  await susu.recordDeposit(
+    officer,
+    new Types.ObjectId(account.id),
+    5_000,
+    randomUUID(),
+    'cash',
+    undefined,
+    undefined,
+    [{ planId: account.plans[0]!.id, payments: 5 }],
+  );
   await SusuDepositModel.updateMany(
     { customerId },
     { $set: { createdAt: new Date(Date.now() - 130 * 24 * 60 * 60 * 1000) } },
@@ -51,14 +60,14 @@ async function makeItem(stock: number): Promise<Types.ObjectId> {
 describe('customer trash', () => {
   it('blocks trash while products are open, allows after they end, restores round-trip', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
 
     await expect(customers.trashCustomer(officer, customerId, undefined)).rejects.toMatchObject({
       code: 'CANNOT_TRASH',
     });
 
-    await susu.terminateAccount(officer, accountId);
+    await susu.closeAccount(officer, accountId);
     const trashed = await customers.trashCustomer(officer, customerId, 'duplicate entry');
     expect(trashed.deleteReason).toBe('duplicate entry');
 
@@ -76,14 +85,15 @@ describe('customer trash', () => {
 
 describe('susu account trash', () => {
   it('only pristine accounts can be trashed; trashed accounts vanish from normal endpoints', async () => {
-    const customerId = await makeCustomer();
-    const used = await susu.openAccount(officer, customerId, 1_000);
+    const usedCustomer = await makeCustomer();
+    const { account: used } = await susu.openAccount(officer, usedCustomer, 1_000);
     await susu.recordDeposit(officer, new Types.ObjectId(used.id), 1_000, randomUUID(), 'cash');
     await expect(
       susu.trashSusuAccount(officer, new Types.ObjectId(used.id), undefined),
     ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
 
-    const pristine = await susu.openAccount(officer, customerId, 2_000);
+    const customerId = await makeCustomer();
+    const { account: pristine } = await susu.openAccount(officer, customerId, 2_000);
     const pristineId = new Types.ObjectId(pristine.id);
     await susu.trashSusuAccount(officer, pristineId, 'opened by mistake');
 
@@ -96,14 +106,23 @@ describe('susu account trash', () => {
     const list = await susu.listAccounts(officer, { page: 1, limit: 100, customerId });
     expect(list.items.some((a) => a.id === pristine.id)).toBe(false);
 
+    // A trashed account does not block the customer's real one.
+    const { account: replacement } = await susu.openAccount(officer, customerId, 3_000);
+    expect(replacement.id).not.toBe(pristine.id);
+    // …and the trashed one cannot come back while it stands.
+    await expect(susu.restoreSusuAccount(officer, pristineId)).rejects.toMatchObject({
+      code: 'CANNOT_RESTORE',
+    });
+    await susu.trashSusuAccount(officer, new Types.ObjectId(replacement.id), undefined);
+
     await susu.restoreSusuAccount(officer, pristineId);
     const result = await susu.recordDeposit(officer, pristineId, 2_000, randomUUID(), 'cash');
-    expect(result.account.depositsCount).toBe(1);
+    expect(result.account.plans[0]?.paidInCycle).toBe(1);
   });
 
   it('restore of a live account reports NOT_TRASHED', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     await expect(
       susu.restoreSusuAccount(officer, new Types.ObjectId(account.id)),
     ).rejects.toMatchObject({ code: 'NOT_TRASHED' });
@@ -223,62 +242,73 @@ describe('hire purchase trash', () => {
 });
 
 describe('susu deposit trash and correction', () => {
-  it('trashing the latest deposit reverses counters and un-completes the cycle', async () => {
+  it('trashing the latest deposit un-credits the plan and undoes a completed cycle', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 30_000, randomUUID(), 'cash');
+    await susu.recordDeposit(
+      officer,
+      accountId,
+      30_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 30 }],
+    );
     const last = await susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash');
-    expect(last.account.status).toBe('completed');
+    expect(last.account.plans[0]?.cyclesCompleted).toBe(1);
     const depositId = new Types.ObjectId(last.deposit.id);
 
     const trashed = await susu.trashDeposit(officer, accountId, depositId, 'entry error');
-    expect(trashed.account.status).toBe('active');
-    expect(trashed.account.depositsCount).toBe(30);
-    expect(trashed.account.totalDeposited).toBe(30_000);
+    expect(trashed.account.plans[0]).toMatchObject({ paidInCycle: 30, cyclesCompleted: 0 });
+    expect(trashed.account.balance).toBe(30_000);
 
     const restored = await susu.restoreDeposit(officer, accountId, depositId);
-    expect(restored.account.status).toBe('completed');
-    expect(restored.account.depositsCount).toBe(31);
+    expect(restored.account.plans[0]).toMatchObject({ paidInCycle: 0, cyclesCompleted: 1 });
+    expect(restored.account.balance).toBe(30_000);
   });
 
   it('only the latest deposit can be trashed; replays of trashed keys are refused', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
     const key = randomUUID();
     const first = await susu.recordDeposit(officer, accountId, 1_000, key, 'cash');
-    await susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash');
+    const second = await susu.recordDeposit(officer, accountId, 1_000, randomUUID(), 'cash');
 
     await expect(
       susu.trashDeposit(officer, accountId, new Types.ObjectId(first.deposit.id), undefined),
     ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
 
-    const second = await SusuDepositModel.findOne({ accountId, seqStart: 2 });
-    if (!second) throw new Error('missing second deposit');
-    await susu.trashDeposit(officer, accountId, second._id, undefined);
-    await expect(
-      susu.recordDeposit(officer, accountId, 1_000, second.idempotencyKey ?? '', 'cash'),
-    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    await susu.trashDeposit(officer, accountId, new Types.ObjectId(second.deposit.id), undefined);
+    await susu.trashDeposit(officer, accountId, new Types.ObjectId(first.deposit.id), undefined);
+    await expect(susu.recordDeposit(officer, accountId, 1_000, key, 'cash')).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
   });
 
-  it('PATCH corrects the latest deposit amount and adjusts the account', async () => {
+  it('PATCH corrects the latest deposit amount and adjusts the plan and balance', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
-    const rec = await susu.recordDeposit(officer, accountId, 3_000, randomUUID(), 'cash');
+    const rec = await susu.recordDeposit(
+      officer,
+      accountId,
+      3_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 3 }],
+    );
     const depositId = new Types.ObjectId(rec.deposit.id);
 
-    await expect(susu.updateDeposit(officer, accountId, depositId, 2_500)).rejects.toMatchObject({
-      code: 'AMOUNT_MISMATCH',
-    });
-
     const updated = await susu.updateDeposit(officer, accountId, depositId, 1_000);
-    expect(updated.deposit.daysCovered).toBe(1);
-    expect(updated.deposit.seqEnd).toBe(1);
-    const after = await SusuAccountModel.findById(accountId);
-    expect(after?.depositsCount).toBe(1);
-    expect(after?.totalDeposited).toBe(1_000);
+    expect(updated.deposit.payments).toBe(1);
+    expect(updated.deposit.lines[0]?.seqEnd).toBe(1);
+    expect(updated.account.plans[0]?.paidInCycle).toBe(1);
+    expect((await SusuAccountModel.findById(accountId))?.balance).toBe(1_000);
   });
 });
 

@@ -6,7 +6,9 @@ export {
   type NextOfKin,
 } from './customer.model.js';
 export { SusuAccountModel, type SusuAccount } from './susu-account.model.js';
-export { SusuDepositModel, type SusuDeposit } from './susu-deposit.model.js';
+export { SusuDepositModel, type SusuDeposit, type SusuDepositLine } from './susu-deposit.model.js';
+export { SusuPlanModel, type SusuPlan } from './susu-plan.model.js';
+export { SusuCycleModel, type SusuCycle } from './susu-cycle.model.js';
 export {
   TxnCorrectionModel,
   CORRECTION_KINDS,

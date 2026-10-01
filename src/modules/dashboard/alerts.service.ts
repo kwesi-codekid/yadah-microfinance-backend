@@ -4,7 +4,6 @@ import {
   LoanModel,
   PaystackChargeModel,
   ReconciliationModel,
-  SusuAccountModel,
   TxnCorrectionModel,
 } from '../../models/index.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
@@ -54,7 +53,6 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
   const seriousBefore = new Date(now.getTime() - SERIOUS_ARREARS_DAYS * DAY_MS);
 
   const [
-    susuPending,
     loansArrears,
     loansSeriouslyOverdue,
     creditOutstanding,
@@ -64,10 +62,6 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
     stuckCharges,
     correctionsAwaitingDecision,
   ] = await Promise.all([
-    SusuAccountModel.aggregate<{ count: number; amount: number }>([
-      { $match: { status: 'pending-payout', ...NOT_TRASHED } },
-      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$payoutRemaining' } } },
-    ]),
     LoanModel.aggregate<{ count: number; amount: number }>([
       { $match: { status: 'arrears', ...NOT_TRASHED } },
       {
@@ -103,19 +97,6 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
   ]);
 
   const alerts: DashboardAlert[] = [];
-
-  const pending = susuPending[0];
-  if (pending && pending.count > 0) {
-    alerts.push({
-      key: 'susu-payouts-pending',
-      severity: 'warning',
-      title: 'Susu payouts awaiting processing',
-      body: `${String(pending.count)} completed ${pending.count === 1 ? 'cycle is' : 'cycles are'} due ${ghs(pending.amount)} in payouts to their customers.`,
-      count: pending.count,
-      amount: pending.amount,
-      target: { module: 'susu', filter: { status: 'pending-payout' } },
-    });
-  }
 
   const hpInArrears = openHp.filter((a) => a.status === 'in-arrears');
   // The whole open credit book: loans plus hire purchase, both still owed.

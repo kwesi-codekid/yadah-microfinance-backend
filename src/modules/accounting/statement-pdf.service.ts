@@ -83,11 +83,6 @@ export async function balanceSheetPdf(sheet: BalanceSheet): Promise<StatementFil
     { label: 'Susu balances', amount: liabilities.customerDeposits.susuBalances, indent: 1 },
     { label: 'Savings balances', amount: liabilities.customerDeposits.savingsBalances, indent: 1 },
     {
-      label: 'Susu payouts pending',
-      amount: liabilities.customerDeposits.susuPayoutsPending,
-      indent: 1,
-    },
-    {
       label: 'Total customer deposits',
       amount: liabilities.customerDeposits.total,
       subtotal: true,

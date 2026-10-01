@@ -25,7 +25,7 @@ const today = accraDay();
 /** Gives the collector a customer with an open susu account, and collects once. */
 async function collectSusu(collector: AccessTokenPayload, daily: number, days = 1) {
   const customerId = await makeCustomer(false, new Types.ObjectId(collector.sub));
-  const account = await susu.openAccount(officer, customerId, daily);
+  const { account } = await susu.openAccount(officer, customerId, daily);
   await susu.recordDeposit(
     collector,
     new Types.ObjectId(account.id),
@@ -137,7 +137,7 @@ describe('expected cash for a day', () => {
   it('excludes non-cash deposits — they never passed through their hands', async () => {
     const collector = await makeCollector();
     const customerId = await makeCustomer(false, new Types.ObjectId(collector.sub));
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const id = new Types.ObjectId(account.id);
 
     await susu.recordDeposit(collector, id, 1_000, randomUUID(), 'cash');
@@ -211,7 +211,7 @@ describe('closing the day', () => {
   it('recomputes expected at confirmation, so a correction in between counts', async () => {
     const collector = await makeCollector();
     const customerId = await makeCustomer(false, new Types.ObjectId(collector.sub));
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
     const deposit = await susu.recordDeposit(collector, accountId, 5_000, randomUUID(), 'cash');
 

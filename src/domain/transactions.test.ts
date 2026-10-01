@@ -68,18 +68,20 @@ describe('isRevenueFee', () => {
     expect(isRevenueFee('savings-withdrawal')).toBe(true);
     expect(isRevenueFee('savings-closure')).toBe(true);
     expect(isRevenueFee('susu-payout')).toBe(true);
+    expect(isRevenueFee('susu-deposit')).toBe(true);
+    expect(isRevenueFee('susu-commission')).toBe(true);
   });
 
   it('excludes the transfer leg, which only mirrors the savings fee', () => {
     expect(isRevenueFee('transfer')).toBe(false);
   });
 
-  it('excludes a partial susu withdrawal, which charges nothing', () => {
+  it('excludes a susu withdrawal, which charges nothing', () => {
     expect(isRevenueFee('susu-withdrawal')).toBe(false);
   });
 
-  it('excludes every money-in type', () => {
-    for (const t of ['susu-deposit', 'savings-deposit', 'loan-repayment', 'hp-sale'] as const) {
+  it('excludes every other money-in type', () => {
+    for (const t of ['savings-deposit', 'loan-repayment', 'hp-sale'] as const) {
       expect(isRevenueFee(t)).toBe(false);
     }
   });

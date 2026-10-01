@@ -8,10 +8,11 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  SusuPlanModel,
   UserModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
-import { remainingDeposits } from '../../domain/susu.js';
+import { SUSU_CYCLE_PAYMENTS } from '../../domain/susu-plans.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 
 /**
@@ -67,21 +68,23 @@ export interface RoundStop {
   /** Where to find them, when the record has it. */
   residentialAddress?: string;
   photoUrl?: string;
+  /** One row per active plan on the customer's susu account. */
   susu: {
     accountId: string;
     accountNumber: string;
+    planId: string;
     dailyAmount: number;
-    /** Deposits recorded so far in the 31-day cycle. */
-    depositsCount: number;
-    daysRemainingInCycle: number;
-    /** Pesewas already taken for this account today (0 when not yet visited). */
+    /** Payments made so far in the plan's cycle in progress, 0..30. */
+    paidInCycle: number;
+    cycleTarget: number;
+    /** Pesewas already credited to this plan today (0 when not yet visited). */
     collectedToday: number;
-    /** One day's deposit, less anything already taken today. Never negative. */
+    /** One payment, less anything already taken today. Never negative. */
     stillDue: number;
   }[];
-  /** Sum of stillDue across the customer's susu accounts. */
+  /** Sum of stillDue across the customer's plans. */
   totalStillDue: number;
-  /** True once every susu account has today's deposit recorded. */
+  /** True once every plan has today's payment recorded. */
   done: boolean;
 }
 
@@ -92,8 +95,9 @@ export interface CollectorRound {
   totals: {
     customers: number;
     customersDone: number;
+    /** Active plans on the round — what the collector has to tick off. */
     susuAccounts: number;
-    /** What a full round would bring in: one day's deposit per open account. */
+    /** What a full round would bring in: one payment per active plan. */
     expectedTotal: number;
     collectedTotal: number;
     stillDueTotal: number;
@@ -105,7 +109,8 @@ export interface CollectorRound {
  *
  * Susu is the only product with a daily schedule — savings deposits are
  * voluntary and loans/HP are collected at the office, so neither can be "due"
- * on a round. Completed cycles are excluded: a 31st deposit cannot be taken.
+ * on a round. Each active plan is due one payment a day; a plan between
+ * cycles is due its next cycle's first.
  */
 export async function collectorRound(
   actor: AccessTokenPayload,
@@ -151,7 +156,12 @@ export async function collectorRound(
     ...NOT_TRASHED,
   });
 
-  // What has already been taken today, per account. Any collector's deposit
+  const plans = await SusuPlanModel.find({
+    accountId: { $in: accounts.map((a) => a._id) },
+    status: 'active',
+  }).sort({ createdAt: 1 });
+
+  // What has already been credited today, per plan. Any collector's deposit
   // counts: the day is satisfied regardless of who recorded it.
   const takenRows = await SusuDepositModel.aggregate<{ _id: Types.ObjectId; amount: number }>([
     {
@@ -161,23 +171,28 @@ export async function collectorRound(
         ...NOT_TRASHED,
       },
     },
-    { $group: { _id: '$accountId', amount: { $sum: '$amount' } } },
+    { $unwind: '$lines' },
+    { $group: { _id: '$lines.planId', amount: { $sum: '$lines.amount' } } },
   ]);
-  const takenByAccount = new Map(takenRows.map((r) => [r._id.toHexString(), r.amount]));
+  const takenByPlan = new Map(takenRows.map((r) => [r._id.toHexString(), r.amount]));
+  const accountById = new Map(accounts.map((a) => [a._id.toHexString(), a]));
 
   const byCustomer = new Map<string, RoundStop['susu']>();
-  for (const account of accounts) {
-    const collectedToday = takenByAccount.get(account._id.toHexString()) ?? 0;
+  for (const plan of plans) {
+    const account = accountById.get(plan.accountId.toHexString());
+    if (!account) continue;
+    const collectedToday = takenByPlan.get(plan._id.toHexString()) ?? 0;
     const key = account.customerId.toHexString();
     const list = byCustomer.get(key) ?? [];
     list.push({
       accountId: account._id.toHexString(),
       accountNumber: account.accountNumber,
-      dailyAmount: account.dailyAmount,
-      depositsCount: account.depositsCount,
-      daysRemainingInCycle: remainingDeposits(account.depositsCount),
+      planId: plan._id.toHexString(),
+      dailyAmount: plan.dailyAmount,
+      paidInCycle: plan.paidInCycle,
+      cycleTarget: SUSU_CYCLE_PAYMENTS,
       collectedToday,
-      stillDue: Math.max(0, account.dailyAmount - collectedToday),
+      stillDue: Math.max(0, plan.dailyAmount - collectedToday),
     });
     byCustomer.set(key, list);
   }
@@ -199,7 +214,7 @@ export async function collectorRound(
         done: susu.length > 0 && totalStillDue === 0,
       };
     })
-    // A customer with no open susu account has nothing to collect today.
+    // A customer with no active plan has nothing to collect today.
     .filter((stop) => stop.susu.length > 0);
 
   const allAccounts = stops.flatMap((s) => s.susu);

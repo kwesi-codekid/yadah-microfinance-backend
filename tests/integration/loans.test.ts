@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import { CustomerModel, LoanModel, SusuAccountModel } from '../../src/models/index.js';
+import { CustomerModel, LoanModel } from '../../src/models/index.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import { asOfficer, makeCustomer, makeGuarantor, setupDb, teardownDb } from './helpers.js';
@@ -180,56 +180,86 @@ describe('the guarantor', () => {
   });
 });
 
-describe('loan repayment via susu closure (WBS 7.2)', () => {
-  it('closes the account and applies the payout in one transaction', async () => {
+describe('loan repayment from the susu balance (WBS 7.2)', () => {
+  it('takes the money out of the account and applies it in one transaction', async () => {
     const customerId = await makeCustomer(true);
     const loanId = await activeLoan(customerId);
-    const account = await susu.openAccount(officer, customerId, 2_000);
+    const { account } = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 50_000, randomUUID(), 'cash'); // 500 saved → 480 payout
+    await susu.recordDeposit(
+      officer,
+      accountId,
+      50_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 25 }],
+    );
 
-    const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
-    expect(result.susuClosure?.payout).toBe(48_000);
+    const result = await loans.repayFromSusu(officer, loanId, accountId, 48_000, randomUUID());
+    expect(result.susuWithdrawal).toEqual({
+      accountId: accountId.toHexString(),
+      amount: 48_000,
+      balanceAfter: 2_000,
+    });
     expect(result.loan.totalRepaid).toBe(48_000);
+    expect(result.repayment.source).toBe('susu');
 
-    const closed = await SusuAccountModel.findById(accountId);
-    expect(closed?.status).toBe('closed');
-    expect(closed?.commissionAmount).toBe(2_000);
+    // The account stays open, its cycle untouched, one payment still locked.
+    const after = await susu.getAccount(officer, accountId);
+    expect(after.status).toBe('active');
+    expect(after.plans[0]?.paidInCycle).toBe(25);
+    expect(after.balance).toBe(2_000);
+    expect(after.availableToWithdraw).toBe(0);
   });
 
-  it('excess payout settles the loan and leaves the rest pending withdrawal', async () => {
+  it('never takes the locked payment, and never more than the loan owes', async () => {
     const customerId = await makeCustomer(true);
     const loanId = await activeLoan(customerId);
-    // Pay down to a small remainder so a full cycle overshoots.
     await loans.repayCash(officer, loanId, 100_000, randomUUID(), 'cash'); // remaining 10,000
 
-    const account = await susu.openAccount(officer, customerId, 2_000);
+    const { account } = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 62_000, randomUUID(), 'cash'); // payout 60,000 ≫ 10,000
+    await susu.recordDeposit(
+      officer,
+      accountId,
+      4_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 2 }],
+    );
 
-    const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
-    expect(result.susuClosure?.applied).toBe(10_000);
-    expect(result.susuClosure?.excess).toBe(50_000);
-    expect(result.loan.status).toBe('repaid');
-
-    // Client-confirmed: excess stays in the susu account pending withdrawal.
-    const account2 = await SusuAccountModel.findById(accountId);
-    expect(account2?.status).toBe('pending-payout');
-    expect(account2?.payoutRemaining).toBe(50_000);
-    const loan = await LoanModel.findById(loanId);
-    expect(loan?.totalRepaid).toBe(110_000);
+    await expect(
+      loans.repayFromSusu(officer, loanId, accountId, 10_001, randomUUID()),
+    ).rejects.toMatchObject({ code: 'EXCEEDS_BALANCE' });
+    await expect(
+      loans.repayFromSusu(officer, loanId, accountId, 2_001, randomUUID()),
+    ).rejects.toMatchObject({ code: 'EXCEEDS_AVAILABLE' });
+    expect((await LoanModel.findById(loanId))?.totalRepaid).toBe(100_000);
   });
 
-  it('settling exactly via susu closure flips the loan to repaid', async () => {
+  it('settling exactly from susu flips the loan to repaid', async () => {
     const customerId = await makeCustomer(true);
     const loanId = await activeLoan(customerId); // due 110,000
     await loans.repayCash(officer, loanId, 62_000, randomUUID(), 'cash'); // remaining 48,000
 
-    const account = await susu.openAccount(officer, customerId, 2_000);
+    const { account } = await susu.openAccount(officer, customerId, 2_000);
     const accountId = new Types.ObjectId(account.id);
-    await susu.recordDeposit(officer, accountId, 50_000, randomUUID(), 'cash'); // payout exactly 48,000
+    await susu.recordDeposit(
+      officer,
+      accountId,
+      50_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      [{ planId: account.plans[0]!.id, payments: 25 }],
+    );
 
-    const result = await loans.repayViaSusuClosure(officer, loanId, accountId, randomUUID());
+    const result = await loans.repayFromSusu(officer, loanId, accountId, 48_000, randomUUID());
     expect(result.loan.status).toBe('repaid');
     expect(result.loan.repaidOnTime).toBe(true);
   });

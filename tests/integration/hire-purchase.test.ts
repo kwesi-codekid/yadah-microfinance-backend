@@ -32,7 +32,7 @@ async function makeEligibleCustomer(
   options: { withIdDocument?: boolean } = {},
 ): Promise<Types.ObjectId> {
   const customerId = await makeCustomer(withGhanaCard, undefined, options);
-  const account = await susu.openAccount(officer, customerId, 1_000);
+  const { account } = await susu.openAccount(officer, customerId, 1_000);
   await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5_000, randomUUID(), 'cash');
   await SusuDepositModel.updateMany(
     { customerId },

@@ -275,17 +275,17 @@ loansRouter.post(
 );
 
 loansRouter.post(
-  '/:id/repayments/susu-closure',
+  '/:id/repayments/susu',
   validate({ params: loanIdParams, body: susuRepayBody }),
   (req, res, next) => {
     const { params, body } = getValidated<{ params: LoanIdParams; body: SusuRepayBody }>(req);
     loansService
-      .repayViaSusuClosure(
+      .repayFromSusu(
         getAuth(req),
         params.id,
         body.susuAccountId,
+        body.amount,
         body.idempotencyKey,
-        body.excessTo,
         req.id as string,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))

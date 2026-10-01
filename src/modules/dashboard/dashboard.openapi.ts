@@ -16,8 +16,8 @@ const dashboardSummary = z
         activeAccounts: z
           .number()
           .int()
-          .describe('Open susu cycles + active savings + open loans + open HP agreements'),
-        pendingSusuPayouts: countAmount.describe('Completed cycles not yet paid out'),
+          .describe('Open susu accounts + active savings + open loans + open HP agreements'),
+        activeSusuPlans: z.number().int().describe('Active susu plans across open accounts'),
         amountCollectedToday: z.number().int().describe("Today's cash in, pesewas"),
         amountCollectedChangePercent: z
           .number()
@@ -62,9 +62,8 @@ const dashboardSummary = z
       customersActive: z.number().int(),
       susu: z.object({
         activeAccounts: z.number().int(),
-        completedAwaitingClosure: z.number().int(),
-        valueHeld: z.number().int().describe('Deposits less anything already withdrawn'),
-        pendingPayout: countAmount,
+        activePlans: z.number().int(),
+        valueHeld: z.number().int().describe('Σ balances of open accounts'),
       }),
       savings: z.object({
         activeAccounts: z.number().int(),
@@ -220,7 +219,7 @@ export const dashboardPaths: ZodOpenApiPathsObject = {
       tags,
       summary: 'Standing business conditions that need someone to act',
       description:
-        'Aggregates over live state — susu payouts waiting, loans and HP in arrears, ' +
+        'Aggregates over live state — loans and HP in arrears, ' +
         'applications awaiting a decision, unconfirmed cash handovers, and mobile money ' +
         'taken but not applied.\n\n' +
         'Deliberately NOT the notifications collection: a notification is one past event ' +

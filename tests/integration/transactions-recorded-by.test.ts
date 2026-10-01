@@ -35,7 +35,7 @@ describe('the ledger narrowed to who recorded each entry', () => {
     await savings.withdraw(teller, new Types.ObjectId(opened.account.id), 5_000, randomUUID());
 
     // A susu deposit by somebody else must not show up in the teller's rows.
-    const susuAccount = await susu.openAccount(other, customerId, 1_000);
+    const { account: susuAccount } = await susu.openAccount(other, customerId, 1_000);
     await susu.recordDeposit(
       other,
       new Types.ObjectId(susuAccount.id),

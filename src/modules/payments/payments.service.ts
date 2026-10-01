@@ -21,7 +21,6 @@ import {
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { MIN_DEPOSIT } from '../../domain/savings.js';
-import { remainingDeposits } from '../../domain/susu.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import * as hp from '../hire-purchase/hp.service.js';
 import { applyTransferOutcome } from '../portal/payout-requests.service.js';
@@ -99,28 +98,14 @@ async function resolveTarget(
       if (account.status !== 'active') {
         throw new AppError(
           'ACCOUNT_NOT_ACTIVE',
-          'Deposits are only allowed on active accounts',
+          'Deposits are only allowed on an open account',
           422,
         );
       }
       const amount = body.amount ?? 0;
-      if (amount % account.dailyAmount !== 0) {
-        throw new AppError(
-          'AMOUNT_MISMATCH',
-          `Susu deposits must be a multiple of the daily amount (${formatGhs(account.dailyAmount)})`,
-          422,
-          { dailyAmount: account.dailyAmount },
-        );
-      }
-      const remaining = remainingDeposits(account.depositsCount);
-      if (amount / account.dailyAmount > remaining) {
-        throw new AppError(
-          'EXCEEDS_REMAINING',
-          `Only ${String(remaining)} deposit day(s) remain in this cycle`,
-          422,
-          { remaining },
-        );
-      }
+      // Credited in whole rounds — one payment on every active plan — with the
+      // rest left in the balance. Refuses an amount short of one round.
+      await susu.roundsSplit(account._id, amount);
       return { customerId: account.customerId, amount };
     }
     case 'savings-deposit': {
@@ -423,12 +408,16 @@ async function executeCharge(charge: PaystackCharge): Promise<void> {
     let resultRecordId: Types.ObjectId | undefined;
     switch (charge.kind) {
       case 'susu-deposit': {
+        const { split } = await susu.roundsSplit(charge.targetId, charge.amount);
         const result = await susu.recordDeposit(
           actor,
           charge.targetId,
           charge.amount,
           key,
           'paystack',
+          undefined,
+          undefined,
+          split,
         );
         resultRecordId = new Types.ObjectId(result.deposit.id);
         break;

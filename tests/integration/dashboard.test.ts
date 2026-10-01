@@ -9,6 +9,7 @@ import {
   SusuAccountModel,
   SusuDepositModel,
   SusuPayoutModel,
+  SusuPlanModel,
   TransferModel,
 } from '../../src/models/index.js';
 import { dashboardMetrics } from '../../src/modules/dashboard/dashboard.service.js';
@@ -30,25 +31,40 @@ async function seed(): Promise<void> {
   const susuAccount = await SusuAccountModel.create({
     accountNumber: '123456',
     customerId,
-    dailyAmount: 1_000,
-    depositsCount: 1,
-    totalDeposited: 1_000,
+    balance: 500,
     openedById: staffId,
+  });
+  const plan = await SusuPlanModel.create({
+    accountId: susuAccount._id,
+    customerId,
+    dailyAmount: 1_000,
+    paidInCycle: 1,
+    startedById: staffId,
   });
   await SusuDepositModel.create({
     accountId: susuAccount._id,
     customerId,
     collectorId: staffId,
     amount: 1_000, // in
-    daysCovered: 1,
-    seqStart: 1,
-    seqEnd: 1,
+    lines: [
+      {
+        planId: plan._id,
+        dailyAmount: 1_000,
+        cycleNumber: 1,
+        payments: 1,
+        seqStart: 1,
+        seqEnd: 1,
+        amount: 1_000,
+        commissionAmount: 0,
+      },
+    ],
     channel: 'cash',
   });
   await SusuPayoutModel.create({
     accountId: susuAccount._id,
     customerId,
     amount: 500, // out
+    kind: 'withdrawal',
     destination: 'cash',
     recordedById: staffId,
   });
@@ -159,8 +175,8 @@ describe('dashboard metrics (WBS 6.1)', () => {
     // Portfolio position.
     expect(m.portfolio.customersActive).toBe(1);
     expect(m.portfolio.susu.activeAccounts).toBe(1);
-    expect(m.portfolio.susu.valueHeld).toBe(1_000);
-    expect(m.portfolio.susu.pendingPayout).toEqual({ count: 0, amount: 0 });
+    expect(m.portfolio.susu.activePlans).toBe(1);
+    expect(m.portfolio.susu.valueHeld).toBe(500);
     expect(m.portfolio.savings.activeAccounts).toBe(2);
     expect(m.portfolio.savings.totalBalance).toBe(9_000);
     expect(m.portfolio.savings.byType.standard).toEqual({ count: 1, amount: 7_000 });

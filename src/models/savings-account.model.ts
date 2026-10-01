@@ -37,7 +37,7 @@ const savingsAccountSchema = new Schema<SavingsAccount>(
       type: String,
       required: true,
       unique: true,
-      match: /^(SV\d{8}|\d{10})$/,
+      match: /^(SV\d{8,}|\d{10})$/,
     },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     accountType: { type: String, enum: SAVINGS_ACCOUNT_TYPES, default: 'standard' },

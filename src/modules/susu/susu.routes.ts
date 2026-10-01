@@ -1,36 +1,45 @@
 import { Router } from 'express';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireCounter, requireOffice } from '../../middleware/rbac.js';
+import { requireAdmin, requireCounter, requireOffice } from '../../middleware/rbac.js';
+import { runSusuMigration } from './susu.migration.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { trashBody, type TrashBody } from '../../schemas/common.js';
 import {
   accountIdParams,
-  collectAllBody,
+  addPlanBody,
+  changePlanBody,
   depositBody,
   depositIdParams,
   listAccountsQuery,
+  listCyclesQuery,
+  listPayoutsQuery,
+  migrateBody,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
-  partialWithdrawalBody,
-  payoutBody,
   payoutIdParams,
+  planIdParams,
   summaryQuery,
   updateDepositBody,
+  withdrawalBody,
   type AccountIdParams,
-  type CollectAllBody,
+  type AddPlanBody,
+  type ChangePlanBody,
   type DepositBody,
   type DepositIdParams,
   type ListAccountsQuery,
+  type ListCyclesQuery,
+  type ListPayoutsQuery,
+  type MigrateBody,
   type ListDepositsQuery,
   type ListTrashQuery,
   type OpenAccountBody,
-  type PartialWithdrawalBody,
-  type PayoutBody,
   type PayoutIdParams,
+  type PlanIdParams,
   type SummaryQuery,
   type UpdateDepositBody,
+  type WithdrawalBody,
 } from './susu.schemas.js';
 import {
   proposeCorrectionBody,
@@ -50,14 +59,8 @@ susuRouter.post(
   (req, res, next) => {
     const { body } = getValidated<{ body: OpenAccountBody }>(req);
     susuService
-      .openAccount(
-        getAuth(req),
-        body.customerId,
-        body.dailyAmount,
-        body.cycleMonth,
-        req.id as string,
-      )
-      .then((account) => res.status(201).json({ account }))
+      .openAccount(getAuth(req), body.customerId, body.dailyAmount, req.id as string)
+      .then((result) => res.status(result.reopened ? 200 : 201).json(result))
       .catch(next);
   },
 );
@@ -74,13 +77,7 @@ susuRouter.get('/accounts', validate({ query: listAccountsQuery }), (req, res, n
           filename: 'susu-accounts',
           payload: null,
           rows: list.items.map(susuService.toSusuAccountExportRow),
-          moneyKeys: [
-            'dailyAmount',
-            'totalDeposited',
-            'commissionAmount',
-            'payoutAmount',
-            'payoutRemaining',
-          ],
+          moneyKeys: ['balance', 'locked', 'availableToWithdraw', 'dailyTotal'],
           sheet: 'Susu accounts',
         }),
       )
@@ -115,6 +112,77 @@ susuRouter.get('/accounts/:id', validate({ params: accountIdParams }), (req, res
     .catch(next);
 });
 
+// ---------------------------------------------------------------- plans
+
+susuRouter.post(
+  '/accounts/:id/plans',
+  requireCounter,
+  validate({ params: accountIdParams, body: addPlanBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: AddPlanBody }>(req);
+    susuService
+      .addPlan(getAuth(req), params.id, body.dailyAmount, req.id as string)
+      .then((result) => res.status(201).json(result))
+      .catch(next);
+  },
+);
+
+susuRouter.patch(
+  '/accounts/:id/plans/:planId',
+  requireCounter,
+  validate({ params: planIdParams, body: changePlanBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: PlanIdParams; body: ChangePlanBody }>(req);
+    susuService
+      .changePlanAmount(getAuth(req), params.id, params.planId, body.dailyAmount, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+susuRouter.post(
+  '/accounts/:id/plans/:planId/stop',
+  requireCounter,
+  validate({ params: planIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: PlanIdParams }>(req);
+    susuService
+      .stopPlan(getAuth(req), params.id, params.planId, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+susuRouter.get(
+  '/accounts/:id/cycles',
+  validate({ params: accountIdParams, query: listCyclesQuery }),
+  (req, res, next) => {
+    const { params, query } = getValidated<{ params: AccountIdParams; query: ListCyclesQuery }>(
+      req,
+    );
+    susuService
+      .listAccountCycles(getAuth(req), params.id, query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
+susuRouter.get(
+  '/accounts/:id/payouts',
+  validate({ params: accountIdParams, query: listPayoutsQuery }),
+  (req, res, next) => {
+    const { params, query } = getValidated<{ params: AccountIdParams; query: ListPayoutsQuery }>(
+      req,
+    );
+    susuService
+      .listAccountPayouts(getAuth(req), params.id, query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
+// ---------------------------------------------------------------- deposits
+
 susuRouter.get(
   '/accounts/:id/deposits',
   validate({ params: accountIdParams, query: listDepositsQuery }),
@@ -132,7 +200,7 @@ susuRouter.get(
             filename: 'susu-deposits',
             payload: null,
             rows: list.items.map(susuService.toSusuDepositExportRow),
-            moneyKeys: ['amount'],
+            moneyKeys: ['amount', 'leftover', 'commissionAmount'],
             sheet: 'Susu deposits',
           }),
         )
@@ -172,7 +240,14 @@ susuRouter.patch(
       req,
     );
     susuService
-      .updateDeposit(getAuth(req), params.id, params.depositId, body.amount, req.id as string)
+      .updateDeposit(
+        getAuth(req),
+        params.id,
+        params.depositId,
+        body.amount,
+        req.id as string,
+        body.split?.map((s) => ({ planId: s.planId.toHexString(), payments: s.payments })),
+      )
       .then((result) => res.json(result))
       .catch(next);
   },
@@ -197,7 +272,7 @@ susuRouter.post(
   },
 );
 
-// Trash the most recent deposit — reverses the account counters atomically.
+// Trash the most recent deposit — un-credits the plans and the balance atomically.
 susuRouter.delete(
   '/accounts/:id/deposits/:depositId',
   requireOffice,
@@ -239,43 +314,22 @@ susuRouter.post(
         body.channel,
         req.id as string,
         body.occurredOn,
+        body.split?.map((s) => ({ planId: s.planId.toHexString(), payments: s.payments })),
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },
 );
 
-susuRouter.post('/collect-all', validate({ body: collectAllBody }), (req, res, next) => {
-  const { body } = getValidated<{ body: CollectAllBody }>(req);
-  susuService
-    .collectAll(
-      getAuth(req),
-      body.customerId,
-      body.amount,
-      body.idempotencyKey,
-      body.channel,
-      req.id as string,
-      body.occurredOn,
-    )
-    .then((result) => res.status(result.replayed ? 200 : 201).json(result))
-    .catch(next);
-});
-
-// Withdrawals are processed at the office only (rule 7).
-// Take part of the balance and leave the account running (office only —
-// withdrawals happen at the office, same as closures).
 // Money out across the counter — a teller's job (client decision, 10 Sep 2026).
 susuRouter.post(
   '/accounts/:id/withdraw',
   requireCounter,
-  validate({ params: accountIdParams, body: partialWithdrawalBody }),
+  validate({ params: accountIdParams, body: withdrawalBody }),
   (req, res, next) => {
-    const { params, body } = getValidated<{
-      params: AccountIdParams;
-      body: PartialWithdrawalBody;
-    }>(req);
+    const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawalBody }>(req);
     susuService
-      .withdrawPartial(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .withdraw(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },
@@ -294,21 +348,7 @@ susuRouter.post(
   },
 );
 
-// Escape hatch for accounts that cannot cover the commission (office only).
-susuRouter.post(
-  '/accounts/:id/terminate',
-  requireOffice,
-  validate({ params: accountIdParams }),
-  (req, res, next) => {
-    const { params } = getValidated<{ params: AccountIdParams }>(req);
-    susuService
-      .terminateAccount(getAuth(req), params.id, req.id as string)
-      .then((result) => res.json(result))
-      .catch(next);
-  },
-);
-
-// Trash: only empty, unused accounts — used accounts go through close/terminate.
+// Trash: only empty, unused accounts — used accounts go through close.
 susuRouter.delete(
   '/accounts/:id',
   requireOffice,
@@ -331,20 +371,6 @@ susuRouter.post(
     susuService
       .restoreSusuAccount(getAuth(req), params.id, req.id as string)
       .then((account) => res.json({ account }))
-      .catch(next);
-  },
-);
-
-// Cash disbursement of a pending-payout balance (office only).
-susuRouter.post(
-  '/accounts/:id/payout',
-  requireCounter,
-  validate({ params: accountIdParams, body: payoutBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{ params: AccountIdParams; body: PayoutBody }>(req);
-    susuService
-      .payoutPending(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
-      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },
 );
@@ -384,5 +410,13 @@ susuRouter.get('/summary', validate({ query: summaryQuery }), (req, res, next) =
   susuService
     .dailySummary(getAuth(req), query)
     .then((summary) => res.json(summary))
+    .catch(next);
+});
+
+// The susu data update, from the office's screen. Admin only: it rewrites the ledger.
+susuRouter.post('/migrate', requireAdmin, validate({ body: migrateBody }), (req, res, next) => {
+  const { body } = getValidated<{ body: MigrateBody }>(req);
+  runSusuMigration(getAuth(req), body.apply, req.id as string)
+    .then((report) => res.json(report))
     .catch(next);
 });

@@ -6,6 +6,7 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
+  SusuPlanModel,
 } from '../../models/index.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
 import { commissionEarned } from '../reports/reports.service.js';
@@ -32,10 +33,10 @@ interface CountAmount {
 export interface DashboardKpis {
   /** Customers with status 'active'. */
   totalCustomers: number;
-  /** Open susu cycles + active savings + open loans + open HP agreements. */
+  /** Open susu accounts + active savings + open loans + open HP agreements. */
   activeAccounts: number;
-  /** Completed cycles whose payout has not been handed over yet. */
-  pendingSusuPayouts: CountAmount;
+  /** Active susu plans across all open accounts. */
+  activeSusuPlans: number;
   /** Today's cash in, pesewas. Internal transfers excluded. */
   amountCollectedToday: number;
   /**
@@ -88,11 +89,9 @@ export interface DashboardMetrics {
     customersActive: number;
     susu: {
       activeAccounts: number;
-      completedAwaitingClosure: number;
-      /** Sum of BALANCES on active + completed cycles — deposits less anything
-       *  already taken by partial withdrawals. */
+      activePlans: number;
+      /** Sum of balances on open accounts. */
       valueHeld: number;
-      pendingPayout: CountAmount;
     };
     savings: {
       activeAccounts: number;
@@ -128,6 +127,7 @@ const IN_BUCKET: Partial<Record<TxnType, keyof DashboardMetrics['today']['in']>>
 };
 const OUT_BUCKET: Partial<Record<TxnType, keyof DashboardMetrics['today']['out']>> = {
   'susu-payout': 'susuPayouts',
+  'susu-withdrawal': 'susuPayouts',
   'savings-withdrawal': 'savingsWithdrawals',
   'savings-closure': 'savingsWithdrawals',
   'loan-disbursement': 'loanDisbursements',
@@ -154,7 +154,8 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
     priorGroups,
     revenue,
     customersActive,
-    susuGroups,
+    susuOpen,
+    susuPlans,
     savingsGroups,
     loanGroups,
     openHp,
@@ -163,26 +164,11 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
     transactionGroups(priorDay, priorDay),
     commissionEarned(monthStart, day),
     CustomerModel.countDocuments({ status: 'active', ...NOT_TRASHED }),
-    SusuAccountModel.aggregate<{
-      _id: string;
-      count: number;
-      balance: number;
-      payoutRemaining: number;
-    }>([
-      { $match: { ...NOT_TRASHED } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          // Money actually held, not the running deposit total: partial
-          // withdrawals have already left the drawer.
-          balance: {
-            $sum: { $subtract: ['$totalDeposited', { $ifNull: ['$withdrawnAmount', 0] }] },
-          },
-          payoutRemaining: { $sum: '$payoutRemaining' },
-        },
-      },
+    SusuAccountModel.aggregate<{ count: number; balance: number }>([
+      { $match: { status: 'active', ...NOT_TRASHED } },
+      { $group: { _id: null, count: { $sum: 1 }, balance: { $sum: '$balance' } } },
     ]),
+    SusuPlanModel.countDocuments({ status: 'active' }),
     SavingsAccountModel.aggregate<{ _id: string; count: number; balance: number }>([
       { $match: { status: 'active', ...NOT_TRASHED } },
       { $group: { _id: '$accountType', count: { $sum: 1 }, balance: { $sum: '$balance' } } },
@@ -231,10 +217,6 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
   }
 
   // ---- portfolio position
-  const susuByStatus = new Map(susuGroups.map((g) => [g._id, g]));
-  const active = susuByStatus.get('active');
-  const completed = susuByStatus.get('completed');
-  const pending = susuByStatus.get('pending-payout');
 
   const savingsByType = new Map(savingsGroups.map((g) => [g._id, g]));
   const standard = savingsByType.get('standard');
@@ -245,13 +227,9 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
   const portfolio: DashboardMetrics['portfolio'] = {
     customersActive,
     susu: {
-      activeAccounts: active?.count ?? 0,
-      completedAwaitingClosure: completed?.count ?? 0,
-      valueHeld: (active?.balance ?? 0) + (completed?.balance ?? 0),
-      pendingPayout: {
-        count: pending?.count ?? 0,
-        amount: pending?.payoutRemaining ?? 0,
-      },
+      activeAccounts: susuOpen[0]?.count ?? 0,
+      activePlans: susuPlans,
+      valueHeld: susuOpen[0]?.balance ?? 0,
     },
     savings: {
       activeAccounts: (standard?.count ?? 0) + (student?.count ?? 0),
@@ -286,7 +264,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
         portfolio.savings.activeAccounts +
         portfolio.loans.active +
         portfolio.hirePurchase.active,
-      pendingSusuPayouts: portfolio.susu.pendingPayout,
+      activeSusuPlans: portfolio.susu.activePlans,
       amountCollectedToday: today.cashIn.amount,
       amountCollectedChangePercent: changePercent(today.cashIn.amount, yesterday.cashIn.amount),
       inArrears: portfolio.loans.arrears + portfolio.hirePurchase.inArrears,

@@ -62,7 +62,7 @@ describe('the accounting identity holds', () => {
 
   it('stays balanced after a susu deposit — cash up, liability up', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(admin, customerId, 10_000);
+    const { account } = await susu.openAccount(admin, customerId, 10_000);
     await susu.recordDeposit(admin, new Types.ObjectId(account.id), 10_000, randomUUID(), 'cash');
 
     const sheet = await balanceSheet(today);

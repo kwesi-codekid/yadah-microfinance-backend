@@ -20,7 +20,10 @@ import {
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
+  SusuCycleModel,
   SusuDepositModel,
+  SusuPayoutModel,
+  SusuPlanModel,
   TxnCorrectionModel,
   UserModel,
 } from '../../src/models/index.js';
@@ -38,7 +41,10 @@ export async function setupDb(): Promise<void> {
     [
       CustomerModel,
       SusuAccountModel,
+      SusuPlanModel,
+      SusuCycleModel,
       SusuDepositModel,
+      SusuPayoutModel,
       TxnCorrectionModel,
       HpItemModel,
       HpDamageModel,

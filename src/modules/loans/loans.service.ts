@@ -19,12 +19,10 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
-  SusuPayoutModel,
   UserModel,
   type Customer,
   type Loan,
   type Repayment,
-  type SavingsAccount,
 } from '../../models/index.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
@@ -39,7 +37,7 @@ import {
   type LoanRates,
   type TierLimits,
 } from '../../domain/loans.js';
-import { computeClosure, susuBalance } from '../../domain/susu.js';
+import { withdrawWithin } from '../susu/susu.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
@@ -214,7 +212,7 @@ export interface EligibilitySummary {
   };
   firstActivityAt: Date | null;
   monthsOfHistory: number;
-  susu: { accounts: number; activeAccounts: number; totalDeposited: number };
+  susu: { accounts: number; activeAccounts: number; balance: number };
   savings: { accounts: number; totalBalance: number };
   openLoan: PublicLoan | null;
   bigTierUnlocked: boolean;
@@ -269,7 +267,7 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
     susu: {
       accounts: susuAccounts.length,
       activeAccounts: susuAccounts.filter((a) => a.status === 'active').length,
-      totalDeposited: susuAccounts.reduce((sum, a) => sum + a.totalDeposited, 0),
+      balance: susuAccounts.reduce((sum, a) => sum + a.balance, 0),
     },
     savings: {
       accounts: savingsAccounts.length,
@@ -755,16 +753,8 @@ export interface RepaymentResult {
   repayment: { id: string; amount: number; source: string };
   loan: PublicLoan;
   replayed: boolean;
-  /** Present when the repayment came from a susu closure. */
-  susuClosure?: {
-    accountId: string;
-    commission: number;
-    payout: number;
-    /** What actually hit the loan (payout capped at the remaining balance). */
-    applied?: number;
-    /** Left over — pending withdrawal or credited to savings per excessTo. */
-    excess?: number;
-  };
+  /** Present when the repayment was taken from the customer's susu balance. */
+  susuWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
 }
 
 async function replayIfExists(idempotencyKey: string): Promise<RepaymentResult | null> {
@@ -787,7 +777,7 @@ export async function applyRepaymentInTxn(
   actor: AccessTokenPayload,
   loan: Loan,
   amount: number,
-  source: 'cash' | 'susu-closure' | 'transfer',
+  source: Repayment['source'],
   channel: Channel,
   idempotencyKey: string,
   session: mongoose.ClientSession,
@@ -995,7 +985,7 @@ export const prepareRepaymentCorrection: CorrectionPreparer = async (loanId, rep
     if (repayment.source !== 'cash') {
       throw new AppError(
         'CANNOT_CORRECT',
-        `A repayment paid ${repayment.source === 'susu-closure' ? 'by closing a susu account' : 'by transfer'} cannot be changed on its own`,
+        `A repayment paid ${repayment.source === 'transfer' ? 'by transfer' : 'from a susu account'} cannot be changed on its own`,
         422,
       );
     }
@@ -1148,199 +1138,67 @@ export const prepareRepaymentCorrection: CorrectionPreparer = async (loanId, rep
 };
 
 /**
- * Repayment by closing a susu account: one transaction closes the account
- * (normal commission math) and applies the payout to the loan. All-or-nothing
- * across both modules (rule 2). Client-confirmed excess handling: when the
- * payout exceeds the remaining loan balance, the excess stays in the susu
- * account pending withdrawal, or — on customer request — goes to savings.
+ * Repayment from the customer's susu balance: one transaction takes the money
+ * out of the account (no commission — the cycles are untouched, the lock is
+ * respected) and applies it to the loan. All-or-nothing across both modules
+ * (rule 2). Nothing is ever left over: only what the loan can absorb leaves
+ * the susu account.
  */
-export async function repayViaSusuClosure(
+export async function repayFromSusu(
   actor: AccessTokenPayload,
   loanId: Types.ObjectId,
   susuAccountId: Types.ObjectId,
+  amount: number,
   idempotencyKey: string,
-  excessTo: 'pending-withdrawal' | 'savings' = 'pending-withdrawal',
   requestId?: string,
 ): Promise<RepaymentResult> {
   const replayed = await replayIfExists(idempotencyKey);
   if (replayed) return replayed;
 
   const { loan, customer } = await loadOpenLoanForRepayment(loanId);
-  const susuPre = await SusuAccountModel.findById(susuAccountId);
+  const susuPre = await SusuAccountModel.findOne({ _id: susuAccountId, ...NOT_TRASHED });
   if (!susuPre) throw new AppError('NOT_FOUND', 'Susu account not found', 404);
   if (!susuPre.customerId.equals(loan.customerId)) {
     throw new AppError('CUSTOMER_MISMATCH', 'Susu account belongs to a different customer', 422);
   }
-  if (susuPre.status === 'closed' || susuPre.status === 'pending-payout') {
-    throw new AppError('ALREADY_CLOSED', 'Susu account is already stopped', 409);
+  if (susuPre.status !== 'active') {
+    throw new AppError('ALREADY_CLOSED', 'Susu account is closed', 409);
   }
-
-  // Excess-to-savings needs an active savings account up front.
-  let savingsTarget: mongoose.HydratedDocument<SavingsAccount> | null = null;
-  if (excessTo === 'savings') {
-    savingsTarget = await SavingsAccountModel.findOne({
-      customerId: loan.customerId,
-      status: 'active',
-    });
-    if (!savingsTarget) {
-      throw new AppError(
-        'NO_SAVINGS_ACCOUNT',
-        'Customer has no active savings account for the excess',
-        422,
-      );
-    }
+  const remaining = loan.totalDue - loan.totalRepaid;
+  if (amount > remaining) {
+    throw new AppError(
+      'EXCEEDS_BALANCE',
+      `Only ${formatGhs(remaining)} is left on this loan`,
+      422,
+      {
+        remaining,
+      },
+    );
   }
 
   const session = await mongoose.startSession();
   let repayment!: Repayment;
-  let closure!: { commission: number; payout: number; applied: number; excess: number };
+  let balanceAfter = 0;
   try {
     await session.withTransaction(async () => {
-      const account = await SusuAccountModel.findOne({
-        _id: susuAccountId,
-        status: { $in: ['active', 'completed'] },
-      }).session(session);
-      if (!account) throw new AppError('ALREADY_CLOSED', 'Susu account is already stopped', 409);
-
-      // Balance, not the running deposit total — partial withdrawals have
-      // already taken their share out of the account.
-      const balance = susuBalance(account.totalDeposited, account.withdrawnAmount);
-      const { commission, payout } = computeClosure(balance, account.dailyAmount);
-      if (payout < 1) {
-        throw new AppError('NO_PAYOUT', 'Susu closure yields no payout to apply', 422);
-      }
-      const remaining = loan.totalDue - loan.totalRepaid;
-      const applied = Math.min(payout, remaining);
-      const excess = payout - applied;
-      closure = { commission, payout, applied, excess };
-
       repayment = await applyRepaymentInTxn(
         actor,
         loan,
-        applied,
-        'susu-closure',
-        'cash',
+        amount,
+        'susu',
+        'transfer',
         idempotencyKey,
         session,
         susuAccountId,
         requestId,
       );
-
-      const now = new Date();
-      const keepsPending = excess > 0 && excessTo === 'pending-withdrawal';
-      const upd = await SusuAccountModel.updateOne(
-        {
-          _id: account._id,
-          status: account.status,
-          totalDeposited: account.totalDeposited,
-          withdrawnAmount: account.withdrawnAmount,
-        },
-        {
-          $set: {
-            status: keepsPending ? 'pending-payout' : 'closed',
-            commissionAmount: commission,
-            payoutAmount: payout,
-            payoutRemaining: keepsPending ? excess : 0,
-            ...(keepsPending ? {} : { closedAt: now, closedById: new Types.ObjectId(actor.sub) }),
-          },
-        },
-        { session },
-      );
-      if (upd.modifiedCount !== 1) {
-        throw new AppError('CONFLICT', 'Susu account was updated concurrently — retry', 409);
-      }
-
-      // Payout record for the loan portion. This is the row that stopped the
-      // account, so this is the row that carries the closing commission — the
-      // excess leg below must not charge it a second time.
-      await SusuPayoutModel.create(
-        [
-          {
-            accountId: account._id,
-            customerId: loan.customerId,
-            amount: applied,
-            destination: 'loan',
-            destinationId: loanId,
-            commissionAmount: commission,
-            recordedById: new Types.ObjectId(actor.sub),
-          },
-        ],
-        { session },
-      );
-
-      // Excess straight into savings, in the same transaction.
-      if (excess > 0 && excessTo === 'savings' && savingsTarget) {
-        const savUpd = await SavingsAccountModel.updateOne(
-          { _id: savingsTarget._id, status: 'active', balance: savingsTarget.balance },
-          { $inc: { balance: excess } },
-          { session },
-        );
-        if (savUpd.modifiedCount !== 1) {
-          throw new AppError('CONFLICT', 'Savings account was updated concurrently — retry', 409);
-        }
-        await SavingsTxnModel.create(
-          [
-            {
-              accountId: savingsTarget._id,
-              customerId: loan.customerId,
-              type: 'deposit',
-              amount: excess,
-              balanceAfter: savingsTarget.balance + excess,
-              channel: 'transfer',
-              accraDay: accraDay(),
-              recordedById: new Types.ObjectId(actor.sub),
-            },
-          ],
-          { session },
-        );
-        await SusuPayoutModel.create(
-          [
-            {
-              accountId: account._id,
-              customerId: loan.customerId,
-              amount: excess,
-              destination: 'savings',
-              destinationId: savingsTarget._id,
-              commissionAmount: 0,
-              recordedById: new Types.ObjectId(actor.sub),
-            },
-          ],
-          { session },
-        );
-        await audit(
-          {
-            actorId: actor.sub,
-            action: 'savings.deposit.record',
-            entityType: 'savings-account',
-            entityId: savingsTarget._id,
-            amountBefore: savingsTarget.balance,
-            amountAfter: savingsTarget.balance + excess,
-            after: { source: 'susu-excess', susuAccountId: susuAccountId.toHexString() },
-            ...(requestId !== undefined ? { requestId } : {}),
-          },
-          session,
-        );
-      }
-
-      await audit(
-        {
-          actorId: actor.sub,
-          action: 'susu.account.close',
-          entityType: 'susu-account',
-          entityId: account._id,
-          amountBefore: account.totalDeposited,
-          amountAfter: payout,
-          after: {
-            commission,
-            payout,
-            appliedToLoan: loanId.toHexString(),
-            excess,
-            excessTo: excess > 0 ? excessTo : null,
-          },
-          ...(requestId !== undefined ? { requestId } : {}),
-        },
-        session,
-      );
+      const out = await withdrawWithin(session, actor, susuAccountId, amount, {
+        destination: 'loan',
+        destinationId: loanId,
+        idempotencyKey: `loan:${idempotencyKey}`,
+        ...(requestId !== undefined ? { requestId } : {}),
+      });
+      balanceAfter = out.balanceAfter;
     });
   } finally {
     await session.endSession();
@@ -1348,33 +1206,20 @@ export async function repayViaSusuClosure(
 
   const after = await LoanModel.findById(loanId);
   if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
-  await notifyRepayment(customer, loanId, closure.applied, after);
-  if (closure.excess > 0 && customer) {
-    await enqueueSms({
-      to: customer.phone,
-      template: 'susu-excess',
-      message:
-        excessTo === 'savings'
-          ? `Yadah: ${formatGhs(closure.excess)} left over from your susu was credited to your savings account.`
-          : `Yadah: ${formatGhs(closure.excess)} left over from your susu is waiting for you at the office.`,
-      relatedEntityType: 'susu-account',
-      relatedEntityId: susuAccountId,
-    });
-  }
-  emitAdminEvent('susu.account.closed', {
+  await notifyRepayment(customer, loanId, amount, after);
+  emitAdminEvent('susu.withdrawal', {
     id: susuAccountId.toHexString(),
     customerId: loan.customerId.toHexString(),
     customerName: customer?.fullName ?? '',
-    payout: closure.payout,
-    commission: closure.commission,
+    amount,
+    balance: balanceAfter,
     appliedToLoan: loanId.toHexString(),
-    excess: closure.excess,
   });
   return {
-    repayment: { id: repayment._id.toHexString(), amount: closure.applied, source: 'susu-closure' },
+    repayment: { id: repayment._id.toHexString(), amount, source: 'susu' },
     loan: toPublicLoan(after),
     replayed: false,
-    susuClosure: { accountId: susuAccountId.toHexString(), ...closure },
+    susuWithdrawal: { accountId: susuAccountId.toHexString(), amount, balanceAfter },
   };
 }
 
@@ -1623,6 +1468,7 @@ export async function repaymentReceipt(
 
   const SOURCE_LABELS: Record<Repayment['source'], string> = {
     cash: 'Cash',
+    susu: 'From susu balance',
     'susu-closure': 'Susu account closure',
     transfer: 'Internal transfer',
   };

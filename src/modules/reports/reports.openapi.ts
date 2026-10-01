@@ -29,9 +29,10 @@ export const unifiedTransaction = z
       .int()
       .describe(
         'Integer pesewas. The charge taken on this row: a savings withdrawal or ' +
-          'closure fee, or the one-day commission charged when a susu account was ' +
-          'stopped. A staged susu payout carries it on the instalment that stopped ' +
-          'the account and zero on every later one, so it is never counted twice.',
+          'closure fee; on a susu deposit, the commission taken as a plan’s 31st ' +
+          'payment landed; on a susu payout, the commission for the cycles still in ' +
+          'progress when the account closed; on a susu-commission row, a plan stopped ' +
+          'mid-cycle (no cash moves).',
       ),
     status: z
       .enum(TXN_STATUSES)
@@ -93,7 +94,7 @@ export const txnTotals = z
     feesCollected: z
       .number()
       .int()
-      .describe('Charges kept in the range: savings fees plus susu closing commissions'),
+      .describe('Charges kept in the range: savings fees plus susu commissions'),
   })
   .meta({ id: 'TransactionTotals' });
 
@@ -140,9 +141,8 @@ const dashboardMetrics = z
       customersActive: z.number().int(),
       susu: z.object({
         activeAccounts: z.number().int(),
-        completedAwaitingClosure: z.number().int(),
-        valueHeld: z.number().int(),
-        pendingPayout: countAmount,
+        activePlans: z.number().int(),
+        valueHeld: z.number().int().describe('Σ balances of open accounts'),
       }),
       savings: z.object({
         activeAccounts: z.number().int(),
@@ -258,7 +258,7 @@ export const reportPaths: ZodOpenApiPathsObject = {
       tags: ['Reports'],
       summary: 'Revenue earned: susu commissions + savings fees + outright-sale margin',
       description:
-        'Susu closure commissions, savings withdrawal/closure fees, and the margin on ' +
+        'Susu commissions (one payment per cycle, as cycles end), savings withdrawal/closure fees, and the margin on ' +
         'outright counter sales (selling price less cost, voided sales excluded) in the ' +
         'range. The sale margin is trading profit rather than a fee, but it is real money ' +
         'earned in the period, so it counts toward totalRevenue.' +

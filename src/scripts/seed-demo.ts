@@ -13,10 +13,9 @@
  */
 import bcrypt from 'bcrypt';
 import { connectDb, disconnectDb } from '../lib/db.js';
-import { cycleMonthOf, nextAccountNumber, withCycleMonth } from '../lib/account-number.js';
+import { nextAccountNumber } from '../lib/account-number.js';
 import { accraDay } from '../lib/time.js';
 import { buildSchedule, computeInterest, addMonthsClamped } from '../domain/loans.js';
-import { SUSU_CYCLE_DEPOSITS } from '../domain/susu.js';
 import {
   AuditLogModel,
   CustomerModel,
@@ -27,7 +26,10 @@ import {
   SavingsTxnModel,
   SmsLogModel,
   SusuAccountModel,
+  SusuCycleModel,
   SusuDepositModel,
+  SusuPayoutModel,
+  SusuPlanModel,
   UserModel,
   type Customer,
   type LoanSchedule,
@@ -74,6 +76,9 @@ async function wipe(): Promise<void> {
   const ids = demoCustomers.map((c) => c._id);
   await Promise.all([
     SusuDepositModel.deleteMany({ customerId: { $in: ids } }),
+    SusuCycleModel.deleteMany({ customerId: { $in: ids } }),
+    SusuPayoutModel.deleteMany({ customerId: { $in: ids } }),
+    SusuPlanModel.deleteMany({ customerId: { $in: ids } }),
     SusuAccountModel.deleteMany({ customerId: { $in: ids } }),
     SavingsTxnModel.deleteMany({ customerId: { $in: ids } }),
     SavingsAccountModel.deleteMany({ customerId: { $in: ids } }),
@@ -159,38 +164,43 @@ async function seed(): Promise<void> {
   }));
   const customers = await CustomerModel.create(customerDocs);
 
-  // --- susu accounts: VIP mid-cycle + 14 others at varied progress
+  // --- susu: one account per customer, VIP with two plans running side by side
   const dailies = [500, 1000, 2000, 5000];
-  const susuTargets = [{ customer: vip, daily: 2000, progress: 20 }]
-    .concat(
-      customers.slice(0, 14).map((c, i) => ({
-        customer: c,
-        daily: pick(dailies, i),
-        progress: 3 + ((i * 5) % 26),
-      })),
-    )
-    // A second book for the VIP, so the demo actually shows what the branch
-    // asked for: one customer, one number, two cycles.
-    .concat([{ customer: vip, daily: 1000, progress: 6 }]);
+  const susuTargets: {
+    customer: (typeof customers)[number];
+    plans: { daily: number; progress: number }[];
+  }[] = [
+    // What the branch asked for: one customer, one account, two daily amounts
+    // each on its own cycle.
+    {
+      customer: vip,
+      plans: [
+        { daily: 2000, progress: 20 },
+        { daily: 1000, progress: 6 },
+      ],
+    },
+    ...customers.slice(0, 14).map((c, i) => ({
+      customer: c,
+      plans: [{ daily: pick(dailies, i), progress: 3 + ((i * 5) % 26) }],
+    })),
+  ];
   let susuDocs = 0;
+  let susuPlans = 0;
   for (const target of susuTargets) {
-    const openedAt = daysAgo(target.progress + 4);
-    // One number per customer, minted on their first book and reused after —
-    // the same rule the service applies, so the demo data looks like real data.
+    const oldest = Math.max(...target.plans.map((p) => p.progress));
+    const openedAt = daysAgo(oldest + 4);
+    // One number per customer, minted once — the same rule the service applies.
     const held = await CustomerModel.findById(target.customer._id, { susuNumber: 1 });
-    const stem = held?.susuNumber ?? (await nextAccountNumber('SU', openedAt));
+    const number = held?.susuNumber ?? (await nextAccountNumber('SU', openedAt));
     if (!held?.susuNumber) {
-      await CustomerModel.updateOne({ _id: target.customer._id }, { $set: { susuNumber: stem } });
+      await CustomerModel.updateOne({ _id: target.customer._id }, { $set: { susuNumber: number } });
     }
     const [account] = await SusuAccountModel.create([
       {
-        accountNumber: withCycleMonth(stem, cycleMonthOf(openedAt)),
-        cycleMonth: cycleMonthOf(openedAt),
+        accountNumber: number,
         customerId: target.customer._id,
-        dailyAmount: target.daily,
-        depositsCount: target.progress,
-        totalDeposited: target.daily * target.progress,
-        status: target.progress >= SUSU_CYCLE_DEPOSITS ? 'completed' : 'active',
+        balance: 0,
+        status: 'active',
         openedById: manager!._id,
       },
     ]);
@@ -199,33 +209,62 @@ async function seed(): Promise<void> {
       { $set: { createdAt: openedAt } },
       { timestamps: false, overwriteImmutable: true },
     );
-    // History: mostly single days, one catch-up in the middle.
-    let seq = 0;
-    let day = target.progress + 3;
-    while (seq < target.progress) {
-      const chunk = seq === 5 ? Math.min(3, target.progress - seq) : 1;
-      const created = await SusuDepositModel.create([
+    let balance = 0;
+    for (const planSpec of target.plans) {
+      const [plan] = await SusuPlanModel.create([
         {
           accountId: account!._id,
           customerId: target.customer._id,
-          collectorId: pick(collectors, seq),
-          amount: target.daily * chunk,
-          daysCovered: chunk,
-          seqStart: seq + 1,
-          seqEnd: seq + chunk,
-          channel: 'cash',
-          idempotencyKey: `demo-${account!._id.toHexString()}-${String(seq)}`,
+          dailyAmount: planSpec.daily,
+          paidInCycle: planSpec.progress,
+          cyclesCompleted: 0,
+          status: 'active',
+          startedById: manager!._id,
         },
       ]);
-      await SusuDepositModel.updateOne(
-        { _id: created[0]!._id },
-        { $set: { createdAt: daysAgo(day) } },
-        { timestamps: false, overwriteImmutable: true },
-      );
-      seq += chunk;
-      day -= chunk;
-      susuDocs++;
+      susuPlans++;
+      // History: mostly single payments, one catch-up in the middle.
+      let seq = 0;
+      let day = planSpec.progress + 3;
+      while (seq < planSpec.progress) {
+        const chunk = seq === 5 ? Math.min(3, planSpec.progress - seq) : 1;
+        const amount = planSpec.daily * chunk;
+        const created = await SusuDepositModel.create([
+          {
+            accountId: account!._id,
+            customerId: target.customer._id,
+            collectorId: pick(collectors, seq),
+            amount,
+            lines: [
+              {
+                planId: plan!._id,
+                dailyAmount: planSpec.daily,
+                cycleNumber: 1,
+                payments: chunk,
+                seqStart: seq + 1,
+                seqEnd: seq + chunk,
+                amount,
+                commissionAmount: 0,
+              },
+            ],
+            leftover: 0,
+            commissionAmount: 0,
+            channel: 'cash',
+            idempotencyKey: `demo-${plan!._id.toHexString()}-${String(seq)}`,
+          },
+        ]);
+        await SusuDepositModel.updateOne(
+          { _id: created[0]!._id },
+          { $set: { createdAt: daysAgo(day) } },
+          { timestamps: false, overwriteImmutable: true },
+        );
+        balance += amount;
+        seq += chunk;
+        day -= chunk;
+        susuDocs++;
+      }
     }
+    await SusuAccountModel.updateOne({ _id: account!._id }, { $set: { balance } });
   }
 
   // --- savings: VIP + 9 others with a little history
@@ -387,7 +426,9 @@ async function seed(): Promise<void> {
 
   console.log('--- demo data seeded ---');
   console.log(`customers: ${String(customers.length + 1)} (VIP: Esi Mensah, ${VIP_PHONE})`);
-  console.log(`susu accounts: ${String(susuTargets.length)} (${String(susuDocs)} deposit records)`);
+  console.log(
+    `susu accounts: ${String(susuTargets.length)} (${String(susuPlans)} plans, ${String(susuDocs)} deposit records)`,
+  );
   console.log(`savings accounts: ${String(savingsTargets.length)}`);
   console.log('loans: pending, active, repaid-on-time, arrears (one each)');
   console.log('staff logins (password: demo-pass-2026): demo.manager, demo.kwame, demo.abena');

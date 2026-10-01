@@ -50,7 +50,7 @@ async function statement(accountId: Types.ObjectId) {
 describe('a susu deposit dated to the day it was taken', () => {
   it('lands on that day in the summary, not the day it was typed', async () => {
     const customerId = await makeCustomer();
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     const accountId = new Types.ObjectId(account.id);
     const when = daysAgo(4);
 
@@ -62,6 +62,7 @@ describe('a susu deposit dated to the day it was taken', () => {
       'cash',
       undefined,
       when,
+      [{ planId: account.plans[0]!.id, payments: 2 }],
     );
 
     // The row itself carries the day it happened.
@@ -79,23 +80,31 @@ describe('a susu deposit dated to the day it was taken', () => {
     const today = await susu.dailySummary(officer, { date: daysAgo(0) });
     expect(today.deposits.map((d) => d.depositId)).not.toContain(result.deposit.id);
 
-    // The cycle itself is unmoved: the days are a sequence, not a calendar.
-    expect(result.deposit.seqStart).toBe(1);
-    expect(result.deposit.seqEnd).toBe(2);
-    expect(result.account.depositsCount).toBe(2);
+    // The cycle itself is unmoved: the payments are a sequence, not a calendar.
+    expect(result.deposit.lines[0]).toMatchObject({ seqStart: 1, seqEnd: 2 });
+    expect(result.account.plans[0]?.paidInCycle).toBe(2);
   });
 
-  it('dates a whole collect-all round', async () => {
+  it('dates a deposit across two plans', async () => {
     const customerId = await makeCustomer();
-    await susu.openAccount(officer, customerId, 1_000);
-    await susu.openAccount(officer, customerId, 2_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
+    await susu.addPlan(officer, new Types.ObjectId(account.id), 2_000);
     const when = daysAgo(6);
 
-    await susu.collectAll(officer, customerId, 3_000, randomUUID(), 'cash', undefined, when);
+    await susu.recordDeposit(
+      officer,
+      new Types.ObjectId(account.id),
+      3_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      when,
+    );
 
     const deposits = await SusuDepositModel.find({ customerId });
-    expect(deposits).toHaveLength(2);
-    expect(deposits.every((d) => d.createdAt.toISOString().slice(0, 10) === when)).toBe(true);
+    expect(deposits).toHaveLength(1);
+    expect(deposits[0]?.lines).toHaveLength(2);
+    expect(deposits[0]?.createdAt.toISOString().slice(0, 10)).toBe(when);
 
     const summary = await susu.dailySummary(officer, { date: when });
     expect(summary.totalCollected).toBe(3_000);
@@ -103,7 +112,7 @@ describe('a susu deposit dated to the day it was taken', () => {
 
   it('is refused for a collector, whose day is the one being reconciled', async () => {
     const customerId = await makeCustomer(false, new Types.ObjectId(collector.sub));
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
 
     await expect(
       susu.recordDeposit(

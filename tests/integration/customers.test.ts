@@ -210,7 +210,7 @@ describe('the ID document and open credit', () => {
     const created = await createCustomer(officer, registration());
     const customerId = new Types.ObjectId(created.id);
     // Eligible for HP: an active susu account with four months of history.
-    const account = await susu.openAccount(officer, customerId, 1_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
     await susu.recordDeposit(officer, new Types.ObjectId(account.id), 5_000, randomUUID(), 'cash');
     await SusuDepositModel.updateMany(
       { customerId },

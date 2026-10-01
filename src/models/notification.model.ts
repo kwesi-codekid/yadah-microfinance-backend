@@ -10,8 +10,6 @@ export const NOTIFICATION_TYPES = [
   'susu.deposit',
   'susu.withdrawal',
   'susu.payout',
-  /** A payment filled a cycle and the remainder opened a new account. */
-  'susu.carry-forward',
   /**
    * A teller asked the office to correct a transaction's amount, or the
    * office answered. The office hears the asking; the teller hears the answer.

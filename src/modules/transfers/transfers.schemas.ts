@@ -18,23 +18,15 @@ export const transferBody = z
     from: fromSide,
     to: toSide,
     /**
-     * Required when the source is savings (a withdrawal needs an amount).
-     * For a susu source: omitted = the full available value; allowed only
-     * as a partial draw on a pending-payout balance.
+     * What leaves the source. A susu source is a withdrawal like any other —
+     * up to the account's availableToWithdraw — and a loan or HP destination
+     * takes at most what it still owes.
      */
-    amount: positiveMoneyPesewas.min(1).optional(),
+    amount: positiveMoneyPesewas.min(1),
     idempotencyKey,
   })
   .check((ctx) => {
-    const { from, to, amount } = ctx.value;
-    if (from.type === 'savings' && amount === undefined) {
-      ctx.issues.push({
-        code: 'custom',
-        message: 'amount is required when transferring from savings',
-        path: ['amount'],
-        input: amount,
-      });
-    }
+    const { from, to } = ctx.value;
     if (from.type === to.type) {
       ctx.issues.push({
         code: 'custom',

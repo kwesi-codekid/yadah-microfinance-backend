@@ -1,6 +1,5 @@
 import { MongoServerError } from 'mongodb';
 import mongoose, { Types } from 'mongoose';
-import { accountRef } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import type { CorrectionPreparer, PreparedCorrection } from '../../lib/corrections.js';
 import { AppError } from '../../lib/errors.js';
@@ -138,10 +137,7 @@ async function targetNames(rows: TxnCorrection[]): Promise<Map<string, TargetNam
   }
   const out = new Map<string, TargetName>();
   const [susu, savings, loans, agreements] = await Promise.all([
-    SusuAccountModel.find(
-      { _id: { $in: byKind.get('susu-deposit') ?? [] } },
-      { accountNumber: 1, createdAt: 1 },
-    ),
+    SusuAccountModel.find({ _id: { $in: byKind.get('susu-deposit') ?? [] } }, { accountNumber: 1 }),
     SavingsAccountModel.find(
       { _id: { $in: byKind.get('savings-txn') ?? [] } },
       { accountNumber: 1 },
@@ -152,14 +148,7 @@ async function targetNames(rows: TxnCorrection[]): Promise<Map<string, TargetNam
       { accountNumber: 1, itemSnapshot: 1 },
     ),
   ]);
-  // A susu number is the customer's, shared by every book they hold, so the
-  // account's own ref goes beside it — the same pairing the account page shows.
-  for (const a of susu) {
-    out.set(a._id.toHexString(), {
-      number: a.accountNumber,
-      label: accountRef(a._id.toHexString(), a.createdAt),
-    });
-  }
+  for (const a of susu) out.set(a._id.toHexString(), { number: a.accountNumber });
   for (const a of savings) out.set(a._id.toHexString(), { number: a.accountNumber });
   for (const l of loans) {
     out.set(l._id.toHexString(), {

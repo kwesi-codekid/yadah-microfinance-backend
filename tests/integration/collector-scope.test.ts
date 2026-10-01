@@ -58,7 +58,7 @@ describe('collector scope lock', () => {
   });
 
   it('refuses a susu deposit onto another collector’s customer', async () => {
-    const account = await susu.openAccount(officer, bobCustomer, 1_000);
+    const { account } = await susu.openAccount(officer, bobCustomer, 1_000);
     const accountId = new Types.ObjectId(account.id);
 
     await expect(
@@ -70,14 +70,8 @@ describe('collector scope lock', () => {
     expect(ok.deposit.amount).toBe(1_000);
   });
 
-  it('refuses collect-all against another collector’s customer', async () => {
-    await expect(
-      susu.collectAll(alice, bobCustomer, 1_000, randomUUID(), 'cash'),
-    ).rejects.toMatchObject({ code: 'CUSTOMER_NOT_ASSIGNED', status: 403 });
-  });
-
   it('refuses reading a susu account outside the round', async () => {
-    const account = await susu.openAccount(officer, aliceCustomer, 1_000);
+    const { account } = await susu.openAccount(officer, aliceCustomer, 1_000);
     const accountId = new Types.ObjectId(account.id);
     await expect(susu.getAccount(bob, accountId)).rejects.toMatchObject({
       code: 'CUSTOMER_NOT_ASSIGNED',
@@ -86,10 +80,9 @@ describe('collector scope lock', () => {
   });
 
   it('an account-number search cannot reach outside the round', async () => {
-    // bobCustomer already holds a book from an earlier test, so this is their
-    // second — and it carries the same number. The search therefore returns
-    // the family, and naming both is what keeps this test meaningful.
-    const account = await susu.openAccount(officer, bobCustomer, 1_000);
+    // bobCustomer already holds their one account from an earlier test.
+    const account = await susu.findCustomerAccount(bobCustomer);
+    if (!account) throw new Error('bob has no susu account');
     const found = await susu.listAccounts(alice, {
       ...page,
       search: account.accountNumber,
@@ -103,9 +96,6 @@ describe('collector scope lock', () => {
       format: 'json' as const,
     });
     expect(bobSees.items.map((a) => a.id)).toContain(account.id);
-    // Every hit is theirs, and they all carry the one number that was searched.
-    expect(bobSees.items.length).toBeGreaterThan(1);
-    expect(bobSees.items.every((a) => a.accountNumber === account.accountNumber)).toBe(true);
   });
 
   it('refuses a savings deposit onto another collector’s customer', async () => {

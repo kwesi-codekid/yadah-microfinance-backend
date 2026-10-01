@@ -45,7 +45,6 @@ const balanceSheet = z
       customerDeposits: z.object({
         susuBalances: money,
         savingsBalances: money,
-        susuPayoutsPending: money,
         total: money,
       }),
       accruedExpenses: money.describe('Incurred but not yet paid'),

@@ -36,7 +36,7 @@ describe('collector round sheet', () => {
     const collector = await makeCollector('Done Collector');
     const collectorId = new Types.ObjectId(collector.sub);
     const customerId = await makeCustomer(false, collectorId);
-    const account = await susu.openAccount(officer, customerId, 1_500);
+    const { account } = await susu.openAccount(officer, customerId, 1_500);
 
     const before = await collectors.collectorRound(collector, today, undefined);
     expect(before.stops[0]?.done).toBe(false);
@@ -56,16 +56,17 @@ describe('collector round sheet', () => {
     expect(after.totals.customersDone).toBe(1);
   });
 
-  it('sums across a customer’s multiple susu accounts', async () => {
+  it('sums across a customer’s plans, one payment each', async () => {
     const collector = await makeCollector('Multi Collector');
     const collectorId = new Types.ObjectId(collector.sub);
     const customerId = await makeCustomer(false, collectorId);
-    await susu.openAccount(officer, customerId, 1_000);
-    await susu.openAccount(officer, customerId, 3_000);
+    const { account } = await susu.openAccount(officer, customerId, 1_000);
+    await susu.addPlan(officer, new Types.ObjectId(account.id), 3_000);
 
     const round = await collectors.collectorRound(collector, today, undefined);
     expect(round.stops[0]?.susu).toHaveLength(2);
     expect(round.stops[0]?.totalStillDue).toBe(4_000);
+    expect(round.totals.susuAccounts).toBe(2);
   });
 
   it('omits customers with nothing to collect', async () => {
@@ -103,7 +104,7 @@ describe('collector day view', () => {
     const collectorId = new Types.ObjectId(collector.sub);
     const customerId = await makeCustomer(false, collectorId);
 
-    const susuAccount = await susu.openAccount(officer, customerId, 1_000);
+    const { account: susuAccount } = await susu.openAccount(officer, customerId, 1_000);
     await susu.recordDeposit(
       collector,
       new Types.ObjectId(susuAccount.id),

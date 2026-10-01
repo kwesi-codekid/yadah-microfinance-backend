@@ -5,13 +5,7 @@ import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { accraDay } from '../../lib/time.js';
-import {
-  computeClosure,
-  susuBalance,
-  computeDepositAmount,
-  remainingDeposits,
-  SUSU_CYCLE_DEPOSITS,
-} from '../../domain/susu.js';
+import { depositWithin, roundsSplit, withdrawWithin } from '../susu/susu.service.js';
 import { availableToWithdraw, computeWithdrawal } from '../../domain/savings.js';
 import {
   CustomerModel,
@@ -20,8 +14,6 @@ import {
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
-  SusuDepositModel,
-  SusuPayoutModel,
   TransferModel,
   UserModel,
   type Customer,
@@ -72,9 +64,10 @@ const destinationLabel: Record<string, string> = {
 /**
  * One atomic internal transfer. Each side keeps its own rules: a savings
  * source is a real withdrawal (fee, 1/day, available limits); a susu source
- * stops the account with normal commission (or draws a pending-payout
- * balance); loan/HP destinations are real repayments/payments. No rule
- * exemptions except the savings minimum-deposit on internal credits.
+ * is a real withdrawal too (no commission, cycles untouched, never below the
+ * lock); a susu destination is a deposit credited in whole rounds; loan/HP
+ * destinations are real repayments/payments. No rule exemptions except the
+ * savings minimum-deposit on internal credits.
  */
 export async function transfer(
   actor: AccessTokenPayload,
@@ -113,6 +106,12 @@ export async function transfer(
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
 
+  // A susu destination is credited in whole rounds — one payment on every
+  // active plan — with the rest left in the balance. Resolved up front so a
+  // short amount is refused before anything moves.
+  const susuSplit =
+    body.to.type === 'susu' ? (await roundsSplit(toId, body.amount)).split : undefined;
+
   const session = await mongoose.startSession();
   let record!: Transfer;
   try {
@@ -120,7 +119,6 @@ export async function transfer(
       const actorId = new Types.ObjectId(actor.sub);
       let pool: number; // what leaves the source
       let fee = 0;
-      let susuSourceStopping: { commission: number; payout: number } | null = null;
 
       // ---------------- source side
       if (body.from.type === 'savings') {
@@ -131,7 +129,7 @@ export async function transfer(
         }).session(session);
         if (!account)
           throw new AppError('ACCOUNT_NOT_ACTIVE', 'Savings account is not active', 422);
-        const amount = body.amount ?? 0;
+        const amount = body.amount;
 
         // Same rules as a cash withdrawal: 1 per Accra day, fee, available.
         const today = accraDay();
@@ -198,45 +196,15 @@ export async function transfer(
         pool = amount;
         fee = computation.fee;
       } else {
+        // Settled after the destination is known, so only what it absorbs
+        // leaves the account. Just confirm it is open here.
         const account = await SusuAccountModel.findOne({
           _id: body.from.accountId,
+          status: 'active',
           ...NOT_TRASHED,
         }).session(session);
-        if (!account) throw new AppError('NOT_FOUND', 'Source account not found', 404);
-        if (account.status === 'pending-payout') {
-          const draw = body.amount ?? account.payoutRemaining;
-          if (draw > account.payoutRemaining) {
-            throw new AppError(
-              'EXCEEDS_PAYOUT',
-              `Only ${formatGhs(account.payoutRemaining)} is awaiting payout`,
-              422,
-              {
-                payoutRemaining: account.payoutRemaining,
-              },
-            );
-          }
-          pool = draw;
-        } else if (account.status === 'active' || account.status === 'completed') {
-          if (body.amount !== undefined) {
-            throw new AppError(
-              'AMOUNT_NOT_ALLOWED',
-              'A running susu account transfers its full payout — leave amount empty',
-              422,
-            );
-          }
-          // Balance, not the running deposit total — partial withdrawals have
-          // already taken their share out of the account.
-          const { commission, payout } = computeClosure(
-            susuBalance(account.totalDeposited, account.withdrawnAmount),
-            account.dailyAmount,
-          );
-          if (payout < 1)
-            throw new AppError('NO_PAYOUT', 'Susu closure yields no payout to transfer', 422);
-          susuSourceStopping = { commission, payout };
-          pool = payout;
-        } else {
-          throw new AppError('ALREADY_CLOSED', 'Susu account is already closed', 409);
-        }
+        if (!account) throw new AppError('ACCOUNT_NOT_ACTIVE', 'Susu account is not open', 422);
+        pool = body.amount;
       }
 
       // ---------------- destination side
@@ -291,74 +259,12 @@ export async function transfer(
           session,
         );
       } else if (body.to.type === 'susu') {
-        const target = await SusuAccountModel.findOne({
-          _id: toId,
-          status: 'active',
-          ...NOT_TRASHED,
-        }).session(session);
-        if (!target)
-          throw new AppError('ACCOUNT_NOT_ACTIVE', 'Destination susu account is not active', 422);
-        if (pool % target.dailyAmount !== 0) {
-          throw new AppError(
-            'AMOUNT_MISMATCH',
-            `Susu deposits must be a multiple of the daily amount (${formatGhs(target.dailyAmount)})`,
-            422,
-            { dailyAmount: target.dailyAmount },
-          );
-        }
-        const days = pool / target.dailyAmount;
-        const remaining = remainingDeposits(target.depositsCount);
-        if (days > remaining) {
-          throw new AppError(
-            'EXCEEDS_REMAINING',
-            `Only ${String(remaining)} deposit day(s) remain in this cycle`,
-            422,
-            {
-              remaining,
-            },
-          );
-        }
-        credited = computeDepositAmount(target.dailyAmount, days);
-        const completed = target.depositsCount + days === SUSU_CYCLE_DEPOSITS;
-        const upd = await SusuAccountModel.updateOne(
-          { _id: target._id, status: 'active', depositsCount: target.depositsCount },
-          {
-            $inc: { depositsCount: days, totalDeposited: credited },
-            ...(completed ? { $set: { status: 'completed' } } : {}),
-          },
-          { session },
-        );
-        if (upd.modifiedCount !== 1)
-          throw new AppError('CONFLICT', 'Susu changed concurrently — retry', 409);
-        await SusuDepositModel.create(
-          [
-            {
-              accountId: target._id,
-              customerId,
-              collectorId: actorId,
-              amount: credited,
-              daysCovered: days,
-              seqStart: target.depositsCount + 1,
-              seqEnd: target.depositsCount + days,
-              channel: 'transfer',
-              idempotencyKey: `transfer:${body.idempotencyKey}`,
-            },
-          ],
-          { session },
-        );
-        await audit(
-          {
-            actorId: actor.sub,
-            action: 'susu.deposit.record',
-            entityType: 'susu-account',
-            entityId: target._id,
-            amountBefore: target.totalDeposited,
-            amountAfter: target.totalDeposited + credited,
-            after: { daysCovered: days, via: 'transfer' },
-            ...(requestId !== undefined ? { requestId } : {}),
-          },
-          session,
-        );
+        credited = pool;
+        await depositWithin(session, actor, toId, credited, susuSplit, {
+          channel: 'transfer',
+          idempotencyKey: `transfer:${body.idempotencyKey}`,
+          ...(requestId !== undefined ? { requestId } : {}),
+        });
       } else if (body.to.type === 'loan') {
         const loan = await LoanModel.findOne({ _id: toId, ...NOT_TRASHED }).session(session);
         if (!loan || (loan.status !== 'active' && loan.status !== 'arrears')) {
@@ -370,7 +276,7 @@ export async function transfer(
           actor,
           loan,
           credited,
-          body.from.type === 'susu' && susuSourceStopping ? 'susu-closure' : 'transfer',
+          body.from.type === 'susu' ? 'susu' : 'transfer',
           'transfer',
           body.idempotencyKey,
           session,
@@ -401,79 +307,16 @@ export async function transfer(
         );
       }
 
-      // ---------------- settle the susu source (stop / draw down)
-      const excess = pool - credited;
+      // ---------------- settle the susu source: a withdrawal of what was credited
       if (body.from.type === 'susu') {
-        const account = await SusuAccountModel.findOne({
-          _id: body.from.accountId,
-          ...NOT_TRASHED,
-        }).session(session);
-        if (!account) throw new AppError('NOT_FOUND', 'Source account not found', 404);
-        if (susuSourceStopping) {
-          const keepsPending = excess > 0;
-          const upd = await SusuAccountModel.updateOne(
-            { _id: account._id, status: { $in: ['active', 'completed'] } },
-            {
-              $set: {
-                status: keepsPending ? 'pending-payout' : 'closed',
-                commissionAmount: susuSourceStopping.commission,
-                payoutAmount: susuSourceStopping.payout,
-                payoutRemaining: keepsPending ? excess : 0,
-                ...(keepsPending ? {} : { closedAt: new Date(), closedById: actorId }),
-              },
-            },
-            { session },
-          );
-          if (upd.modifiedCount !== 1)
-            throw new AppError('CONFLICT', 'Susu changed concurrently — retry', 409);
-          await audit(
-            {
-              actorId: actor.sub,
-              action: 'susu.account.close',
-              entityType: 'susu-account',
-              entityId: account._id,
-              amountBefore: susuBalance(account.totalDeposited, account.withdrawnAmount),
-              amountAfter: susuSourceStopping.payout,
-              after: { via: 'transfer', to: body.to.type, credited, excess },
-              ...(requestId !== undefined ? { requestId } : {}),
-            },
-            session,
-          );
-        } else {
-          const upd = await SusuAccountModel.updateOne(
-            {
-              _id: account._id,
-              status: 'pending-payout',
-              payoutRemaining: account.payoutRemaining,
-            },
-            {
-              $inc: { payoutRemaining: -credited },
-              ...(account.payoutRemaining - credited === 0
-                ? { $set: { status: 'closed', closedAt: new Date(), closedById: actorId } }
-                : {}),
-            },
-            { session },
-          );
-          if (upd.modifiedCount !== 1)
-            throw new AppError('CONFLICT', 'Susu changed concurrently — retry', 409);
-        }
-        await SusuPayoutModel.create(
-          [
-            {
-              accountId: account._id,
-              customerId,
-              amount: credited,
-              destination: body.to.type === 'susu' ? 'savings' : body.to.type, // susu→susu impossible
-              destinationId: toId,
-              // Only when this transfer is what stopped the account. Drawing
-              // down a balance that was already stopped charges nothing: the
-              // commission was taken on the row that stopped it.
-              commissionAmount: susuSourceStopping ? susuSourceStopping.commission : 0,
-              recordedById: actorId,
-            },
-          ],
-          { session },
-        );
+        await withdrawWithin(session, actor, body.from.accountId, credited, {
+          destination: body.to.type === 'susu' ? 'savings' : body.to.type, // susu→susu impossible
+          destinationId: toId,
+          idempotencyKey: `transfer:${body.idempotencyKey}`,
+          ...(requestId !== undefined ? { requestId } : {}),
+        });
+        // Nothing beyond what the destination took ever leaves the account.
+        pool = credited;
       }
 
       // ---------------- the transfer record itself
@@ -488,7 +331,7 @@ export async function transfer(
             amountMoved: pool,
             fee,
             amountCredited: credited,
-            excessPending: body.from.type === 'susu' && susuSourceStopping ? excess : 0,
+            excessPending: 0,
             recordedById: actorId,
             idempotencyKey: body.idempotencyKey,
           },

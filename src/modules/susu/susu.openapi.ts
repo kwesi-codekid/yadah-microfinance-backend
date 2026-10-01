@@ -1,84 +1,138 @@
 import { z } from 'zod';
-import { CYCLE_MONTHS } from '../../lib/account-number.js';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { trashBody } from '../../schemas/common.js';
 import { proposeCorrectionPathFor } from '../corrections/corrections.openapi.js';
 import {
-  collectAllBody,
+  addPlanBody,
+  changePlanBody,
   depositBody,
   listAccountsQuery,
+  listCyclesQuery,
+  listPayoutsQuery,
+  migrateBody,
   listDepositsQuery,
   listTrashQuery,
   openAccountBody,
-  partialWithdrawalBody,
-  payoutBody,
   summaryQuery,
   updateDepositBody,
+  withdrawalBody,
 } from './susu.schemas.js';
+
+const susuPlan = z
+  .object({
+    id: z.string(),
+    accountId: z.string(),
+    dailyAmount: z.number().int().describe('Pesewas. Changeable only between cycles.'),
+    paidInCycle: z.number().int().describe('Payments made in the cycle in progress, 0..30'),
+    cycleTarget: z.literal(31),
+    cycleNumber: z
+      .number()
+      .int()
+      .describe('The cycle in progress — or, between cycles, the one the next deposit starts'),
+    cyclesCompleted: z.number().int(),
+    status: z.enum(['active', 'stopped']),
+    locked: z
+      .number()
+      .int()
+      .describe('One payment’s amount while a cycle is in progress; 0 between cycles or stopped'),
+    amountChangeable: z.boolean().describe('True between cycles'),
+    startedAt: z.iso.datetime(),
+    stoppedAt: z.iso.datetime().optional(),
+    stopCommission: z
+      .number()
+      .int()
+      .optional()
+      .describe('Charged when stopped mid-cycle; 0 when stopped between cycles'),
+    balance: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'What the plan holds, pesewas: its ended cycles net of commission, plus the cycle in ' +
+          'progress, less withdrawals taken off it beyond the days they cost. On the account ' +
+          'detail only; listings leave it out. 0 on a closed account.',
+      ),
+    withdrawn: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'Σ withdrawals taken off this plan, pesewas. On the account detail only; ' +
+          'listings leave it out.',
+      ),
+  })
+  .meta({ id: 'SusuPlan' });
+
+const withdrawalLine = z.object({
+  planId: z.string(),
+  dailyAmount: z.number().int().describe('The plan’s amount at the time'),
+  amount: z.number().int(),
+  paymentsRemoved: z.number().int().describe('Whole payments this share took off the plan’s cycle'),
+});
+
+const susuPayout = z
+  .object({
+    id: z.string(),
+    accountId: z.string(),
+    amount: z.number().int(),
+    kind: z
+      .enum(['payout', 'withdrawal'])
+      .describe('withdrawal leaves the account open; payout is the closing disbursement'),
+    destination: z.enum(['cash', 'savings', 'loan', 'hire-purchase']),
+    commissionAmount: z.number().int(),
+    lines: z
+      .array(withdrawalLine)
+      .optional()
+      .describe(
+        'How the money was spread over the plans; absent on closing payouts and pre-plan rows',
+      ),
+    recordedById: z.string(),
+    createdAt: z.iso.datetime(),
+  })
+  .meta({ id: 'SusuPayout' });
 
 const susuAccount = z
   .object({
     id: z.string(),
     accountNumber: z
       .string()
-      .describe(
-        "The CUSTOMER's susu number plus this cycle's month, e.g. SU26090005-SEP. NOT " +
-          'unique: a customer is assigned one number for life and their books are ' +
-          'separated by month inside it, so two books opened for one customer in one ' +
-          'month carry the same string. Never key on it — use id, or show ref. ' +
-          'Customers registered before the scheme keep their legacy 6 digits as their ' +
-          'number, suffixed the same way.',
-      ),
-    ref: z
-      .string()
-      .describe(
-        'The account id rendered for people: when it was opened, to the second, plus ' +
-          'four characters of the id — 260912134501-a3f9. Always distinct, so it is ' +
-          'what tells two cycles of one customer apart on screen.',
-      ),
-    cycleMonth: z
-      .enum(CYCLE_MONTHS)
-      .optional()
-      .describe(
-        'The month the cycle is called, which need not be the month the number was ' +
-          'issued in — a cycle opened in late August for September is SEP. Absent on ' +
-          'accounts opened before the field existed.',
-      ),
+      .describe('The customer’s susu number, e.g. SU26090005 — one per customer, for life.'),
     customerId: z.string(),
     customerName: z.string().optional().describe('On list responses, for display'),
-    dailyAmount: z.number().int().describe('Pesewas. Immutable for the life of the cycle.'),
-    depositsCount: z.number().int(),
-    cycleTarget: z.literal(31),
-    totalDeposited: z
+    balance: z.number().int().describe('Pesewas — what the account holds'),
+    locked: z
       .number()
       .int()
-      .describe('Running total paid IN over the cycle — never decreases'),
-    withdrawnAmount: z.number().int().describe('Total taken out by partial withdrawals'),
-    balance: z.number().int().describe('totalDeposited − withdrawnAmount: what the account holds'),
-    availableToWithdraw: z
+      .describe('Σ one payment per plan mid-cycle: the part of the balance nothing may take'),
+    availableToWithdraw: z.number().int().describe('balance − locked, floored at 0'),
+    dailyTotal: z
       .number()
       .int()
-      .describe('Withdrawable today; one day’s amount stays reserved for the closing commission'),
-    status: z.enum(['active', 'completed', 'pending-payout', 'closed', 'terminated']),
-    commissionAmount: z
-      .number()
-      .int()
-      .optional()
-      .describe('Set when the account stops: 1 day’s deposit'),
-    payoutAmount: z
-      .number()
-      .int()
-      .optional()
-      .describe('Set when the account stops: total − commission'),
-    payoutRemaining: z
-      .number()
-      .int()
-      .describe('Undisbursed value awaiting withdrawal (pending-payout)'),
+      .describe('Σ daily amounts of the active plans — what one day’s round collects'),
+    status: z.enum(['active', 'closed']),
+    plans: z.array(susuPlan).describe('Active plans first, then stopped; each oldest first'),
     openedAt: z.iso.datetime(),
     closedAt: z.iso.datetime().optional(),
+    closeCommission: z.number().int().optional(),
+    closePayout: z.number().int().optional(),
   })
   .meta({ id: 'SusuAccount' });
+
+const susuDepositLine = z.object({
+  planId: z.string(),
+  dailyAmount: z.number().int().describe('The plan’s amount at the time'),
+  cycleNumber: z.number().int(),
+  payments: z.number().int(),
+  seqStart: z.number().int().describe('1-based position in the 31-payment cycle'),
+  seqEnd: z.number().int(),
+  amount: z.number().int().describe('payments × dailyAmount'),
+  commissionAmount: z
+    .number()
+    .int()
+    .describe('One payment’s amount when this line landed the 31st payment; else 0'),
+  completesCycle: z.boolean(),
+});
 
 const susuDeposit = z
   .object({
@@ -86,27 +140,42 @@ const susuDeposit = z
     accountId: z.string(),
     customerId: z.string(),
     collectorId: z.string().describe('User who recorded it (collector or office staff)'),
-    amount: z.number().int(),
-    daysCovered: z.number().int(),
-    seqStart: z.number().int().describe('1-based position in the 31-deposit cycle'),
-    seqEnd: z.number().int(),
+    amount: z.number().int().describe('The cash handed over, pesewas'),
+    payments: z.number().int().describe('Σ lines.payments'),
+    lines: z
+      .array(susuDepositLine)
+      .describe(
+        'How the cash was credited: one line per plan, and two for a plan the deposit ' +
+          'ran past its 31st payment (the second opens its next cycle)',
+      ),
+    leftover: z
+      .number()
+      .int()
+      .describe('Cash beyond whole payments — stays in the balance, counts toward no plan'),
+    commissionAmount: z
+      .number()
+      .int()
+      .describe('Σ lines.commissionAmount — taken out of this deposit as cycles completed'),
     channel: z
       .enum(['cash', 'paystack', 'momo', 'transfer'])
       .describe("'transfer' = created by an internal transfer"),
-    collectAllBatchId: z.string().optional(),
-    carriedToDepositId: z
-      .string()
-      .optional()
-      .describe('Set when part of this payment ran past the cycle and opened a new account'),
-    carriedToAccountId: z.string().optional(),
-    carriedFromDepositId: z
-      .string()
-      .optional()
-      .describe('Set on the follow-on half: the deposit whose cycle overflowed into this one'),
-    carriedFromAccountId: z.string().optional(),
     createdAt: z.iso.datetime(),
   })
   .meta({ id: 'SusuDeposit' });
+
+const susuCycle = z
+  .object({
+    id: z.string(),
+    planId: z.string(),
+    accountId: z.string(),
+    cycleNumber: z.number().int(),
+    dailyAmount: z.number().int(),
+    payments: z.number().int().describe('31 when completed; fewer when stopped mid-cycle'),
+    commissionAmount: z.number().int(),
+    endReason: z.enum(['completed', 'plan-stopped', 'account-closed']),
+    endedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'SusuCycle' });
 
 const trashedSusuAccount = susuAccount.extend({
   deletedAt: z.iso.datetime(),
@@ -120,47 +189,58 @@ const trashedSusuDeposit = susuDeposit.extend({
   deleteReason: z.string().optional(),
 });
 
+const idParam = z.object({ id: z.string().describe('Susu account id') });
+const planIdParam = z.object({
+  id: z.string().describe('Susu account id'),
+  planId: z.string().describe('Plan id'),
+});
 const depositIdParam = z.object({
   id: z.string().describe('Susu account id'),
   depositId: z.string().describe('Deposit id'),
 });
 
 const accountResult = z.object({ account: susuAccount });
+const planResult = z.object({ account: susuAccount, plan: susuPlan });
 const depositResult = z.object({
-  deposit: susuDeposit.describe('The leg recorded against the account named in the path'),
+  deposit: susuDeposit,
   account: susuAccount,
-  legs: z
-    .array(
-      z.object({
-        deposit: susuDeposit,
-        account: susuAccount,
-        carried: z.boolean().describe('True when this leg’s account was opened by this payment'),
-      }),
-    )
-    .describe('Every leg of the payment, oldest first. Longer than one only on a carry.'),
-  totalAmount: z.number().int().describe('Pesewas across all legs — what the customer handed over'),
-  openedAccounts: z
-    .array(susuAccount)
-    .describe('Accounts this payment had to open. Empty on the ordinary path.'),
   replayed: z.boolean().describe('True when this response replays an earlier identical request'),
 });
 const security = [{ bearerAuth: [] }];
-const idParam = z.object({ id: z.string().describe('Susu account id') });
+
+function paginated<T extends z.ZodType>(item: T) {
+  return z.object({
+    items: z.array(item),
+    page: z.number(),
+    limit: z.number(),
+    total: z.number(),
+  });
+}
 
 export const susuPaths: ZodOpenApiPathsObject = {
   '/susu/accounts': {
     post: {
       tags: ['Susu'],
-      summary: 'Open a susu account (office only)',
+      summary: 'Open a customer’s susu account (counter)',
       description:
-        'One account = one cycle of 31 deposits at a fixed daily amount (min GHS 10). ' +
-        'The daily amount is immutable — changing it means closing and opening a new ' +
-        'account. A customer may hold multiple concurrent accounts.',
+        'One account per customer, like savings: a balance holding one or more plans. ' +
+        'Opens it with its first plan (min GHS 10 a day). A customer whose account was ' +
+        'closed gets it reopened (200) with the new plan — same number, same history. ' +
+        'A customer with an open account is refused (409 ALREADY_OPEN, details.accountId): ' +
+        'add a plan to it instead.',
       security,
       requestBody: jsonBody(openAccountBody),
       responses: {
-        '201': jsonResponse('Opened', accountResult),
+        '201': jsonResponse(
+          'Opened',
+          z.object({ account: susuAccount, reopened: z.literal(false) }),
+        ),
+        '200': jsonResponse(
+          'Reopened',
+          z.object({ account: susuAccount, reopened: z.literal(true) }),
+        ),
         '404': errorResponse('NOT_FOUND — customer'),
+        '409': errorResponse('ALREADY_OPEN (details.accountId, details.accountNumber)'),
         '422': errorResponse('CUSTOMER_INACTIVE'),
       },
     },
@@ -173,36 +253,17 @@ export const susuPaths: ZodOpenApiPathsObject = {
         'to download a spreadsheet (pagination is ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listAccountsQuery },
-      responses: {
-        '200': jsonResponse(
-          'Paginated accounts',
-          z.object({
-            items: z.array(susuAccount),
-            page: z.number(),
-            limit: z.number(),
-            total: z.number(),
-          }),
-        ),
-      },
+      responses: { '200': jsonResponse('Paginated accounts', paginated(susuAccount)) },
     },
   },
   '/susu/accounts/trash': {
     get: {
       tags: ['Susu'],
       summary: 'List trashed susu accounts (office only)',
-      description: 'Accounts moved to the trash, most recently trashed first.',
       security,
       requestParams: { query: listTrashQuery },
       responses: {
-        '200': jsonResponse(
-          'Paginated trashed accounts',
-          z.object({
-            items: z.array(trashedSusuAccount),
-            page: z.number(),
-            limit: z.number(),
-            total: z.number(),
-          }),
-        ),
+        '200': jsonResponse('Paginated trashed accounts', paginated(trashedSusuAccount)),
         '403': errorResponse('FORBIDDEN — office only'),
       },
     },
@@ -210,12 +271,11 @@ export const susuPaths: ZodOpenApiPathsObject = {
   '/susu/accounts/{id}': {
     get: {
       tags: ['Susu'],
-      summary: 'Account detail with cycle progress',
+      summary: 'Account detail with its plans',
       security,
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('The account', accountResult),
-
         '404': errorResponse('NOT_FOUND'),
       },
     },
@@ -223,10 +283,8 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Move a susu account to the trash (office only)',
       description:
-        'Only empty, unused accounts qualify: active status with no deposits ever ' +
-        'recorded and nothing awaiting payout. Used accounts must go through ' +
-        'close/terminate instead. An optional reason is stored with the trashed ' +
-        'account, which disappears from normal endpoints until restored.',
+        'Only an account that never held money qualifies: active, zero balance, no deposit ' +
+        'ever recorded. Used accounts go through close instead.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(trashBody),
@@ -235,8 +293,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),
         '422': errorResponse(
-          'CANNOT_TRASH (details.status, details.depositsCount, details.totalDeposited, ' +
-            'details.payoutRemaining, details.depositRecords)',
+          'CANNOT_TRASH (details.status, details.balance, details.depositRecords)',
         ),
       },
     },
@@ -245,15 +302,133 @@ export const susuPaths: ZodOpenApiPathsObject = {
     post: {
       tags: ['Susu'],
       summary: 'Restore a susu account from the trash (office only)',
-      description: 'Clears the trash fields; the account reappears on normal endpoints.',
       security,
       requestParams: { path: idParam },
       responses: {
         '200': jsonResponse('Restored', accountResult),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),
-        '409': errorResponse('NOT_TRASHED — the account is not in the trash'),
+        '409': errorResponse('NOT_TRASHED'),
+        '422': errorResponse('CANNOT_RESTORE — the customer already holds an account'),
       },
+    },
+  },
+  '/susu/accounts/{id}/plans': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Add a plan — another daily amount on its own cycle (counter)',
+      description:
+        'The plan’s first cycle starts with its first deposit. Several plans run side by ' +
+        'side, each counting its own 31 payments and each charging one payment’s amount ' +
+        'per cycle.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(addPlanBody),
+      responses: {
+        '201': jsonResponse('Added', planResult),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('ACCOUNT_CLOSED'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/plans/{planId}': {
+    patch: {
+      tags: ['Susu'],
+      summary: 'Change a plan’s daily amount, between cycles only (counter)',
+      description:
+        'Allowed while paidInCycle is 0 — right after a cycle completes and before the next ' +
+        'deposit. The next cycle, and its commission, run at the new amount. Mid-cycle the ' +
+        'request is refused (PLAN_MID_CYCLE): stop the plan and start a new one.',
+      security,
+      requestParams: { path: planIdParam },
+      requestBody: jsonBody(changePlanBody),
+      responses: {
+        '200': jsonResponse('Changed', planResult),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('PLAN_MID_CYCLE (details.paidInCycle), PLAN_STOPPED, ACCOUNT_CLOSED'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/plans/{planId}/stop': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Stop a plan (counter)',
+      description:
+        'Mid-cycle this charges the plan’s one payment on the spot and records the unfinished ' +
+        'cycle; between cycles it charges nothing. The money stays in the balance — stopping ' +
+        'a plan moves nothing out of the account.',
+      security,
+      requestParams: { path: planIdParam },
+      responses: {
+        '200': jsonResponse('Stopped', planResult.extend({ commission: z.number().int() })),
+        '404': errorResponse('NOT_FOUND'),
+        '422': errorResponse('PLAN_STOPPED, ACCOUNT_CLOSED'),
+      },
+    },
+  },
+  '/susu/migrate': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Run the susu data update (admin)',
+      description:
+        'Turns per-cycle books into one account with plans, then gives money out that names ' +
+        'no plan its shares on the plans. `apply: false` is a dry run that reports what would ' +
+        'change and writes nothing; `apply: true` writes and leaves an audit entry. One run at ' +
+        'a time (409 while one is running). Idempotent: a second apply finds nothing to do.',
+      security,
+      requestBody: jsonBody(migrateBody),
+      responses: {
+        '200': jsonResponse(
+          'What changed, or would',
+          z.object({
+            apply: z.boolean(),
+            migration: z.object({
+              customers: z.number().int(),
+              books: z.number().int(),
+              plans: z.number().int(),
+              deposits: z.number().int(),
+              payoutsLabelled: z.number().int(),
+              balanceBefore: z.number().int(),
+              balanceAfter: z.number().int(),
+              commissionTakenNow: z.number().int(),
+            }),
+            backfill: z.object({
+              accounts: z.number().int(),
+              payouts: z.number().int(),
+              loose: z.number().int(),
+            }),
+            drift: z.number().int().describe('Zero when the money reconciles'),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — admin only'),
+        '409': errorResponse('MIGRATION_RUNNING'),
+      },
+    },
+  },
+  '/susu/accounts/{id}/payouts': {
+    get: {
+      tags: ['Susu'],
+      summary: 'Money out, newest first',
+      description:
+        'Withdrawals and the closing payout, each with how it was spread over the plans ' +
+        '(`lines`). Pass planId to keep only the rows with a share on that plan — the other ' +
+        'half of a plan’s statement.',
+      security,
+      requestParams: { path: idParam, query: listPayoutsQuery },
+      responses: { '200': jsonResponse('Paginated payouts', paginated(susuPayout)) },
+    },
+  },
+  '/susu/accounts/{id}/cycles': {
+    get: {
+      tags: ['Susu'],
+      summary: 'Ended cycles, newest first',
+      description:
+        'The statement’s history and the commission trail: one row per cycle that ' +
+        'completed, or was cut short by a plan stop or the account closing. The cycle in ' +
+        'progress is on the plan itself.',
+      security,
+      requestParams: { path: idParam, query: listCyclesQuery },
+      responses: { '200': jsonResponse('Paginated cycles', paginated(susuCycle)) },
     },
   },
   '/susu/accounts/{id}/deposits': {
@@ -265,34 +440,19 @@ export const susuPaths: ZodOpenApiPathsObject = {
         'ignored; capped at 10,000 rows).',
       security,
       requestParams: { path: idParam, query: listDepositsQuery },
-      responses: {
-        '200': jsonResponse(
-          'Deposits, newest first',
-          z.object({
-            items: z.array(susuDeposit),
-            page: z.number(),
-            limit: z.number(),
-            total: z.number(),
-          }),
-        ),
-      },
+      responses: { '200': jsonResponse('Deposits, newest first', paginated(susuDeposit)) },
     },
     post: {
       tags: ['Susu'],
-      summary: 'Record a deposit (single day or catch-up)',
+      summary: 'Record a deposit',
       description:
-        'Any collector or office staff. Send the cash received as `amount` ' +
-        '(pesewas) — it must be a multiple of the daily amount, and the days ' +
-        'covered are derived from it (one multiple = today, more = catch-up on ' +
-        'missed days). Requires an idempotency key: a retried request returns the ' +
-        'original deposit (200) instead of double-recording. Reaching 31 deposits ' +
-        'completes the cycle. SMS receipt sent to the customer. ' +
-        'CARRY-FORWARD: a payment worth more days than the cycle has left is no ' +
-        'longer refused. The days that fit finish the current cycle; the remainder ' +
-        'opens a new account for the same customer at the same daily amount, ' +
-        'numbered with the CURRENT month’s suffix, and is recorded there. Read ' +
-        '`legs` for every half and `openedAccounts` for anything opened. `deposit` ' +
-        'and `account` are unchanged — they are always the first leg.',
+        'Any collector or office staff. `amount` is the cash received (pesewas). `split` ' +
+        'says how many whole payments go to each plan; omit it for one payment on every ' +
+        'active plan (a collector’s daily round). Whatever the split does not use stays in ' +
+        'the balance as `leftover`. A plan reaching its 31st payment completes its cycle: ' +
+        'one payment’s amount is taken as commission out of this deposit, and payments ' +
+        'past the 31st open the plan’s next cycle at the same amount. Requires an ' +
+        'idempotency key: a retried request returns the original (200). SMS receipt sent.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(depositBody),
@@ -301,10 +461,9 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Replay of an earlier request', depositResult),
         '409': errorResponse('CONFLICT — concurrent update, retry'),
         '422': errorResponse(
-          'ACCOUNT_NOT_ACTIVE, AMOUNT_MISMATCH (details.dailyAmount), or ' +
-            'EXCEEDS_CARRY_LIMIT (details.daysCovered, details.remaining, ' +
-            'details.wouldOpen, details.maxCarryAccounts) when one payment would ' +
-            'have to open more than one new account — almost always a mistyped amount',
+          'ACCOUNT_CLOSED, NO_ACTIVE_PLANS, or INVALID_SPLIT (details.amount, details.required) ' +
+            'when the split names a plan not on the account, needs more cash than the deposit, ' +
+            'pays no plan at all, or runs one plan across more than two cycles',
         ),
       },
     },
@@ -318,12 +477,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
       responses: {
         '200': jsonResponse(
           'Trashed deposits, most recently trashed first',
-          z.object({
-            items: z.array(trashedSusuDeposit),
-            page: z.number(),
-            limit: z.number(),
-            total: z.number(),
-          }),
+          paginated(trashedSusuDeposit),
         ),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),
@@ -335,27 +489,23 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Correct the most recent deposit’s amount (office only)',
       description:
-        'Data-entry fixes. Only the most recent deposit of an open account can ' +
-        'change; the new amount must be a multiple of the daily amount and the days ' +
-        'covered are re-derived. Account counters adjust atomically, including ' +
-        'completing or un-completing the 31-day cycle. Transfer-created deposits ' +
-        'are immutable. A teller cannot call this: they ask through ' +
-        'POST /susu/accounts/{id}/deposits/{depositId}/corrections and the office ' +
-        'applies the request, which runs this same correction.',
+        'Data-entry fixes. The deposit is un-credited and credited afresh at the new amount, ' +
+        'keeping its id and date; plans and balance adjust atomically, including undoing or ' +
+        'completing a cycle. Only the most recent deposit on every plan it paid qualifies. ' +
+        '`split` may be omitted when the deposit paid one plan; a deposit split across plans ' +
+        'needs the new split (SPLIT_REQUIRED). Transfer- and Paystack-created deposits are ' +
+        'immutable. A teller asks through POST …/corrections and the office applies it.',
       security,
       requestParams: { path: depositIdParam },
       requestBody: jsonBody(updateDepositBody),
       responses: {
-        '200': jsonResponse(
-          'Corrected',
-          depositResult.describe('A correction never carries, so `legs` always has one entry'),
-        ),
+        '200': jsonResponse('Corrected', depositResult),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('CONFLICT — concurrent update, retry'),
         '422': errorResponse(
-          'CANNOT_TRASH (not the latest deposit / closed account / transfer-created), ' +
-            'AMOUNT_MISMATCH (details.dailyAmount), or EXCEEDS_REMAINING (details.remaining)',
+          'CANNOT_TRASH (not the latest / closed / transfer-created / plan stopped since), ' +
+            'CANNOT_CORRECT, SPLIT_REQUIRED, or INVALID_SPLIT',
         ),
       },
     },
@@ -363,10 +513,8 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Move the most recent deposit to the trash (office only)',
       description:
-        'Reverses the account counters atomically (deposits count, total ' +
-        'deposited, completed → active when the 31st deposit is removed). Only the ' +
-        'most recent deposit of an open account qualifies; transfer-created ' +
-        'deposits are immutable.',
+        'Un-credits the plans (undoing any cycle it completed and refunding that commission) ' +
+        'and takes the money back out of the balance — refused if it has since been withdrawn.',
       security,
       requestParams: { path: depositIdParam },
       requestBody: jsonBody(trashBody),
@@ -392,44 +540,16 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Restore a trashed deposit (office only)',
       description:
-        'Re-applies the deposit. Only possible while its cycle positions are still ' +
-        'free (nothing newer recorded since the trash).',
+        'Re-credits the deposit. Only possible while every plan it paid still stands where ' +
+        'the deposit found it (nothing newer recorded since).',
       security,
       requestParams: { path: depositIdParam },
       responses: {
-        '200': jsonResponse('Restored', z.object({ deposit: susuDeposit, account: susuAccount })),
+        '200': jsonResponse('Restored', depositResult),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('NOT_TRASHED or CONFLICT'),
-        '422': errorResponse('CANNOT_RESTORE (details.seqStart, details.depositsCount)'),
-      },
-    },
-  },
-  '/susu/collect-all': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Collect one cash amount across all active accounts (atomic)',
-      description:
-        'Splits one day’s deposit into every active account of the customer in a ' +
-        'single all-or-nothing transaction. The amount must equal the sum of the ' +
-        'active accounts’ daily amounts — on mismatch the error details carry the ' +
-        'required total and per-account breakdown. One itemized SMS receipt.',
-      security,
-      requestBody: jsonBody(collectAllBody),
-      responses: {
-        '201': jsonResponse(
-          'All deposits recorded',
-          z.object({
-            batchId: z.string(),
-            totalAmount: z.number().int(),
-            deposits: z.array(susuDeposit),
-            accounts: z.array(susuAccount),
-            replayed: z.boolean(),
-          }),
-        ),
-        '422': errorResponse(
-          'NO_ACTIVE_ACCOUNTS or AMOUNT_MISMATCH (details.required, details.breakdown)',
-        ),
+        '422': errorResponse('CANNOT_RESTORE'),
       },
     },
   },
@@ -438,21 +558,12 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Printable deposit receipt',
       description:
-        'A4 receipt laid out to stay readable printed in black and white on office paper: ' +
-        'receipt number, customer, account, the amount in a boxed headline, the ' +
-        'product-specific detail rows, who recorded it, and signature lines. Reprints are ' +
-        'identical: the receipt number is derived from the transaction id, and historical ' +
-        'balances are rebuilt from the ledger rather than read off the current account. ' +
-        'Binary response (application/pdf).' +
-        ' Available to collectors as well as the office — whoever took the cash in the ' +
-        'field has to be able to hand over a receipt for it.',
+        'A4 receipt: receipt number, customer, account, the amount in a boxed headline, a ' +
+        'row per plan paid, commission and leftover when any, the balance after (rebuilt from ' +
+        'the ledger, so reprints match), who recorded it, and signature lines. Binary ' +
+        'response (application/pdf). Available to collectors as well as the office.',
       security,
-      requestParams: {
-        path: z.object({
-          id: z.string().describe('Susu account id'),
-          depositId: z.string(),
-        }),
-      },
+      requestParams: { path: depositIdParam },
       responses: {
         '200': {
           description: 'The receipt',
@@ -468,16 +579,12 @@ export const susuPaths: ZodOpenApiPathsObject = {
       tags: ['Susu'],
       summary: 'Printable withdrawal or payout receipt',
       description:
-        'Covers both kinds of money leaving a susu account: a partial withdrawal that ' +
-        'leaves the account open (which states plainly that no commission was taken), and ' +
-        'the payout that ends it (which shows the one-day commission). ' +
-        'Binary response (application/pdf).',
+        'A withdrawal that leaves the account open (no commission), or the payout that ' +
+        'closed it (showing the commission for the cycles that were in progress). Binary ' +
+        'response (application/pdf).',
       security,
       requestParams: {
-        path: z.object({
-          id: z.string().describe('Susu account id'),
-          payoutId: z.string(),
-        }),
+        path: z.object({ id: z.string().describe('Susu account id'), payoutId: z.string() }),
       },
       responses: {
         '200': {
@@ -492,34 +599,39 @@ export const susuPaths: ZodOpenApiPathsObject = {
   '/susu/accounts/{id}/withdraw': {
     post: {
       tags: ['Susu'],
-      summary: 'Withdraw part of the balance, keeping the account open (office only)',
+      summary: 'Withdraw from the balance, keeping the account open (counter)',
       description:
-        'Client decision 2026-08-21, replacing the rule that any withdrawal closed the ' +
-        'account. NO commission is taken here — commission is exactly one cycle-day’s ' +
-        'amount, charged once, at closure. The cycle is untouched: days already paid stay ' +
-        'paid, so depositsCount and the 31-day target do not move. One day’s amount stays ' +
-        'reserved in the account so the closing commission remains collectible, which is ' +
-        'why availableToWithdraw is balance − dailyAmount. Idempotent on idempotencyKey; ' +
-        'sends an SMS confirming the account stays open.',
+        'Like a savings withdrawal: any amount up to availableToWithdraw. No commission is ' +
+        'taken — it is taken as each cycle completes — and every cycle is untouched. One ' +
+        'payment’s amount per plan with a cycle in progress stays locked so that commission ' +
+        'remains collectible; the same lock applies to transfers and loan repayments out of ' +
+        'susu. The money walks the plans in order (running first, oldest first): each gives ' +
+        'what it holds less its own lock, the rest moves to the next, and whatever no plan ' +
+        'can give comes from the account’s loose money. Each plan’s share takes whole ' +
+        'payments (share ÷ daily amount, rounded down) off its cycle in progress, never below ' +
+        '0 of 31 and never into a completed cycle. `lines` says what came off which plan. ' +
+        'Idempotent on idempotencyKey; sends an SMS.',
       security,
       requestParams: { path: idParam },
-      requestBody: jsonBody(partialWithdrawalBody),
+      requestBody: jsonBody(withdrawalBody),
       responses: {
         '201': jsonResponse(
           'Withdrawn',
           z.object({
             account: susuAccount,
             amount: z.number().int(),
+            payoutId: z.string(),
+            lines: z.array(withdrawalLine).describe('What came off which plan, in the order taken'),
+            loose: z.number().int().describe('The part that sat on no plan'),
             replayed: z.boolean(),
           }),
         ),
         '200': jsonResponse('Replay of an earlier identical request', z.object({})),
-        '403': errorResponse('FORBIDDEN — office only'),
+        '403': errorResponse('FORBIDDEN — counter only'),
         '404': errorResponse('NOT_FOUND'),
         '409': errorResponse('CONFLICT — account changed concurrently, retry'),
         '422': errorResponse(
-          'ACCOUNT_NOT_OPEN, or EXCEEDS_AVAILABLE ' +
-            '(details.available, details.balance, details.reserved)',
+          'ACCOUNT_CLOSED, or EXCEEDS_AVAILABLE (details.available, details.balance, details.locked)',
         ),
       },
     },
@@ -527,14 +639,12 @@ export const susuPaths: ZodOpenApiPathsObject = {
   '/susu/accounts/{id}/close': {
     post: {
       tags: ['Susu'],
-      summary: 'Close the account and pay out (office only)',
+      summary: 'Close the account and pay out (counter)',
       description:
-        'Payout = BALANCE − exactly 1 day’s commission, regardless of exit day and ' +
-        'regardless of how many partial withdrawals happened along the way — the ' +
-        'commission is charged once per cycle, here. The balance must cover it, ' +
-        'otherwise the request is refused (COMMISSION_NOT_COVERED) and the account ' +
-        'can only be terminated. The cash disbursement is recorded and appears in ' +
-        'the transactions feed. Sends the withdrawal SMS.',
+        'The customer leaves. Every plan with a cycle in progress is stopped and charged its ' +
+        'one payment; the rest of the balance is paid out in cash and recorded on the ' +
+        'transactions feed. The account keeps its number and history and can be reopened ' +
+        'through POST /susu/accounts.',
       security,
       requestParams: { path: idParam },
       responses: {
@@ -544,59 +654,11 @@ export const susuPaths: ZodOpenApiPathsObject = {
             account: susuAccount,
             commission: z.number().int(),
             payout: z.number().int(),
-            flagged: z.boolean(),
+            payoutId: z.string(),
           }),
         ),
-        '403': errorResponse('FORBIDDEN — office only'),
+        '403': errorResponse('FORBIDDEN — counter only'),
         '409': errorResponse('ALREADY_CLOSED'),
-        '422': errorResponse('COMMISSION_NOT_COVERED (details.balance, details.dailyAmount)'),
-      },
-    },
-  },
-  '/susu/accounts/{id}/terminate': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Terminate an account that cannot cover the commission (office only)',
-      description:
-        'Escape hatch for accounts whose deposits are below one day’s amount ' +
-        '(including empty accounts): refunds everything deposited, charges no ' +
-        'commission, and sets the account to `terminated`. Accounts that can cover ' +
-        'the commission must be closed normally. The refund is recorded and appears ' +
-        'in the transactions feed.',
-      security,
-      requestParams: { path: idParam },
-      responses: {
-        '200': jsonResponse(
-          'Terminated',
-          z.object({ account: susuAccount, refund: z.number().int() }),
-        ),
-        '403': errorResponse('FORBIDDEN — office only'),
-        '409': errorResponse('ALREADY_CLOSED'),
-        '422': errorResponse('CANNOT_TERMINATE (details.totalDeposited, details.dailyAmount)'),
-      },
-    },
-  },
-  '/susu/accounts/{id}/payout': {
-    post: {
-      tags: ['Susu'],
-      summary: 'Pay out a pending-payout balance in cash (office only)',
-      description:
-        'For accounts stopped with value still awaiting withdrawal (e.g. the excess ' +
-        'after a loan repayment via susu closure). Omit amount to pay out everything; ' +
-        'the account closes when its remaining value reaches zero.',
-      security,
-      requestParams: { path: idParam },
-      requestBody: jsonBody(payoutBody),
-      responses: {
-        '201': jsonResponse(
-          'Paid out',
-          z.object({ account: susuAccount, amount: z.number().int(), replayed: z.boolean() }),
-        ),
-        '200': jsonResponse(
-          'Replay of an earlier request',
-          z.object({ account: susuAccount, amount: z.number().int(), replayed: z.boolean() }),
-        ),
-        '422': errorResponse('NOT_PENDING_PAYOUT or EXCEEDS_PAYOUT (details.payoutRemaining)'),
       },
     },
   },
@@ -625,7 +687,7 @@ export const susuPaths: ZodOpenApiPathsObject = {
                 customerName: z.string(),
                 collectorId: z.string(),
                 amount: z.number().int(),
-                daysCovered: z.number().int(),
+                payments: z.number().int(),
                 at: z.iso.datetime(),
               }),
             ),

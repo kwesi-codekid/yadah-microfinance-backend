@@ -60,11 +60,10 @@ export interface BalanceSheet {
     total: number;
   };
   liabilities: {
-    /** Money held for customers, repayable on demand or at cycle end. */
+    /** Money held for customers, repayable on demand. */
     customerDeposits: {
       susuBalances: number;
       savingsBalances: number;
-      susuPayoutsPending: number;
       total: number;
     };
     /** Expenses approved but not yet paid. */
@@ -99,20 +98,11 @@ export interface BalanceSheet {
 async function customerLiabilities(): Promise<{
   susuBalances: number;
   savingsBalances: number;
-  susuPayoutsPending: number;
 }> {
   const [susu, savings] = await Promise.all([
-    SusuAccountModel.aggregate<{ _id: string; balance: number; payoutRemaining: number }>([
-      { $match: { ...NOT_TRASHED } },
-      {
-        $group: {
-          _id: '$status',
-          balance: {
-            $sum: { $subtract: ['$totalDeposited', { $ifNull: ['$withdrawnAmount', 0] }] },
-          },
-          payoutRemaining: { $sum: '$payoutRemaining' },
-        },
-      },
+    SusuAccountModel.aggregate<{ balance: number }>([
+      { $match: { status: 'active', ...NOT_TRASHED } },
+      { $group: { _id: null, balance: { $sum: '$balance' } } },
     ]),
     SavingsAccountModel.aggregate<{ balance: number }>([
       { $match: { status: 'active', ...NOT_TRASHED } },
@@ -120,14 +110,11 @@ async function customerLiabilities(): Promise<{
     ]),
   ]);
 
-  const byStatus = new Map(susu.map((s) => [s._id, s]));
   return {
-    // Money still held for open cycles. Closed and terminated accounts have
-    // already been paid out and owe nothing.
-    susuBalances:
-      (byStatus.get('active')?.balance ?? 0) + (byStatus.get('completed')?.balance ?? 0),
+    // Money held on open accounts. Closed accounts have been paid out and
+    // owe nothing.
+    susuBalances: susu[0]?.balance ?? 0,
     savingsBalances: savings[0]?.balance ?? 0,
-    susuPayoutsPending: byStatus.get('pending-payout')?.payoutRemaining ?? 0,
   };
 }
 
@@ -194,8 +181,7 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
   const currentAssets = cash.total + recv.loanPrincipal + recv.hpReceivable + inventory;
   const totalAssets = currentAssets + fixedAssets.netBookValue;
 
-  const depositsTotal =
-    deposits.susuBalances + deposits.savingsBalances + deposits.susuPayoutsPending;
+  const depositsTotal = deposits.susuBalances + deposits.savingsBalances;
   const totalLiabilities = depositsTotal + accrued.amount;
 
   const totalEquity = capital.net + earnings;
@@ -222,7 +208,6 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
       customerDeposits: {
         susuBalances: deposits.susuBalances,
         savingsBalances: deposits.savingsBalances,
-        susuPayoutsPending: deposits.susuPayoutsPending,
         total: depositsTotal,
       },
       accruedExpenses: accrued.amount,
