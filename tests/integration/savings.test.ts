@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import { SavingsAccountModel, SavingsTxnModel } from '../../src/models/index.js';
+import { AuditLogModel, SavingsAccountModel, SavingsTxnModel } from '../../src/models/index.js';
 import { MIN_BALANCE, WITHDRAWAL_FEE } from '../../src/domain/savings.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
@@ -46,5 +46,30 @@ describe('savings withdrawal race (WBS 7.2)', () => {
 
     const result = await savings.withdraw(officer, accountId, available, randomUUID());
     expect(result.account.balance).toBe(MIN_BALANCE); // lands exactly on the floor
+  });
+});
+
+describe('renumbering an account by hand (stop-gap, 1 Oct 2026)', () => {
+  it('changes the number, refuses one already in use, and audits the change', async () => {
+    const [a, b] = await Promise.all([makeCustomer(), makeCustomer()]);
+    const first = await savings.openAccount(officer, a, undefined, undefined, 'cash', 'standard');
+    const second = await savings.openAccount(officer, b, undefined, undefined, 'cash', 'standard');
+    const id = new Types.ObjectId(first.account.id);
+
+    const renumbered = await savings.changeAccountNumber(officer, id, 'SV26100361');
+    expect(renumbered.accountNumber).toBe('SV26100361');
+    expect((await savings.getAccount(officer, id)).accountNumber).toBe('SV26100361');
+    expect(
+      await AuditLogModel.countDocuments({ action: 'savings.account.renumber', entityId: id }),
+    ).toBe(1);
+
+    // Another account's number is refused; a malformed one never reaches the service.
+    await expect(
+      savings.changeAccountNumber(officer, id, second.account.accountNumber),
+    ).rejects.toMatchObject({ code: 'NUMBER_TAKEN', status: 409 });
+
+    // The same number again is a no-op, not an error.
+    const again = await savings.changeAccountNumber(officer, id, 'SV26100361');
+    expect(again.accountNumber).toBe('SV26100361');
   });
 });

@@ -681,6 +681,59 @@ export interface SavingsClosureResult {
   flagged: boolean;
 }
 
+/**
+ * Give an account a different number, by hand. Office only, audited, and the
+ * number must be free. A stop-gap (1 Oct 2026) for numbers issued under the
+ * monthly-restart rule before the sequence script has run, and the fix for a
+ * number quoted wrongly at opening. Nothing else about the account changes.
+ */
+export async function changeAccountNumber(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  accountNumber: string,
+  requestId?: string,
+): Promise<PublicSavingsAccount> {
+  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  const before = account.accountNumber;
+  if (before === accountNumber) return getAccount(actor, accountId);
+
+  const taken = await SavingsAccountModel.findOne({ accountNumber }, { _id: 1 });
+  if (taken) {
+    throw new AppError('NUMBER_TAKEN', `${accountNumber} is already another account's number`, 409);
+  }
+  try {
+    const upd = await SavingsAccountModel.updateOne(
+      { _id: accountId, accountNumber: before },
+      { $set: { accountNumber } },
+      { runValidators: true },
+    );
+    if (upd.matchedCount !== 1)
+      throw new AppError('CONFLICT', 'Account was updated concurrently', 409);
+  } catch (err) {
+    // The unique index is the last word on "free": two offices racing for the
+    // same number both pass the check above and one loses here.
+    if (err instanceof MongoServerError && err.code === 11000) {
+      throw new AppError(
+        'NUMBER_TAKEN',
+        `${accountNumber} is already another account's number`,
+        409,
+      );
+    }
+    throw err;
+  }
+  await audit({
+    actorId: actor.sub,
+    action: 'savings.account.renumber',
+    entityType: 'savings-account',
+    entityId: accountId,
+    before: { accountNumber: before },
+    after: { accountNumber },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  return getAccount(actor, accountId);
+}
+
 export async function closeAccount(
   actor: AccessTokenPayload,
   accountId: Types.ObjectId,

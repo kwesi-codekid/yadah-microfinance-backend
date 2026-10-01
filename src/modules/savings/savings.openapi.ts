@@ -7,6 +7,7 @@ import {
 } from '../corrections/corrections.openapi.js';
 import {
   depositBody,
+  accountNumberBody,
   listAccountsQuery,
   listTrashQuery,
   listTxnsQuery,
@@ -347,6 +348,25 @@ export const savingsPaths: ZodOpenApiPathsObject = {
         '403': errorResponse('FORBIDDEN — office only'),
         '409': errorResponse('WITHDRAWAL_LIMIT — one per day'),
         '422': errorResponse('EXCEEDS_AVAILABLE (details.available) or ACCOUNT_NOT_ACTIVE'),
+      },
+    },
+  },
+  '/savings/accounts/{id}/number': {
+    patch: {
+      tags: ['Savings'],
+      summary: 'Give the account a different number (office only)',
+      description:
+        'Typed by the office; the number must be in the current format (or a grandfathered ' +
+        'ten-digit one) and not in use. Audited. A stop-gap for numbers issued under the ' +
+        'monthly-restart rule, and the fix for a number quoted wrongly at opening.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(accountNumberBody),
+      responses: {
+        '200': jsonResponse('Renumbered', z.object({ account: savingsAccount })),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('NUMBER_TAKEN'),
       },
     },
   },

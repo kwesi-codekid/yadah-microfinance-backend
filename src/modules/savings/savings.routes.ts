@@ -4,6 +4,7 @@ import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   accountIdParams,
+  accountNumberBody,
   depositBody,
   listAccountsQuery,
   listTrashQuery,
@@ -13,6 +14,7 @@ import {
   txnIdParams,
   withdrawalBody,
   type AccountIdParams,
+  type AccountNumberBody,
   type DepositBody,
   type ListAccountsQuery,
   type ListTrashQuery,
@@ -182,6 +184,22 @@ savingsRouter.delete(
     savingsService
       .trashSavingsTxn(getAuth(req), params.id, params.txnId, body.reason, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Give the account a different number, by hand. Office only; the number must be free.
+savingsRouter.patch(
+  '/accounts/:id/number',
+  requireOffice,
+  validate({ params: accountIdParams, body: accountNumberBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: AccountNumberBody }>(
+      req,
+    );
+    savingsService
+      .changeAccountNumber(getAuth(req), params.id, body.accountNumber, req.id as string)
+      .then((account) => res.json({ account }))
       .catch(next);
   },
 );

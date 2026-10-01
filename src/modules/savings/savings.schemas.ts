@@ -53,6 +53,20 @@ export type ListAccountsQuery = z.infer<typeof listAccountsQuery>;
 export const accountIdParams = z.object({ id: objectId });
 export type AccountIdParams = z.infer<typeof accountIdParams>;
 
+/**
+ * A new number for an account, typed by the office. The stop-gap for numbers
+ * issued under the monthly-restart rule (1 Oct 2026) until the sequence
+ * script has run everywhere; also the fix for a number quoted wrongly.
+ */
+export const accountNumberBody = z.object({
+  accountNumber: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^(SV\d{8,}|\d{10})$/, 'Expected an account number like SV26100361'),
+});
+export type AccountNumberBody = z.infer<typeof accountNumberBody>;
+
 export const txnIdParams = z.object({ id: objectId, txnId: objectId });
 export type TxnIdParams = z.infer<typeof txnIdParams>;
 
