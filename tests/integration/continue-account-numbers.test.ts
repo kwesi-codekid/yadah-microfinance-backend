@@ -45,11 +45,11 @@ describe('account numbers run on across months', () => {
     const second = await savings(`SV${thisPeriod}0002`, ago(0.1));
 
     const dry = await continueAccountNumbers(false, now);
-    expect(dry.products['SV']).toEqual({ renumbered: 2, counter: 362 });
+    expect(dry.products['SV']).toMatchObject({ renumbered: 2, counter: 362 });
     expect((await SavingsAccountModel.findById(first))?.accountNumber).toBe(`SV${thisPeriod}0001`);
 
     const applied = await continueAccountNumbers(true, now);
-    expect(applied.products['SV']).toEqual({ renumbered: 2, counter: 362 });
+    expect(applied.products['SV']).toMatchObject({ renumbered: 2, counter: 362 });
     expect((await SavingsAccountModel.findById(first))?.accountNumber).toBe(`SV${thisPeriod}0361`);
     expect((await SavingsAccountModel.findById(second))?.accountNumber).toBe(`SV${thisPeriod}0362`);
     // Last month's numbers are untouched: they are on receipts.
@@ -64,7 +64,7 @@ describe('account numbers run on across months', () => {
     // Running it again finds nothing to renumber, and never lowers the counter:
     // 0363 was reserved above though no account was written under it.
     const again = await continueAccountNumbers(true, now);
-    expect(again.products['SV']).toEqual({ renumbered: 0, counter: 362 });
+    expect(again.products['SV']).toMatchObject({ renumbered: 0, counter: 362 });
     expect((await CounterModel.findById('SV'))?.seq).toBe(363);
   });
 
@@ -98,7 +98,7 @@ describe('account numbers run on across months', () => {
     });
 
     const r = await continueAccountNumbers(true, now, [`LN${thisPeriod}0002`]);
-    expect(r.products['LN']).toEqual({ renumbered: 1, counter: 8 });
+    expect(r.products['LN']).toMatchObject({ renumbered: 1, counter: 8 });
     expect((await LoanModel.findById(change))?.accountNumber).toBe(`LN${thisPeriod}0008`);
     expect((await LoanModel.findById(keep))?.accountNumber).toBe(`LN${thisPeriod}0001`);
   });

@@ -5,6 +5,7 @@ import { getValidated, validate } from '../../middleware/validate.js';
 import {
   accountIdParams,
   accountNumberBody,
+  renumberBody,
   depositBody,
   listAccountsQuery,
   listTrashQuery,
@@ -15,6 +16,7 @@ import {
   withdrawalBody,
   type AccountIdParams,
   type AccountNumberBody,
+  type RenumberBody,
   type DepositBody,
   type ListAccountsQuery,
   type ListTrashQuery,
@@ -31,6 +33,7 @@ import {
   type ProposeCorrectionBody,
 } from '../corrections/corrections.schemas.js';
 import * as corrections from '../corrections/corrections.service.js';
+import { renumberThisMonth } from './savings.renumber.js';
 import * as savingsService from './savings.service.js';
 import { EXPORT_MAX_ROWS, sendExport } from '../../lib/exports.js';
 
@@ -184,6 +187,19 @@ savingsRouter.delete(
     savingsService
       .trashSavingsTxn(getAuth(req), params.id, params.txnId, body.reason, req.id as string)
       .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Bring this month's savings numbers into the continuing sequence. Office only.
+savingsRouter.post(
+  '/renumber',
+  requireOffice,
+  validate({ body: renumberBody }),
+  (req, res, next) => {
+    const { body } = getValidated<{ body: RenumberBody }>(req);
+    renumberThisMonth(getAuth(req), body.apply, req.id as string)
+      .then((report) => res.json(report))
       .catch(next);
   },
 );

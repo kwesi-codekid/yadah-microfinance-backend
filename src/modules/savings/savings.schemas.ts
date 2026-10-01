@@ -67,6 +67,10 @@ export const accountNumberBody = z.object({
 });
 export type AccountNumberBody = z.infer<typeof accountNumberBody>;
 
+/** Renumber this month's accounts into the continuing sequence: false previews, true writes. */
+export const renumberBody = z.object({ apply: z.boolean() });
+export type RenumberBody = z.infer<typeof renumberBody>;
+
 export const txnIdParams = z.object({ id: objectId, txnId: objectId });
 export type TxnIdParams = z.infer<typeof txnIdParams>;
 

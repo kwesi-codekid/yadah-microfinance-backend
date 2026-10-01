@@ -8,6 +8,7 @@ import {
 import {
   depositBody,
   accountNumberBody,
+  renumberBody,
   listAccountsQuery,
   listTrashQuery,
   listTxnsQuery,
@@ -348,6 +349,31 @@ export const savingsPaths: ZodOpenApiPathsObject = {
         '403': errorResponse('FORBIDDEN — office only'),
         '409': errorResponse('WITHDRAWAL_LIMIT — one per day'),
         '422': errorResponse('EXCEEDS_AVAILABLE (details.available) or ACCOUNT_NOT_ACTIVE'),
+      },
+    },
+  },
+  '/savings/renumber': {
+    post: {
+      tags: ['Savings'],
+      summary: 'Renumber this month’s savings accounts into the continuing sequence (office only)',
+      description:
+        'Accounts opened this month under the old monthly-restart rule are renumbered, in ' +
+        'opening order, to carry on from the highest number any earlier month reached, and ' +
+        'the savings counter is set so the next account follows. `apply: false` previews and ' +
+        'writes nothing; `apply: true` writes and is audited. Savings only. One run at a time.',
+      security,
+      requestBody: jsonBody(renumberBody),
+      responses: {
+        '200': jsonResponse(
+          'What changed, or would',
+          z.object({
+            apply: z.boolean(),
+            changes: z.array(z.object({ from: z.string(), to: z.string() })),
+            counter: z.number().int().describe('The next account is this plus one'),
+          }),
+        ),
+        '403': errorResponse('FORBIDDEN — office only'),
+        '409': errorResponse('RENUMBER_RUNNING'),
       },
     },
   },

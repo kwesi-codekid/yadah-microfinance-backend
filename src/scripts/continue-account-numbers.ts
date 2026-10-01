@@ -54,8 +54,14 @@ const PRODUCTS: { prefix: AccountPrefix; label: string; collection: mongoose.Col
 ];
 
 export interface ContinueSummary {
-  /** Per prefix: how many of this month's accounts were renumbered, and the counter set. */
-  products: Record<string, { renumbered: number; counter: number }>;
+  /**
+   * Per prefix: how many of this month's accounts were (or would be)
+   * renumbered, each change, and the counter set.
+   */
+  products: Record<
+    string,
+    { renumbered: number; counter: number; changes: { from: string; to: string }[] }
+  >;
 }
 
 export async function continueAccountNumbers(
@@ -63,11 +69,13 @@ export async function continueAccountNumbers(
   now: Date = new Date(),
   /** When given, only these account numbers are renumbered; the counter still clears everything. */
   only: readonly string[] = [],
+  /** Which products to touch; every one by default. */
+  prefixes: readonly AccountPrefix[] = PRODUCTS.map((p) => p.prefix),
 ): Promise<ContinueSummary> {
   const summary: ContinueSummary = { products: {} };
   const period = accountPeriodKey(now);
 
-  for (const { prefix, label, collection } of PRODUCTS) {
+  for (const { prefix, label, collection } of PRODUCTS.filter((p) => prefixes.includes(p.prefix))) {
     const docs = (await collection
       .find(
         { accountNumber: { $regex: `^${prefix}[0-9]{8,}$` } },
@@ -98,6 +106,7 @@ export async function continueAccountNumbers(
 
     let renumbered = 0;
     let highest: number;
+    const changes: { from: string; to: string }[] = [];
     if (restarted) {
       // Two passes: park every number on a temporary value first, so a new
       // number never collides with an old one still in the unique index.
@@ -113,6 +122,7 @@ export async function continueAccountNumbers(
       for (const p of plan) {
         if (p.from !== p.to) {
           console.log(`${label}: ${p.from} -> ${p.to}`);
+          changes.push({ from: p.from, to: p.to });
           renumbered += 1;
         }
       }
@@ -141,7 +151,7 @@ export async function continueAccountNumbers(
     }
 
     if (apply) await raiseCounter(prefix, highest);
-    summary.products[prefix] = { renumbered, counter: highest };
+    summary.products[prefix] = { renumbered, counter: highest, changes };
     console.log(
       `${label}: ${String(renumbered)} renumbered this month, counter -> ${String(highest)}`,
     );

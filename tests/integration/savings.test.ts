@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { AuditLogModel, SavingsAccountModel, SavingsTxnModel } from '../../src/models/index.js';
+import { accountPeriodKey } from '../../src/lib/account-number.js';
+import { renumberThisMonth } from '../../src/modules/savings/savings.renumber.js';
 import { MIN_BALANCE, WITHDRAWAL_FEE } from '../../src/domain/savings.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import { asOfficer, makeCustomer, setupDb, teardownDb } from './helpers.js';
@@ -71,5 +73,42 @@ describe('renumbering an account by hand (stop-gap, 1 Oct 2026)', () => {
     // The same number again is a no-op, not an error.
     const again = await savings.changeAccountNumber(officer, id, 'SV26100361');
     expect(again.accountNumber).toBe('SV26100361');
+  });
+});
+
+describe('renumbering this month’s accounts from the office screen (1 Oct 2026)', () => {
+  it('previews without writing, then applies in opening order and audits', async () => {
+    const period = accountPeriodKey();
+    const last = accountPeriodKey(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000));
+    const staff = new Types.ObjectId();
+    const raw = async (number: string, daysAgo: number) =>
+      SavingsAccountModel.collection.insertOne({
+        accountNumber: number,
+        customerId: await makeCustomer(),
+        balance: 0,
+        status: 'active',
+        openedById: staff,
+        deletedAt: null,
+        createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(),
+      });
+    // Earlier tests opened accounts this month under the live counter; start clean.
+    await SavingsTxnModel.deleteMany({});
+    await SavingsAccountModel.deleteMany({});
+    await raw(`SV${last}0360`, 35);
+    await raw(`SV${period}0001`, 0.02);
+
+    const dry = await renumberThisMonth(officer, false);
+    expect(dry.apply).toBe(false);
+    expect(dry.changes).toEqual([{ from: `SV${period}0001`, to: `SV${period}0361` }]);
+    expect(await SavingsAccountModel.countDocuments({ accountNumber: `SV${period}0001` })).toBe(1);
+
+    const applied = await renumberThisMonth(officer, true);
+    expect(applied.changes).toEqual([{ from: `SV${period}0001`, to: `SV${period}0361` }]);
+    expect(applied.counter).toBe(361);
+    expect(await SavingsAccountModel.countDocuments({ accountNumber: `SV${period}0361` })).toBe(1);
+    expect(await AuditLogModel.countDocuments({ action: 'savings.account.renumber-month' })).toBe(
+      1,
+    );
   });
 });
