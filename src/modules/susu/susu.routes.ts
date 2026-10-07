@@ -25,6 +25,8 @@ import {
   summaryQuery,
   updateDepositBody,
   withdrawalBody,
+  withdrawAllBody,
+  type WithdrawAllBody,
   type AccountIdParams,
   type AddPlanBody,
   type ChangePlanBody,
@@ -333,6 +335,20 @@ susuRouter.post(
     const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawalBody }>(req);
     susuService
       .withdraw(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Everything out: the cycles in progress give their commission to Yadah, the rest is cash.
+susuRouter.post(
+  '/accounts/:id/withdraw-all',
+  requireCounter,
+  validate({ params: accountIdParams, body: withdrawAllBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawAllBody }>(req);
+    susuService
+      .withdrawAll(getAuth(req), params.id, body.idempotencyKey, req.id as string)
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },

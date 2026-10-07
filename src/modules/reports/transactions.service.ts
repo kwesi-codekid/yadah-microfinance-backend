@@ -69,6 +69,11 @@ interface RawRow {
   balanceAfter?: number;
   /** Absent on ledger rows, which are completed by definition. */
   status?: TxnStatus;
+  /**
+   * Set where one document yields several rows (a loan's fee and collateral
+   * beside its disbursement), so each row's id stays its own.
+   */
+  idSuffix?: string;
   createdAt: Date;
 }
 
@@ -303,6 +308,98 @@ function buildBranches(
               recordedById: 1,
               idempotencyKey: 1,
               createdAt: 1,
+            },
+          },
+        ],
+      },
+      // The processing fee and the cash collateral come in on the day the
+      // loan goes out, beside the disbursement and on the same document — so
+      // they carry an id suffix to stay distinct rows (client decision,
+      // 6 Oct 2026).
+      {
+        coll: 'loans',
+        stages: [
+          {
+            $match: {
+              disbursedAt: { $gte: window.start, $lt: window.end },
+              processingFee: { $gt: 0 },
+              ...byCustomer,
+              ...by('approvedById'),
+              ...NOT_TRASHED,
+            },
+          },
+          {
+            $project: {
+              type: { $literal: 'loan-fee' },
+              amount: '$processingFee',
+              // Revenue the company keeps, so it is also the row's fee.
+              fee: '$processingFee',
+              customerId: 1,
+              refId: '$_id',
+              refKind: { $literal: 'loan' },
+              channel: { $literal: 'cash' },
+              detail: { $literal: null },
+              recordedById: '$approvedById',
+              idSuffix: { $literal: ':fee' },
+              createdAt: '$disbursedAt',
+            },
+          },
+        ],
+      },
+      {
+        coll: 'loans',
+        stages: [
+          {
+            $match: {
+              disbursedAt: { $gte: window.start, $lt: window.end },
+              collateralAmount: { $gt: 0 },
+              ...byCustomer,
+              ...by('approvedById'),
+              ...NOT_TRASHED,
+            },
+          },
+          {
+            $project: {
+              type: { $literal: 'loan-collateral' },
+              amount: '$collateralAmount',
+              fee: { $literal: 0 },
+              customerId: 1,
+              refId: '$_id',
+              refKind: { $literal: 'loan' },
+              channel: { $literal: 'cash' },
+              detail: { $literal: null },
+              recordedById: '$approvedById',
+              idSuffix: { $literal: ':collateral' },
+              createdAt: '$disbursedAt',
+            },
+          },
+        ],
+      },
+      {
+        coll: 'loans',
+        stages: [
+          {
+            $match: {
+              collateralReturnedAt: { $gte: window.start, $lt: window.end },
+              collateralAmount: { $gt: 0 },
+              ...byCustomer,
+              ...by('collateralReturnedById'),
+              ...NOT_TRASHED,
+            },
+          },
+          {
+            $project: {
+              type: { $literal: 'loan-collateral-return' },
+              amount: '$collateralAmount',
+              fee: { $literal: 0 },
+              customerId: 1,
+              refId: '$_id',
+              refKind: { $literal: 'loan' },
+              channel: { $literal: 'cash' },
+              detail: { $literal: null },
+              recordedById: '$collateralReturnedById',
+              idSuffix: { $literal: ':collateral-return' },
+              createdAt: '$collateralReturnedAt',
             },
           },
         ],
@@ -583,7 +680,7 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
     }
 
     return {
-      id: r._id.toHexString(),
+      id: `${r._id.toHexString()}${r.idSuffix ?? ''}`,
       module: moduleOf(r.type),
       type: r.type,
       direction: directionOf(r.type, channel, detail),
@@ -732,7 +829,7 @@ async function runFeed(
     groups: SummaryGroup[];
   }>([
     ...unionStages(branches),
-    { $sort: { createdAt: -1, _id: -1 } },
+    { $sort: { createdAt: -1, _id: -1, idSuffix: -1 } },
     {
       $facet: {
         rows: [{ $skip: (page - 1) * limit }, { $limit: limit }],
@@ -792,7 +889,7 @@ export async function transactionsCsvRows(
   );
   const raw = await SusuDepositModel.aggregate<RawRow>([
     ...unionStages(branches),
-    { $sort: { createdAt: -1, _id: -1 } },
+    { $sort: { createdAt: -1, _id: -1, idSuffix: -1 } },
     { $limit: CSV_MAX_ROWS },
   ]);
   return (await resolveRows(raw)).map(toCsvRow);
@@ -911,7 +1008,7 @@ export async function customerStatement(
     }),
     SusuDepositModel.aggregate<RawRow>([
       ...unionStages(buildBranches(window, customerId)),
-      { $sort: { createdAt: 1, _id: 1 } },
+      { $sort: { createdAt: 1, _id: 1, idSuffix: 1 } },
       { $limit: STATEMENT_MAX_ROWS + 1 },
     ]),
   ]);

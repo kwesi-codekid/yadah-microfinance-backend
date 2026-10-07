@@ -6,7 +6,12 @@ import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
 import { accraDay } from '../../lib/time.js';
 import { depositWithin, roundsSplit, withdrawWithin } from '../susu/susu.service.js';
-import { availableToWithdraw, computeWithdrawal } from '../../domain/savings.js';
+import {
+  availableToWithdraw,
+  computeWithdrawal,
+  isLoanSavings,
+  isMatured,
+} from '../../domain/savings.js';
 import {
   CustomerModel,
   HpAgreementModel,
@@ -25,6 +30,7 @@ import { applyRepaymentInTxn } from '../loans/loans.service.js';
 import { applyHpPaymentInTxn, remainingOn } from '../hire-purchase/hp.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type { TransferBody } from './transfers.schemas.js';
+import { recordSavingsFee } from '../commissions/commissions.ledger.js';
 
 export interface TransferResult {
   transfer: {
@@ -129,6 +135,16 @@ export async function transfer(
         }).session(session);
         if (!account)
           throw new AppError('ACCOUNT_NOT_ACTIVE', 'Savings account is not active', 422);
+        // Loan savings pays the loan through its own route, free of the
+        // withdrawal rules — never through a transfer, which would charge
+        // them, and never to anything else.
+        if (isLoanSavings(account)) {
+          throw new AppError(
+            'LOAN_SAVINGS_LOCKED',
+            'Money in a loan savings account can only be used to repay the loan — use "Pay from loan savings" on the loan',
+            422,
+          );
+        }
         const amount = body.amount;
 
         // Same rules as a cash withdrawal: 1 per Accra day, fee, available.
@@ -145,13 +161,15 @@ export async function transfer(
             409,
           );
         }
+        // A matured fixed deposit gives up all of it, free.
+        const matured = isMatured(account, today);
         let computation;
         try {
-          computation = computeWithdrawal(account.balance, amount);
+          computation = computeWithdrawal(account.balance, amount, matured);
         } catch (err) {
           if (err instanceof RangeError) {
             throw new AppError('EXCEEDS_AVAILABLE', 'Amount exceeds the available balance', 422, {
-              available: availableToWithdraw(account.balance),
+              available: availableToWithdraw(account.balance, matured),
             });
           }
           throw err;
@@ -163,7 +181,7 @@ export async function transfer(
         );
         if (upd.modifiedCount !== 1)
           throw new AppError('CONFLICT', 'Savings changed concurrently — retry', 409);
-        await SavingsTxnModel.create(
+        const [leg] = await SavingsTxnModel.create(
           [
             {
               accountId: account._id,
@@ -180,6 +198,8 @@ export async function transfer(
           ],
           { session },
         );
+        // The transfer fee is Yadah's, like a cash withdrawal's.
+        if (leg) await recordSavingsFee(session, leg);
         await audit(
           {
             actorId: actor.sub,

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
 import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { REPAYMENT_SOURCES } from '../../models/repayment.model.js';
 import {
   correctionPathsFor,
   proposeCorrectionPathFor,
@@ -13,6 +14,8 @@ import {
   putConfigBody,
   rejectBody,
   repayBody,
+  loanSavingsRepayBody,
+  returnCollateralBody,
   susuRepayBody,
   trashBody,
 } from './loans.schemas.js';
@@ -59,6 +62,20 @@ const publicLoan = z
       })
       .optional()
       .describe('The guarantor as they were when the application was signed'),
+    processingFee: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pesewas. Paid on top of the loan the day it goes out; income, not in totalDue'),
+    collateralAmount: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pesewas. Cash left as security; held (a liability) until handed back'),
+    collateralReturnedAt: z.iso
+      .datetime()
+      .optional()
+      .describe('When the cash collateral was handed back'),
   })
   .meta({ id: 'Loan' });
 
@@ -71,6 +88,10 @@ const repaymentResult = z.object({
     .object({ accountId: z.string(), amount: z.number().int(), balanceAfter: z.number().int() })
     .optional()
     .describe('Present when the repayment was taken from the customer’s susu balance'),
+  loanSavingsWithdrawal: z
+    .object({ accountId: z.string(), amount: z.number().int(), balanceAfter: z.number().int() })
+    .optional()
+    .describe('Present when the repayment was taken from the customer’s loan savings account'),
 });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Loan id') });
@@ -82,7 +103,7 @@ const repaymentIdParam = z.object({
 const repaymentTxn = z.object({
   id: z.string(),
   amount: z.number().int(),
-  source: z.enum(['cash', 'susu', 'susu-closure', 'transfer']),
+  source: z.enum(REPAYMENT_SOURCES),
   channel: z.string(),
   recordedById: z.string(),
   createdAt: z.iso.datetime(),
@@ -388,14 +409,19 @@ export const loanPaths: ZodOpenApiPathsObject = {
       description:
         'Allocated to instalments oldest-first. Overpayment is refused with the ' +
         'exact remaining balance. Settling exactly flips the loan to repaid and ' +
-        'stamps repaidOnTime. Idempotency key required.',
+        'stamps repaidOnTime. Idempotency key required. `paidOn` dates it on the day the ' +
+        'customer paid (office only; empty = now); repaidOnTime is judged by that day.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(repayBody),
       responses: {
         '201': jsonResponse('Recorded', repaymentResult),
         '200': jsonResponse('Replay of an earlier request', repaymentResult),
-        '422': errorResponse('EXCEEDS_BALANCE (details.remaining) or LOAN_NOT_OPEN'),
+        '403': errorResponse('FORBIDDEN — paidOn given by a teller or collector'),
+        '422': errorResponse(
+          'EXCEEDS_BALANCE (details.remaining), LOAN_NOT_OPEN, DATE_IN_FUTURE, DATE_TOO_OLD ' +
+            'or DATE_BEFORE_LOAN',
+        ),
       },
     },
   },
@@ -419,6 +445,48 @@ export const loanPaths: ZodOpenApiPathsObject = {
           'EXCEEDS_BALANCE (details.remaining), EXCEEDS_AVAILABLE (details.available, ' +
             'details.locked), CUSTOMER_MISMATCH, or LOAN_NOT_OPEN',
         ),
+      },
+    },
+  },
+  '/loans/{id}/repayments/loan-savings': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Repay from the customer’s loan savings account (atomic)',
+      description:
+        'The only way money leaves a loan savings account (savings accountType `loan`). One ' +
+        'transaction takes it out of the account — no fee, no minimum balance, no daily ' +
+        'limit — and applies it to the loan. At most the account balance and at most the ' +
+        'loan’s remaining balance. The month-end deduction runs through the same path as ' +
+        'the system actor.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(loanSavingsRepayBody),
+      responses: {
+        '201': jsonResponse('Applied', repaymentResult),
+        '200': jsonResponse('Replay of an earlier request', repaymentResult),
+        '404': errorResponse('NO_LOAN_SAVINGS — the customer has no open loan savings account'),
+        '422': errorResponse(
+          'EXCEEDS_BALANCE (details.remaining), EXCEEDS_AVAILABLE (details.available), or ' +
+            'LOAN_NOT_OPEN',
+        ),
+      },
+    },
+  },
+  '/loans/{id}/collateral/return': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Hand the cash collateral back (office)',
+      description:
+        'Only once the loan is repaid, and only once. `returnedOn` dates it (default today) — ' +
+        'not in the future, not before the loan went out. The cash book shows a ' +
+        '`loan-collateral-return` row on that day and the balance sheet stops holding it.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(returnCollateralBody),
+      responses: {
+        '200': jsonResponse('Returned', loanResult),
+        '409': errorResponse('COLLATERAL_RETURNED'),
+        '422': errorResponse('NO_COLLATERAL, LOAN_NOT_REPAID, DATE_BEFORE_LOAN, DATE_IN_FUTURE'),
       },
     },
   },

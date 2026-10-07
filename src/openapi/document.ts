@@ -12,6 +12,7 @@ import { collectorPaths } from '../modules/collectors/collectors.openapi.js';
 import { portalPaths } from '../modules/portal/portal.openapi.js';
 import { accountingPaths } from '../modules/accounting/accounting.openapi.js';
 import { expensePaths } from '../modules/expenses/expenses.openapi.js';
+import { commissionPaths } from '../modules/commissions/commissions.openapi.js';
 import { hpPaths } from '../modules/hire-purchase/hp.openapi.js';
 import { transferPaths } from '../modules/transfers/transfers.openapi.js';
 import { paymentPaths } from '../modules/payments/payments.openapi.js';
@@ -131,6 +132,13 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
           'records, because petty cash leaves the drawer all day; the office decides and ' +
           'pays, and nobody approves their own spending. Only payment moves cash.',
       },
+      {
+        name: 'Commissions',
+        description:
+          'Yadah’s commission account: susu commission, savings fees and loan processing ' +
+          'fees as they are earned, and the moves that send the money on to the company cash ' +
+          'accounts. Office only.',
+      },
       { name: 'Reports', description: 'Office reports with CSV export (format=csv)' },
       {
         name: 'Hire Purchase',
@@ -172,6 +180,7 @@ export function buildOpenApiDocument(): ReturnType<typeof createDocument> {
       ...portalPaths,
       ...accountingPaths,
       ...expensePaths,
+      ...commissionPaths,
       ...hpPaths,
       ...transferPaths,
       ...paymentPaths,

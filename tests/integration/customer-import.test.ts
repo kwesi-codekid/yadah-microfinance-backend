@@ -151,7 +151,9 @@ describe('checking the rows', () => {
     const preview = await imports.previewImportFile(
       csv([['New Person', '0241114441', collectorName, '', '', '', '']]),
     );
-    expect(issuesFor(preview, 2)).toEqual(['phone: A customer already has this phone number']);
+    expect(issuesFor(preview, 2)).toEqual([
+      'phone: An adult customer already has this phone number',
+    ]);
   });
 
   it('offers the collectors a row can be moved to', async () => {

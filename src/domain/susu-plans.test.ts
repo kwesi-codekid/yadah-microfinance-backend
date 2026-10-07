@@ -8,6 +8,7 @@ import {
   canChangeAmount,
   computeClose,
   computeStopPlan,
+  computeWithdrawAll,
   computeWithdrawal,
   computeWithdrawalUnpay,
   defaultSplit,
@@ -413,5 +414,50 @@ describe('computeClose — stop every plan, pay out the rest', () => {
 
   it('fails loud when the balance is below the lock (data is wrong)', () => {
     expect(() => computeClose(2999, [A, B])).toThrow(Error);
+  });
+});
+
+describe('computeWithdrawAll — commission to Yadah, the rest to the customer', () => {
+  it('takes one payment of each mid-cycle plan’s own amount and pays out the rest', () => {
+    const r = computeWithdrawAll(50000, [A, B, plan({ planId: 'c', paidInCycle: 0 })]);
+    expect(r.commission).toBe(1000 + 2000);
+    expect(r.payout).toBe(47000);
+    expect(r.ends).toEqual([
+      { planId: 'a', commission: 1000, cycleNumber: 1, payments: 12 },
+      { planId: 'b', commission: 2000, cycleNumber: 1, payments: 3 },
+    ]);
+  });
+
+  it('GHS 10/day, 5 paid, GHS 50 balance: GHS 10 to Yadah, GHS 40 cash', () => {
+    const r = computeWithdrawAll(5000, [plan({ paidInCycle: 5, cyclesCompleted: 2 })]);
+    expect(r).toEqual({
+      commission: 1000,
+      payout: 4000,
+      ends: [{ planId: 'a', commission: 1000, cycleNumber: 3, payments: 5 }],
+    });
+  });
+
+  it('charges nothing between cycles or on stopped plans', () => {
+    const r = computeWithdrawAll(3000, [
+      plan({ paidInCycle: 0 }),
+      plan({ planId: 'b', paidInCycle: 4, status: 'stopped' }),
+    ]);
+    expect(r).toEqual({ commission: 0, payout: 3000, ends: [] });
+  });
+
+  it('only commission left: all of it to Yadah, nothing to the customer', () => {
+    expect(computeWithdrawAll(1000, [plan({ paidInCycle: 1 })])).toEqual({
+      commission: 1000,
+      payout: 0,
+      ends: [{ planId: 'a', commission: 1000, cycleNumber: 1, payments: 1 }],
+    });
+  });
+
+  it('refuses an empty account', () => {
+    expect(() => computeWithdrawAll(0, [])).toThrow(RangeError);
+  });
+
+  it('treats a balance short of the commission as corrupt data', () => {
+    expect(() => computeWithdrawAll(500, [plan({ paidInCycle: 1 })])).toThrow(/lock was bypassed/);
   });
 });

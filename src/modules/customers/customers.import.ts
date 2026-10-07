@@ -1,3 +1,4 @@
+import { ADULTS_ONLY, isMinor } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import {
@@ -115,7 +116,7 @@ export function blankRow(): Record<ImportField, string> {
 
 const GENDERS = ['male', 'female'] as const;
 const MARITAL_STATUSES = ['single', 'married', 'other'] as const;
-const ID_TYPES = ['ghana-card', 'passport', 'drivers-license', 'voter-id'] as const;
+const ID_TYPES = ['ghana-card', 'passport', 'drivers-license', 'voter-id', 'nhis'] as const;
 
 // ---------------------------------------------------------------- validation
 
@@ -240,7 +241,7 @@ export async function validateRows(
   }
   const [takenPhones, takenIds] = await Promise.all([
     phones.size
-      ? CustomerModel.find({ phone: { $in: [...phones] } }, { phone: 1 }).lean()
+      ? CustomerModel.find({ phone: { $in: [...phones] }, ...ADULTS_ONLY }, { phone: 1 }).lean()
       : Promise.resolve([]),
     idNumbers.size
       ? CustomerModel.find(
@@ -278,7 +279,10 @@ export async function validateRows(
       }
     }
 
-    if (values.phone.trim()) {
+    // Only adults need a number of their own; a child's row may carry a
+    // parent's, whether that parent is on the books or further down the sheet.
+    const adult = !isMinor(parsed.success ? parsed.data.dateOfBirth : undefined);
+    if (adult && values.phone.trim()) {
       const phone = normalizeGhanaPhone(values.phone);
       const earlier = seenPhone.get(phone);
       if (earlier !== undefined) {
@@ -286,7 +290,10 @@ export async function validateRows(
       } else {
         seenPhone.set(phone, row);
         if (phoneTaken.has(phone)) {
-          issues.push({ field: 'phone', message: 'A customer already has this phone number' });
+          issues.push({
+            field: 'phone',
+            message: 'An adult customer already has this phone number',
+          });
         }
       }
     }

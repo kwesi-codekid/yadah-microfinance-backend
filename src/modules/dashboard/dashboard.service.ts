@@ -82,6 +82,8 @@ export interface DashboardMetrics {
     savingsFees: CountAmount;
     /** Margin on outright counter sales, voided ones excluded. */
     outrightSalesProfit: CountAmount;
+    /** Processing fees on loans that went out this month. */
+    loanProcessingFees: CountAmount;
     totalRevenue: number;
   };
   /** Live position — computed from account state, not from the feed. */
@@ -96,7 +98,7 @@ export interface DashboardMetrics {
     savings: {
       activeAccounts: number;
       totalBalance: number;
-      byType: { standard: CountAmount; student: CountAmount };
+      byType: { standard: CountAmount; student: CountAmount; fixed: CountAmount };
     };
     loans: {
       active: number;
@@ -221,6 +223,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
   const savingsByType = new Map(savingsGroups.map((g) => [g._id, g]));
   const standard = savingsByType.get('standard');
   const student = savingsByType.get('student');
+  const fixed = savingsByType.get('fixed');
 
   const loanByStatus = new Map(loanGroups.map((g) => [g._id, g]));
 
@@ -232,11 +235,12 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       valueHeld: susuOpen[0]?.balance ?? 0,
     },
     savings: {
-      activeAccounts: (standard?.count ?? 0) + (student?.count ?? 0),
-      totalBalance: (standard?.balance ?? 0) + (student?.balance ?? 0),
+      activeAccounts: (standard?.count ?? 0) + (student?.count ?? 0) + (fixed?.count ?? 0),
+      totalBalance: (standard?.balance ?? 0) + (student?.balance ?? 0) + (fixed?.balance ?? 0),
       byType: {
         standard: { count: standard?.count ?? 0, amount: standard?.balance ?? 0 },
         student: { count: student?.count ?? 0, amount: student?.balance ?? 0 },
+        fixed: { count: fixed?.count ?? 0, amount: fixed?.balance ?? 0 },
       },
     },
     loans: {
@@ -277,6 +281,7 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       susuCommission: revenue.susuCommission,
       savingsFees: revenue.savingsFees,
       outrightSalesProfit: revenue.outrightSalesProfit,
+      loanProcessingFees: revenue.loanProcessingFees,
       totalRevenue: revenue.totalRevenue,
     },
     portfolio,

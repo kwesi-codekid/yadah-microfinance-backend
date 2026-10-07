@@ -1,7 +1,9 @@
 import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
+import { resolveOfficeDate } from '../../lib/backdating.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
+import { isMinor, minorCreditRefused } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -23,7 +25,9 @@ import {
   type Customer,
   type Loan,
   type Repayment,
+  type SavingsAccount,
 } from '../../models/index.js';
+import { debitLoanSavingsInTxn } from '../savings/savings.service.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   DEFAULT_RATES,
@@ -46,6 +50,7 @@ import type {
   LoanTrashQuery,
   PutConfigBody,
 } from './loans.schemas.js';
+import { recordLoanFee } from '../commissions/commissions.ledger.js';
 
 // ---------------------------------------------------------------- config
 
@@ -134,6 +139,11 @@ export interface PublicLoan {
   origin?: 'paper';
   paperRef?: string;
   paperPhotoUrl?: string;
+  /** Paid on top of the loan, never out of the principal. */
+  processingFee?: number;
+  /** Cash left as security, held until handed back. */
+  collateralAmount?: number;
+  collateralReturnedAt?: Date;
 }
 
 export function toPublicLoan(l: Loan): PublicLoan {
@@ -166,6 +176,11 @@ export function toPublicLoan(l: Loan): PublicLoan {
     ...(l.origin !== undefined ? { origin: l.origin } : {}),
     ...(l.paperRef !== undefined ? { paperRef: l.paperRef } : {}),
     ...(l.paperPhotoUrl !== undefined ? { paperPhotoUrl: l.paperPhotoUrl } : {}),
+    ...(l.processingFee !== undefined ? { processingFee: l.processingFee } : {}),
+    ...(l.collateralAmount !== undefined ? { collateralAmount: l.collateralAmount } : {}),
+    ...(l.collateralReturnedAt !== undefined
+      ? { collateralReturnedAt: l.collateralReturnedAt }
+      : {}),
   };
 }
 
@@ -186,6 +201,8 @@ export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
     totalDue: item.totalDue,
     totalRepaid: item.totalRepaid,
     remaining: item.remaining,
+    processingFee: item.processingFee ?? 0,
+    collateralAmount: item.collateralAmount ?? 0,
     status: item.status,
     frozen: item.frozen,
     appliedAt: item.appliedAt,
@@ -196,6 +213,26 @@ export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
 
 /** Loan states that count as "the customer already has a loan". */
 export const OPEN_LOAN_STATUSES = ['pending', 'active', 'arrears'] as const;
+
+/** The processing fee and cash collateral agreed for a loan (client decision, 6 Oct 2026). */
+export interface LoanCharges {
+  processingFee?: number | undefined;
+  collateralAmount?: number | undefined;
+}
+
+/**
+ * The charges as they are stored: a zero is the same as none, so neither the
+ * reports nor the receipt ever show a line for nothing.
+ */
+export function chargeFields(charges: LoanCharges): {
+  processingFee?: number;
+  collateralAmount?: number;
+} {
+  return {
+    ...(charges.processingFee ? { processingFee: charges.processingFee } : {}),
+    ...(charges.collateralAmount ? { collateralAmount: charges.collateralAmount } : {}),
+  };
+}
 
 // ---------------------------------------------------------------- eligibility
 
@@ -209,6 +246,8 @@ export interface EligibilitySummary {
     hasId: boolean;
     /** Both sides of the ID are photographed. */
     hasIdDocument: boolean;
+    /** Under 18 today — no loan, whatever else is in order. */
+    isMinor: boolean;
   };
   firstActivityAt: Date | null;
   monthsOfHistory: number;
@@ -261,6 +300,7 @@ export async function eligibilitySummary(customerId: Types.ObjectId): Promise<El
       hasGhanaCard: customer.identification?.idType === 'ghana-card',
       hasId: Boolean(customer.identification?.idNumber),
       hasIdDocument: hasIdDocument(customer),
+      isMinor: isMinor(customer.dateOfBirth),
     },
     firstActivityAt,
     monthsOfHistory,
@@ -313,6 +353,10 @@ async function resolveGuarantor(
       422,
     );
   }
+  // A child cannot stand behind somebody else's debt any more than their own.
+  if (isMinor(guarantor.dateOfBirth)) {
+    throw minorCreditRefused(`${guarantor.fullName} is under 18 and cannot guarantee a loan`);
+  }
   const missing = missingIdParts(guarantor);
   if (missing.length > 0) {
     throw new AppError(
@@ -344,12 +388,17 @@ export async function applyForLoan(
   guarantor: Types.ObjectId | GuarantorDetails | GuarantorDetails[],
   signatureUrl?: string,
   requestId?: string,
+  /** The processing fee and cash collateral agreed for this loan, if any. */
+  charges: LoanCharges = {},
 ): Promise<PublicLoan> {
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
   }
+  // No credit for children (client decision, 5 Oct 2026). Read off the date of
+  // birth today, so it lifts on the 18th birthday without anyone editing them.
+  if (isMinor(customer.dateOfBirth)) throw minorCreditRefused();
   // Any of the four ID types is accepted (client decision, 12 Sep 2026 — this
   // used to demand a Ghana Card). What a loan turns on is that the borrower is
   // identified at all: an ID recorded, and both sides of it photographed. The
@@ -445,6 +494,7 @@ export async function applyForLoan(
     totalDue: principal + interestAmount,
     appliedAt: new Date(),
     ...(signatureUrl !== undefined ? { signatureUrl } : {}),
+    ...chargeFields(charges),
   });
 
   await audit({
@@ -460,6 +510,7 @@ export async function applyForLoan(
       ratePercent,
       ...(guarantorId !== undefined ? { guarantorId: guarantorId.toHexString() } : {}),
       guarantorName: guarantorSnapshot.fullName,
+      ...chargeFields(charges),
     },
     ...(requestId !== undefined ? { requestId } : {}),
   });
@@ -520,6 +571,14 @@ export async function approveLoan(
       if (upd.modifiedCount !== 1) {
         throw new AppError('NOT_PENDING', 'Loan is no longer pending', 409);
       }
+      // The processing fee is paid as the money goes out — Yadah's from then.
+      await recordLoanFee(session, {
+        _id: loanId,
+        customerId: pre.customerId,
+        ...(pre.processingFee !== undefined ? { processingFee: pre.processingFee } : {}),
+        disbursedAt: now,
+        approvedById: new Types.ObjectId(actor.sub),
+      });
       await LoanScheduleModel.create(
         schedule.map((line) => ({
           loanId,
@@ -714,6 +773,7 @@ export interface LoanDetail {
     amount: number;
     source: string;
     susuAccountId?: string;
+    savingsAccountId?: string;
     recordedById: string;
     createdAt: Date;
   }[];
@@ -741,6 +801,7 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       source: r.source,
       channel: r.channel,
       ...(r.susuAccountId ? { susuAccountId: r.susuAccountId.toHexString() } : {}),
+      ...(r.savingsAccountId ? { savingsAccountId: r.savingsAccountId.toHexString() } : {}),
       recordedById: r.recordedById.toHexString(),
       createdAt: r.createdAt,
     })),
@@ -755,6 +816,8 @@ export interface RepaymentResult {
   replayed: boolean;
   /** Present when the repayment was taken from the customer's susu balance. */
   susuWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
+  /** Present when the repayment was taken from the customer's loan savings account. */
+  loanSavingsWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
 }
 
 async function replayIfExists(idempotencyKey: string): Promise<RepaymentResult | null> {
@@ -772,6 +835,12 @@ async function replayIfExists(idempotencyKey: string): Promise<RepaymentResult |
 /**
  * Core repayment writer — runs INSIDE the caller's transaction. Applies
  * amount to the loan + schedule, flips to repaid when settled.
+ *
+ * `extra.at` is the day the customer paid, when the office has said it was
+ * earlier than now. The repayment is dated then — its `createdAt`, which is
+ * what the cash book, the P&L and the statement all read, exactly as a
+ * backdated savings deposit is — and "repaid on time" is judged by that day,
+ * not by the day it was typed in.
  */
 export async function applyRepaymentInTxn(
   actor: AccessTokenPayload,
@@ -783,6 +852,7 @@ export async function applyRepaymentInTxn(
   session: mongoose.ClientSession,
   susuAccountId?: Types.ObjectId,
   requestId?: string,
+  extra: { at?: Date; savingsAccountId?: Types.ObjectId } = {},
 ): Promise<Repayment> {
   const remaining = loan.totalDue - loan.totalRepaid;
   if (amount > remaining) {
@@ -795,7 +865,14 @@ export async function applyRepaymentInTxn(
   }
 
   const fullyRepaid = amount === remaining;
-  const now = new Date();
+  const now = extra.at ?? new Date();
+  if (loan.disbursedAt && accraDay(now) < accraDay(loan.disbursedAt)) {
+    throw new AppError(
+      'DATE_BEFORE_LOAN',
+      `A repayment cannot be dated before the loan went out (${accraDay(loan.disbursedAt)})`,
+      422,
+    );
+  }
   const upd = await LoanModel.updateOne(
     { _id: loan._id, status: loan.status, totalRepaid: loan.totalRepaid, ...NOT_TRASHED },
     {
@@ -845,11 +922,15 @@ export async function applyRepaymentInTxn(
         source,
         channel,
         ...(susuAccountId ? { susuAccountId } : {}),
+        ...(extra.savingsAccountId ? { savingsAccountId: extra.savingsAccountId } : {}),
         recordedById: new Types.ObjectId(actor.sub),
         idempotencyKey,
+        // The day it was paid; `_id` still carries when it was typed in.
+        createdAt: now,
+        updatedAt: new Date(),
       },
     ],
-    { session },
+    { session, timestamps: false },
   );
 
   await audit(
@@ -864,6 +945,10 @@ export async function applyRepaymentInTxn(
         source,
         fullyRepaid,
         ...(susuAccountId ? { susuAccountId: susuAccountId.toHexString() } : {}),
+        ...(extra.savingsAccountId
+          ? { savingsAccountId: extra.savingsAccountId.toHexString() }
+          : {}),
+        ...(extra.at ? { paidOn: accraDay(now) } : {}),
       },
       ...(requestId !== undefined ? { requestId } : {}),
     },
@@ -919,7 +1004,11 @@ export async function repayCash(
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
+  /** The Accra day the customer paid, when not today. Office only. */
+  paidOn?: string,
 ): Promise<RepaymentResult> {
+  // Resolved first, so a date the caller may not use costs nothing.
+  const at = paidOn !== undefined ? resolveOfficeDate(actor, paidOn) : undefined;
   const replayed = await replayIfExists(idempotencyKey);
   if (replayed) return replayed;
 
@@ -938,6 +1027,7 @@ export async function repayCash(
         session,
         undefined,
         requestId,
+        at ? { at } : {},
       );
     });
   } finally {
@@ -1223,6 +1313,173 @@ export async function repayFromSusu(
   };
 }
 
+// ---------------------------------------------------------------- loan savings
+
+/** The customer's loan savings account, if they have one open — there is at most one. */
+export async function findLoanSavingsAccount(
+  customerId: Types.ObjectId,
+): Promise<SavingsAccount | null> {
+  return SavingsAccountModel.findOne({
+    customerId,
+    accountType: 'loan',
+    status: 'active',
+    ...NOT_TRASHED,
+  });
+}
+
+/**
+ * Repayment from the customer's loan savings account (client decision, 6 Oct
+ * 2026) — the only way money leaves it. One transaction takes it out of the
+ * account and puts it on the loan, so neither side can happen alone. No fee,
+ * no floor: the withdrawal rules are about cash leaving the branch, and this
+ * money does not. The month-end deduction (lib/loan-savings.ts) comes through
+ * here as well, as the system actor.
+ */
+export async function repayFromLoanSavings(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  amount: number,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<RepaymentResult> {
+  const replayed = await replayIfExists(idempotencyKey);
+  if (replayed) return replayed;
+
+  const { loan, customer } = await loadOpenLoanForRepayment(loanId);
+  const account = await findLoanSavingsAccount(loan.customerId);
+  if (!account) {
+    throw new AppError(
+      'NO_LOAN_SAVINGS',
+      `${customer?.fullName ?? 'This customer'} has no loan savings account`,
+      404,
+    );
+  }
+  const remaining = loan.totalDue - loan.totalRepaid;
+  if (amount > remaining) {
+    throw new AppError(
+      'EXCEEDS_BALANCE',
+      `Only ${formatGhs(remaining)} is left on this loan`,
+      422,
+      {
+        remaining,
+      },
+    );
+  }
+
+  const session = await mongoose.startSession();
+  let repayment!: Repayment;
+  let balanceAfter = 0;
+  try {
+    await session.withTransaction(async () => {
+      repayment = await applyRepaymentInTxn(
+        actor,
+        loan,
+        amount,
+        'loan-savings',
+        'transfer',
+        idempotencyKey,
+        session,
+        undefined,
+        requestId,
+        { savingsAccountId: account._id },
+      );
+      ({ balanceAfter } = await debitLoanSavingsInTxn(
+        session,
+        actor,
+        account._id,
+        amount,
+        loanId,
+        idempotencyKey,
+        requestId,
+      ));
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await LoanModel.findById(loanId);
+  if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  await notifyRepayment(customer, loanId, amount, after);
+  emitAdminEvent('savings.txn', {
+    accountId: account._id.toHexString(),
+    customerId: loan.customerId.toHexString(),
+    type: 'withdrawal',
+    amount,
+    balance: balanceAfter,
+    appliedToLoan: loanId.toHexString(),
+  });
+  return {
+    repayment: { id: repayment._id.toHexString(), amount, source: 'loan-savings' },
+    loan: toPublicLoan(after),
+    replayed: false,
+    loanSavingsWithdrawal: { accountId: account._id.toHexString(), amount, balanceAfter },
+  };
+}
+
+// ---------------------------------------------------------------- collateral
+
+/**
+ * Hands the cash collateral back to the customer. Only once the loan is
+ * repaid: until then it is the branch's security. The day may be named — an
+ * old paper loan's collateral went back long before it was typed in — and the
+ * cash book reads the hand-back on that day.
+ */
+export async function returnCollateral(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  returnedOn?: string,
+  requestId?: string,
+): Promise<PublicLoan> {
+  const at = resolveOfficeDate(actor, returnedOn);
+  const pre = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  if (!pre.collateralAmount) {
+    throw new AppError('NO_COLLATERAL', 'No cash collateral was taken on this loan', 422);
+  }
+  if (pre.collateralReturnedAt) {
+    throw new AppError(
+      'COLLATERAL_RETURNED',
+      `The collateral was already handed back on ${accraDay(pre.collateralReturnedAt)}`,
+      409,
+    );
+  }
+  if (pre.status !== 'repaid') {
+    throw new AppError(
+      'LOAN_NOT_REPAID',
+      'The collateral is handed back once the loan is fully repaid',
+      422,
+    );
+  }
+  if (pre.disbursedAt && accraDay(at) < accraDay(pre.disbursedAt)) {
+    throw new AppError(
+      'DATE_BEFORE_LOAN',
+      `The collateral cannot be handed back before the loan went out (${accraDay(pre.disbursedAt)})`,
+      422,
+    );
+  }
+
+  const loan = await LoanModel.findOneAndUpdate(
+    { _id: loanId, collateralReturnedAt: { $exists: false }, ...NOT_TRASHED },
+    {
+      $set: { collateralReturnedAt: at, collateralReturnedById: new Types.ObjectId(actor.sub) },
+    },
+    { returnDocument: 'after' },
+  );
+  if (!loan) throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+
+  await audit({
+    actorId: actor.sub,
+    action: 'loan.collateral.return',
+    entityType: 'loan',
+    entityId: loanId,
+    amountBefore: pre.collateralAmount,
+    amountAfter: 0,
+    after: { returnedOn: accraDay(at) },
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
+  return toPublicLoan(loan);
+}
+
 // ---------------------------------------------------------------- trash
 
 export interface TrashedLoan extends PublicLoan {
@@ -1416,6 +1673,13 @@ export async function disbursementReceipt(loanId: Types.ObjectId): Promise<Recei
     { label: 'Interest', value: formatGhs(loan.interestAmount) },
     { label: 'Total repayable', value: formatGhs(loan.totalDue), emphasis: true },
     ...(loan.dueDate ? [{ label: 'Due by', value: accraDay(loan.dueDate) }] : []),
+    // Paid and left on top of the loan, so stated apart from it.
+    ...(loan.processingFee
+      ? [{ label: 'Processing fee paid', value: formatGhs(loan.processingFee) }]
+      : []),
+    ...(loan.collateralAmount
+      ? [{ label: 'Cash collateral held', value: formatGhs(loan.collateralAmount) }]
+      : []),
     // On the receipt because it is on the paper: the guarantor's copy of who
     // stood behind this money is the whole point of taking one.
     ...(loan.guarantorSnapshot
@@ -1471,6 +1735,7 @@ export async function repaymentReceipt(
     susu: 'From susu balance',
     'susu-closure': 'Susu account closure',
     transfer: 'Internal transfer',
+    'loan-savings': 'From loan savings',
   };
 
   const lines: ReceiptLine[] = [

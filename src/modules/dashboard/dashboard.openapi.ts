@@ -56,6 +56,7 @@ const dashboardSummary = z
       susuCommission: countAmount,
       savingsFees: countAmount,
       outrightSalesProfit: countAmount,
+      loanProcessingFees: countAmount,
       totalRevenue: z.number().int(),
     }),
     portfolio: z.object({
@@ -68,7 +69,7 @@ const dashboardSummary = z
       savings: z.object({
         activeAccounts: z.number().int(),
         totalBalance: z.number().int(),
-        byType: z.object({ standard: countAmount, student: countAmount }),
+        byType: z.object({ standard: countAmount, student: countAmount, fixed: countAmount }),
       }),
       loans: z.object({
         active: z.number().int(),

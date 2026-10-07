@@ -90,3 +90,41 @@ describe('resolving the day a transaction happened', () => {
     );
   });
 });
+
+describe('the office naming the day (repayments, collateral)', () => {
+  it('is now when no day is named, for anyone', async () => {
+    const { resolveOfficeDate } = await import('./backdating.js');
+    const before = Date.now();
+    const at = resolveOfficeDate(actor('teller'), undefined);
+    expect(at.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it('takes an earlier day from the office, whatever the backdating switch says', async () => {
+    const { resolveOfficeDate } = await import('./backdating.js');
+    config.allow = false;
+    expect(resolveOfficeDate(actor('manager'), daysAgo(5)).toISOString().slice(0, 10)).toBe(
+      daysAgo(5),
+    );
+    config.allow = true;
+  });
+
+  it('refuses a named day from a teller or a collector', async () => {
+    const { resolveOfficeDate } = await import('./backdating.js');
+    for (const role of ['teller', 'collector'] as const) {
+      expect(() => resolveOfficeDate(actor(role), daysAgo(1))).toThrow(
+        expect.objectContaining({ code: 'FORBIDDEN' }),
+      );
+    }
+  });
+
+  it('refuses a day in the future, and one far in the past', async () => {
+    const { resolveOfficeDate } = await import('./backdating.js');
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    expect(() => resolveOfficeDate(officer, tomorrow)).toThrow(
+      expect.objectContaining({ code: 'DATE_IN_FUTURE' }),
+    );
+    expect(() => resolveOfficeDate(officer, daysAgo(800))).toThrow(
+      expect.objectContaining({ code: 'DATE_TOO_OLD' }),
+    );
+  });
+});

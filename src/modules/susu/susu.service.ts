@@ -11,6 +11,7 @@ import { enqueueSms } from '../../lib/sms.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   CustomerModel,
+  CommissionModel,
   SusuAccountModel,
   SusuCycleModel,
   SusuDepositModel,
@@ -18,6 +19,7 @@ import {
   SusuPlanModel,
   UserModel,
   type Customer,
+  type CommissionChannel,
   type SusuAccount,
   type SusuCycle,
   type SusuDeposit,
@@ -32,6 +34,7 @@ import {
   canChangeAmount,
   computeClose,
   computeStopPlan,
+  computeWithdrawAll,
   computeWithdrawal,
   allocateWithdrawal,
   defaultSplit,
@@ -42,6 +45,7 @@ import {
   type PlanSplit,
   type PlanState,
 } from '../../domain/susu-plans.js';
+import { cashChannel, recordSusuCommission } from '../commissions/commissions.ledger.js';
 import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
 import { notifyOffice } from '../../lib/notifications.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
@@ -117,7 +121,9 @@ export function toPublicPlan(p: SusuPlan, money?: PlanMoney): PublicSusuPlan {
     paidInCycle: p.paidInCycle,
     cycleTarget: SUSU_CYCLE_PAYMENTS,
     cycleNumber: p.cyclesCompleted + 1,
-    cyclesCompleted: p.cyclesCompleted,
+    // Cycles that reached the 31st payment; a "withdraw all" ending one early
+    // moves the cycle number on but completes nothing.
+    cyclesCompleted: p.cyclesCompleted - (p.cyclesEndedEarly ?? 0),
     status: p.status,
     locked: mid ? p.dailyAmount : 0,
     amountChangeable: p.status === 'active' && p.paidInCycle === 0,
@@ -290,7 +296,7 @@ export interface PublicCycle {
   dailyAmount: number;
   payments: number;
   commissionAmount: number;
-  endReason: 'completed' | 'plan-stopped' | 'account-closed';
+  endReason: SusuCycle['endReason'];
   endedAt: Date;
 }
 
@@ -456,6 +462,53 @@ async function movePlan(
     { session },
   );
   if (upd.modifiedCount !== 1 && upd.matchedCount !== 1) throw conflict();
+}
+
+interface CycleEnd {
+  account: SusuAccount;
+  plan: SusuPlan;
+  cycleNumber: number;
+  payments: number;
+  commission: number;
+  endReason: SusuCycle['endReason'];
+  at: Date;
+  /** The company cash channel the commission sits in — see cashChannel(). */
+  channel: CommissionChannel;
+  depositId?: Types.ObjectId;
+  payoutId?: Types.ObjectId;
+  actorId?: Types.ObjectId;
+}
+
+/**
+ * Inside a transaction: file an ended cycle and move its commission into
+ * Yadah's commission account. Every way a cycle ends comes through here, so
+ * the ledger holds exactly one entry per cycle that charged one. The caller
+ * takes the commission off the balance.
+ */
+async function endCycle(session: ClientSession, e: CycleEnd): Promise<void> {
+  const [cycle] = await SusuCycleModel.create(
+    [
+      {
+        planId: e.plan._id,
+        accountId: e.account._id,
+        customerId: e.account.customerId,
+        cycleNumber: e.cycleNumber,
+        dailyAmount: e.plan.dailyAmount,
+        payments: e.payments,
+        commissionAmount: e.commission,
+        endReason: e.endReason,
+        endedAt: e.at,
+        ...(e.depositId ? { completedByDepositId: e.depositId } : {}),
+        ...(e.actorId ? { endedById: e.actorId } : {}),
+      },
+    ],
+    { session },
+  );
+  if (!cycle) throw new AppError('INTERNAL_ERROR', 'Cycle was not recorded', 500);
+  await recordSusuCommission(session, cycle, {
+    channel: e.channel,
+    ...(e.payoutId ? { payoutId: e.payoutId } : {}),
+  });
 }
 
 /** Move the balance, guarded on the value it was read at. */
@@ -909,6 +962,8 @@ async function stopPlanWithin(
   plan: SusuPlan,
   endReason: 'plan-stopped' | 'account-closed',
   requestId: string | undefined,
+  /** The closing payout the commission is taken on, when closing. */
+  payoutId?: Types.ObjectId,
 ): Promise<number> {
   const stop = (() => {
     try {
@@ -932,23 +987,19 @@ async function stopPlanWithin(
   );
   if (upd.modifiedCount !== 1) throw conflict();
   if (stop.endedCycle) {
-    await SusuCycleModel.create(
-      [
-        {
-          planId: plan._id,
-          accountId: account._id,
-          customerId: account.customerId,
-          cycleNumber: stop.endedCycle.cycleNumber,
-          dailyAmount: plan.dailyAmount,
-          payments: stop.endedCycle.payments,
-          commissionAmount: stop.commission,
-          endReason,
-          endedAt: now,
-          endedById: new Types.ObjectId(actor.sub),
-        },
-      ],
-      { session },
-    );
+    await endCycle(session, {
+      account,
+      plan,
+      cycleNumber: stop.endedCycle.cycleNumber,
+      payments: stop.endedCycle.payments,
+      commission: stop.commission,
+      endReason,
+      at: now,
+      // Stopped or closed at the office: what is left sits in the drawer.
+      channel: 'cash',
+      actorId: new Types.ObjectId(actor.sub),
+      ...(payoutId ? { payoutId } : {}),
+    });
   }
   await audit(
     {
@@ -1123,29 +1174,27 @@ async function creditPlans(
   allocation: DepositAllocation,
   depositId: Types.ObjectId,
   at: Date,
+  /** The deposit's channel: the commission sits wherever its cash came in. */
+  channel: CommissionChannel,
 ): Promise<SusuDepositLine[]> {
   for (const line of allocation.plans) {
     const plan = plans.find((p) => p._id.toHexString() === line.planId);
     if (!plan) throw conflict();
     await movePlan(session, plan, line.after);
+    // The 31st payment moves the commission to Yadah there and then,
+    // whether or not anything is ever withdrawn.
     for (const done of line.commissions) {
-      await SusuCycleModel.create(
-        [
-          {
-            planId: plan._id,
-            accountId: account._id,
-            customerId: account.customerId,
-            cycleNumber: done.cycleNumber,
-            dailyAmount: plan.dailyAmount,
-            payments: SUSU_CYCLE_PAYMENTS,
-            commissionAmount: done.amount,
-            endReason: 'completed',
-            endedAt: at,
-            completedByDepositId: depositId,
-          },
-        ],
-        { session },
-      );
+      await endCycle(session, {
+        account,
+        plan,
+        cycleNumber: done.cycleNumber,
+        payments: SUSU_CYCLE_PAYMENTS,
+        commission: done.amount,
+        endReason: 'completed',
+        at,
+        channel,
+        depositId,
+      });
     }
   }
   return linesOf(allocation);
@@ -1190,7 +1239,15 @@ export async function depositWithin(
   const resolved = resolveSplit(plans, split);
   const allocation = allocate(amount, plans, resolved);
   const depositId = new Types.ObjectId();
-  const lines = await creditPlans(session, account, plans, allocation, depositId, at);
+  const lines = await creditPlans(
+    session,
+    account,
+    plans,
+    allocation,
+    depositId,
+    at,
+    cashChannel(input.channel),
+  );
 
   const [created] = await SusuDepositModel.create(
     [
@@ -1397,6 +1454,11 @@ export interface WithdrawalResult {
   lines: PublicWithdrawalLine[];
   /** The part that sat on no plan. */
   loose: number;
+  /**
+   * Moved to Yadah's commission account with this withdrawal: on a withdrawal of
+   * everything, or when an ordinary one left only commission behind.
+   */
+  commission: number;
   /** True when this response replays an earlier identical request. */
   replayed: boolean;
 }
@@ -1442,6 +1504,8 @@ export async function withdrawWithin(
   account: SusuAccount;
   payoutId: Types.ObjectId;
   balanceAfter: number;
+  /** Moved to the commission account because only commission was left; usually 0. */
+  commission: number;
   lines: PublicWithdrawalLine[];
   loose: number;
 }> {
@@ -1481,15 +1545,34 @@ export async function withdrawWithin(
     const plan = ordered.find((p) => p._id.toHexString() === line.planId);
     if (plan) await movePlan(session, plan, line.after);
   }
+
+  // Only commission left behind: it is Yadah's, so it moves to the commission
+  // account now and those cycles end (client decision, 7 Oct 2026). A balance
+  // that still holds some of the customer's money is left as it is.
+  const payoutId = new Types.ObjectId();
+  let commission = 0;
+  const after = await loadPlans(accountId, session);
+  const due = lockedAmount(planStates(after));
+  if (computation.balanceAfter > 0 && computation.balanceAfter === due) {
+    const moved = await SusuAccountModel.findById(accountId).session(session);
+    if (!moved) throw conflict();
+    commission = await endCyclesInProgress(session, actor, moved, after, payoutId);
+    if (commission !== due) {
+      throw new AppError('INTERNAL_ERROR', 'Commission swept did not reconcile', 500);
+    }
+    await moveBalance(session, moved, -commission);
+  }
+
   const lines: SusuPayoutLine[] = allocation.lines.map((l) => ({
     planId: new Types.ObjectId(l.planId),
     dailyAmount: l.dailyAmount,
     amount: l.amount,
     paymentsRemoved: l.payments,
   }));
-  const [payout] = await SusuPayoutModel.create(
+  await SusuPayoutModel.create(
     [
       {
+        _id: payoutId,
         accountId: account._id,
         customerId: account.customerId,
         amount,
@@ -1497,8 +1580,8 @@ export async function withdrawWithin(
         ...(lines.length > 0 ? { lines } : {}),
         destination: out.destination,
         ...(out.destinationId ? { destinationId: out.destinationId } : {}),
-        // Never charged here: commission is taken as cycles complete.
-        commissionAmount: 0,
+        // Only when the withdrawal left nothing but commission behind.
+        commissionAmount: commission,
         recordedById: new Types.ObjectId(actor.sub),
         idempotencyKey: out.idempotencyKey,
       },
@@ -1512,10 +1595,11 @@ export async function withdrawWithin(
       entityType: 'susu-account',
       entityId: account._id,
       amountBefore: account.balance,
-      amountAfter: computation.balanceAfter,
+      amountAfter: computation.balanceAfter - commission,
       after: {
         amount,
         locked: computation.locked,
+        commissionSwept: commission,
         destination: out.destination,
         lines: allocation.lines.map((l) => ({
           planId: l.planId,
@@ -1532,8 +1616,9 @@ export async function withdrawWithin(
   );
   return {
     account,
-    payoutId: (payout as { _id: Types.ObjectId })._id,
-    balanceAfter: computation.balanceAfter,
+    payoutId,
+    balanceAfter: computation.balanceAfter - commission,
+    commission,
     lines: lines.map(toPublicWithdrawalLine),
     loose: allocation.loose,
   };
@@ -1556,6 +1641,7 @@ export async function withdraw(
       payoutId: existing._id.toHexString(),
       lines,
       loose: existing.amount - lines.reduce((sum, l) => sum + l.amount, 0),
+      commission: existing.commissionAmount ?? 0,
       replayed: true,
     };
   }
@@ -1571,8 +1657,8 @@ export async function withdraw(
     throw new AppError(
       'EXCEEDS_AVAILABLE',
       available === 0
-        ? `Nothing is withdrawable — ${formatGhs(locked)} stays locked for the cycles in progress`
-        : `Only ${formatGhs(available)} is withdrawable; ${formatGhs(locked)} stays locked for the cycles in progress`,
+        ? `The balance is all commission due on the cycles in progress (${formatGhs(locked)}) — nothing can be withdrawn`
+        : `Only ${formatGhs(available)} can be withdrawn and leave ${formatGhs(locked)} for the commission — or withdraw everything, which takes the commission now`,
       422,
       { available, balance: pre.balance, locked },
     );
@@ -1582,6 +1668,7 @@ export async function withdraw(
   let payoutId!: Types.ObjectId;
   let lines: PublicWithdrawalLine[] = [];
   let loose = 0;
+  let commission = 0;
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -1594,6 +1681,7 @@ export async function withdraw(
       payoutId = r.payoutId;
       lines = r.lines;
       loose = r.loose;
+      commission = r.commission;
     });
   } finally {
     await session.endSession();
@@ -1604,7 +1692,8 @@ export async function withdraw(
     to: customer.phone,
     template: 'susu-withdrawal',
     message:
-      `Yadah: ${formatGhs(amount)} withdrawn from susu acct ${account.accountNumber}. ` +
+      `Yadah: ${formatGhs(amount)} withdrawn from susu acct ${account.accountNumber}` +
+      (commission > 0 ? ` (commission ${formatGhs(commission)}). ` : '. ') +
       `Balance: ${formatGhs(account.balance)}.`,
     relatedEntityType: 'susu-account',
     relatedEntityId: accountId,
@@ -1622,7 +1711,227 @@ export async function withdraw(
     body: `${formatGhs(amount)} withdrawn from ${customer.fullName} (acct ${account.accountNumber}).`,
     data: { entity: 'susu-account', accountId: accountId.toHexString(), amount },
   });
-  return { account, amount, payoutId: payoutId.toHexString(), lines, loose, replayed: false };
+  return {
+    account,
+    amount,
+    payoutId: payoutId.toHexString(),
+    lines,
+    loose,
+    commission,
+    replayed: false,
+  };
+}
+
+export type WithdrawAllResult = WithdrawalResult;
+
+/**
+ * Inside a transaction: end every cycle in progress and move its one payment
+ * to Yadah's commission account, linked to the payout it was taken on. The
+ * plans run on — the next deposit opens each one's next cycle. Returns the
+ * commission taken; the caller takes it off the balance.
+ *
+ * Used when the customer takes everything, and after any withdrawal that
+ * leaves only commission behind (client decisions, 7 Oct 2026).
+ */
+async function endCyclesInProgress(
+  session: ClientSession,
+  actor: AccessTokenPayload,
+  account: SusuAccount,
+  plans: readonly SusuPlan[],
+  payoutId: Types.ObjectId,
+): Promise<number> {
+  const now = new Date();
+  const actorId = new Types.ObjectId(actor.sub);
+  let commission = 0;
+  for (const plan of plans) {
+    if (!isMidCycle(stateOf(plan))) continue;
+    const upd = await SusuPlanModel.updateOne(
+      {
+        _id: plan._id,
+        status: 'active',
+        paidInCycle: plan.paidInCycle,
+        cyclesCompleted: plan.cyclesCompleted,
+      },
+      { $set: { paidInCycle: 0 }, $inc: { cyclesCompleted: 1, cyclesEndedEarly: 1 } },
+      { session },
+    );
+    if (upd.modifiedCount !== 1) throw conflict();
+    await endCycle(session, {
+      account,
+      plan,
+      cycleNumber: plan.cyclesCompleted + 1,
+      payments: plan.paidInCycle,
+      commission: plan.dailyAmount,
+      endReason: 'withdraw-all',
+      at: now,
+      channel: 'cash',
+      payoutId,
+      actorId,
+    });
+    commission += plan.dailyAmount;
+  }
+  return commission;
+}
+
+/**
+ * The customer takes everything (client decision, 7 Oct 2026). Every cycle in
+ * progress ends here and its one payment moves to Yadah's commission account;
+ * the rest is paid out in cash. The account stays open at zero and its plans
+ * run on — the next deposit opens each one's next cycle.
+ */
+export async function withdrawAll(
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<WithdrawAllResult> {
+  const existing = await SusuPayoutModel.findOne({ idempotencyKey });
+  if (existing) {
+    const lines = (existing.lines ?? []).map(toPublicWithdrawalLine);
+    return {
+      account: await publicAccount(existing.accountId),
+      amount: existing.amount,
+      commission: existing.commissionAmount ?? 0,
+      payoutId: existing._id.toHexString(),
+      lines,
+      loose: existing.amount - lines.reduce((sum, l) => sum + l.amount, 0),
+      replayed: true,
+    };
+  }
+
+  const pre = await liveAccount(actor, accountId);
+  if (pre.status !== 'active') {
+    throw new AppError('ACCOUNT_CLOSED', 'Withdrawals need an open account', 422);
+  }
+  const customer = await loadCustomer(pre.customerId);
+
+  let result!: Omit<WithdrawAllResult, 'account' | 'replayed'>;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const account = await SusuAccountModel.findOne({
+        _id: accountId,
+        status: 'active',
+        ...NOT_TRASHED,
+      }).session(session);
+      if (!account) throw new AppError('ACCOUNT_CLOSED', 'Withdrawals need an open account', 422);
+      const plans = await loadPlans(accountId, session);
+      const all = (() => {
+        try {
+          return computeWithdrawAll(account.balance, planStates(plans));
+        } catch (err) {
+          return asApiError(err, 'NOTHING_TO_WITHDRAW', { balance: account.balance });
+        }
+      })();
+
+      const actorId = new Types.ObjectId(actor.sub);
+      const payoutId = new Types.ObjectId();
+      await endCyclesInProgress(session, actor, account, plans, payoutId);
+      await moveBalance(session, account, -account.balance);
+
+      // With the cycles ended, each plan holds its cycles net of commission;
+      // the cash walks them like any withdrawal, taking no days. When only
+      // commission was left there is no cash to walk.
+      const ended = await loadPlans(accountId, session);
+      const money = await planMoney(accountId, ended, session);
+      const ordered = orderPlans(ended);
+      const allocation =
+        all.payout > 0
+          ? allocateWithdrawal(
+              ordered.map((p) => ({
+                ...stateOf(p),
+                balance: money.get(p._id.toHexString())?.balance ?? 0,
+              })),
+              all.payout,
+              false,
+            )
+          : { lines: [], loose: 0 };
+      const lines: SusuPayoutLine[] = allocation.lines.map((l) => ({
+        planId: new Types.ObjectId(l.planId),
+        dailyAmount: l.dailyAmount,
+        amount: l.amount,
+        paymentsRemoved: 0,
+      }));
+      await SusuPayoutModel.create(
+        [
+          {
+            _id: payoutId,
+            accountId: account._id,
+            customerId: account.customerId,
+            amount: all.payout,
+            kind: 'withdrawal',
+            ...(lines.length > 0 ? { lines } : {}),
+            destination: 'cash',
+            commissionAmount: all.commission,
+            recordedById: actorId,
+            idempotencyKey,
+          },
+        ],
+        { session },
+      );
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'susu.withdrawal.all',
+          entityType: 'susu-account',
+          entityId: account._id,
+          amountBefore: account.balance,
+          amountAfter: 0,
+          after: {
+            payout: all.payout,
+            commission: all.commission,
+            cyclesEnded: all.ends.map((e) => ({
+              planId: e.planId,
+              cycle: e.cycleNumber,
+              payments: e.payments,
+              commission: e.commission,
+            })),
+            loose: allocation.loose,
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+      result = {
+        amount: all.payout,
+        commission: all.commission,
+        payoutId: payoutId.toHexString(),
+        lines: lines.map(toPublicWithdrawalLine),
+        loose: allocation.loose,
+      };
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const account = await publicAccount(accountId);
+  await enqueueSms({
+    to: customer.phone,
+    template: 'susu-withdrawal',
+    message:
+      `Yadah: ${formatGhs(result.amount)} withdrawn from susu acct ${account.accountNumber}` +
+      (result.commission > 0 ? ` (commission ${formatGhs(result.commission)}). ` : '. ') +
+      `Balance: ${formatGhs(account.balance)}.`,
+    relatedEntityType: 'susu-account',
+    relatedEntityId: accountId,
+  });
+  emitAdminEvent('susu.withdrawal', {
+    id: accountId.toHexString(),
+    customerId: pre.customerId.toHexString(),
+    customerName: customer.fullName,
+    amount: result.amount,
+    commission: result.commission,
+    balance: account.balance,
+  });
+  notifyOffice({
+    type: 'susu.withdrawal',
+    title: 'Susu withdrawal',
+    body:
+      `${formatGhs(result.amount)} withdrawn from ${customer.fullName} (acct ${account.accountNumber})` +
+      (result.commission > 0 ? `; commission ${formatGhs(result.commission)} to Yadah.` : '.'),
+    data: { entity: 'susu-account', accountId: accountId.toHexString(), amount: result.amount },
+  });
+  return { ...result, account, replayed: false };
 }
 
 // ---------------------------------------------------------------- closure
@@ -1664,10 +1973,19 @@ export async function closeAccount(
       const plans = await loadPlans(accountId, session);
       const close = computeClose(account.balance, planStates(plans));
 
+      const payoutId = new Types.ObjectId();
       let charged = 0;
       for (const plan of plans) {
         if (plan.status !== 'active') continue;
-        charged += await stopPlanWithin(session, actor, account, plan, 'account-closed', requestId);
+        charged += await stopPlanWithin(
+          session,
+          actor,
+          account,
+          plan,
+          'account-closed',
+          requestId,
+          payoutId,
+        );
       }
       if (charged !== close.commission) {
         throw new AppError('INTERNAL_ERROR', 'Closure commission did not reconcile', 500);
@@ -1695,6 +2013,7 @@ export async function closeAccount(
       const [payout] = await SusuPayoutModel.create(
         [
           {
+            _id: payoutId,
             accountId: account._id,
             customerId: account.customerId,
             amount: close.payout,
@@ -2062,6 +2381,15 @@ async function uncreditPlans(
       // deposit's payments are gone and cannot be taken back a second time.
       const expectPaid = complete ? 0 : line.seqEnd;
       const expectCompleted = complete ? line.cycleNumber : line.cycleNumber - 1;
+      // Past it means a "withdraw all" has since ended this cycle and given
+      // its commission to Yadah — the deposit is part of a closed cycle.
+      if (completed > expectCompleted && !complete) {
+        throw new AppError(
+          'CANNOT_TRASH',
+          'The cycle this deposit paid into has since ended with a withdrawal of everything — it cannot be taken back',
+          422,
+        );
+      }
       if (completed < expectCompleted || (completed === expectCompleted && paid < expectPaid)) {
         throw new AppError(
           'CANNOT_TRASH',
@@ -2072,7 +2400,8 @@ async function uncreditPlans(
       }
       if (paid !== expectPaid || completed !== expectCompleted) throw conflict();
       if (complete) {
-        const del = await SusuCycleModel.deleteOne(
+        // The cycle goes, and its commission comes back out of Yadah's account.
+        const cycle = await SusuCycleModel.findOneAndDelete(
           {
             planId: plan._id,
             cycleNumber: line.cycleNumber,
@@ -2081,7 +2410,8 @@ async function uncreditPlans(
           },
           { session },
         );
-        if (del.deletedCount !== 1) throw conflict();
+        if (!cycle) throw conflict();
+        await CommissionModel.deleteOne({ cycleId: cycle._id }, { session });
       }
       paid = line.seqStart - 1;
       completed = line.cycleNumber - 1;
@@ -2255,7 +2585,15 @@ export async function restoreDeposit(
           422,
         );
       }
-      await creditPlans(session, account, plans, allocation, depositId, deposit.createdAt);
+      await creditPlans(
+        session,
+        account,
+        plans,
+        allocation,
+        depositId,
+        deposit.createdAt,
+        cashChannel(deposit.channel),
+      );
       await moveBalance(session, account, allocation.balanceDelta);
 
       const depositUpd = await SusuDepositModel.updateOne(
@@ -2427,6 +2765,7 @@ async function applyCorrection(
     allocation,
     depositId,
     deposit.createdAt,
+    cashChannel(deposit.channel),
   );
 
   const before = deposit.amount - deposit.commissionAmount;
@@ -2599,7 +2938,7 @@ export async function susuBalanceAsOf(accountId: Types.ObjectId, at: Date): Prom
       {
         $match: {
           accountId,
-          endReason: { $in: ['plan-stopped', 'account-closed'] },
+          endReason: { $in: ['plan-stopped', 'account-closed', 'withdraw-all'] },
           endedAt: { $lte: at },
         },
       },
@@ -2699,7 +3038,13 @@ export async function withdrawalReceipt(
         value: formatGhs(await susuBalanceAsOf(accountId, payout.createdAt)),
         emphasis: true,
       },
-      { label: 'Commission taken', value: 'None — taken as each cycle completes' },
+      {
+        label: 'Commission taken',
+        value:
+          (payout.commissionAmount ?? 0) > 0
+            ? `${formatGhs(payout.commissionAmount ?? 0)} — everything withdrawn, cycles in progress ended`
+            : 'None — taken as each cycle completes',
+      },
       { label: 'Destination', value: payout.destination },
       { label: 'Account status', value: 'Still open' },
     );

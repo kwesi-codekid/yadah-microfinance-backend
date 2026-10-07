@@ -11,7 +11,8 @@ import { trashFields, type TrashFields } from './shared.js';
 
 export const GENDERS = ['male', 'female'] as const;
 export const MARITAL_STATUSES = ['single', 'married', 'other'] as const;
-export const ID_TYPES = ['ghana-card', 'passport', 'drivers-license', 'voter-id'] as const;
+/** NHIS is for children above all, who hold no other document (client decision, 5 Oct 2026). */
+export const ID_TYPES = ['ghana-card', 'passport', 'drivers-license', 'voter-id', 'nhis'] as const;
 
 export interface CustomerIdentification {
   idType: (typeof ID_TYPES)[number];
@@ -37,6 +38,16 @@ export interface Customer extends TrashFields {
   residentialAddress?: string;
   phone: string;
   altPhone?: string;
+  /**
+   * Under 18 when the record was last registered or edited, worked out from
+   * `dateOfBirth` (see lib/age.ts) — never typed in. It exists for the phone
+   * index below: children may share a parent's number, adults may not, and a
+   * unique index can only tell the two apart by a stored field. It goes stale
+   * on an 18th birthday until the next edit, which then asks for the person's
+   * own number. Anything that turns on age right now — credit above all —
+   * reads the date of birth, not this.
+   */
+  isMinor: boolean;
   // Identification (Ghana Card required at loan application, service-level)
   identification?: CustomerIdentification;
   // Occupation
@@ -104,8 +115,9 @@ const customerSchema = new Schema<Customer>(
     maritalStatus: { type: String, enum: MARITAL_STATUSES },
 
     residentialAddress: { type: String, trim: true },
-    phone: { type: String, required: true, unique: true },
+    phone: { type: String, required: true },
     altPhone: { type: String },
+    isMinor: { type: Boolean, default: false },
 
     identification: { type: identificationSchema },
 
@@ -139,6 +151,15 @@ customerSchema.index({ assignedCollectorId: 1, status: 1 });
 // number. It cannot be enforced on the accounts any more, because there the
 // duplicates are the point.
 customerSchema.index({ susuNumber: 1 }, { unique: true, sparse: true });
+// No two ADULTS share a phone number. Children may use a parent's, or share
+// one with a sibling (client decision, 5 Oct 2026). Trashed adults keep theirs
+// reserved, as they always have.
+customerSchema.index(
+  { phone: 1 },
+  { unique: true, partialFilterExpression: { isMinor: false }, name: 'phone_adult_unique' },
+);
+// The lookups that are not adult-only — a parent's number to every child on it.
+customerSchema.index({ phone: 1, isMinor: 1 });
 // No two customers may share the same ID document (when one is recorded).
 customerSchema.index(
   { 'identification.idType': 1, 'identification.idNumber': 1 },

@@ -201,17 +201,18 @@ describe('loan repayment from the susu balance (WBS 7.2)', () => {
     expect(result.susuWithdrawal).toEqual({
       accountId: accountId.toHexString(),
       amount: 48_000,
-      balanceAfter: 2_000,
+      // Only the commission was left, so it went to Yadah (7 Oct 2026).
+      balanceAfter: 0,
     });
     expect(result.loan.totalRepaid).toBe(48_000);
     expect(result.repayment.source).toBe('susu');
 
-    // The account stays open, its cycle untouched, one payment still locked.
+    // The account stays open; what was left was only commission, so it moved
+    // to Yadah and the cycle ended (client decision, 7 Oct 2026).
     const after = await susu.getAccount(officer, accountId);
     expect(after.status).toBe('active');
-    expect(after.plans[0]?.paidInCycle).toBe(25);
-    expect(after.balance).toBe(2_000);
-    expect(after.availableToWithdraw).toBe(0);
+    expect(after.plans[0]).toMatchObject({ paidInCycle: 0, cycleNumber: 2 });
+    expect(after.balance).toBe(0);
   });
 
   it('never takes the locked payment, and never more than the loan owes', async () => {

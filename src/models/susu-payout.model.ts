@@ -41,9 +41,9 @@ export interface SusuPayout {
   /** The credited record on the other side, when internal. */
   destinationId?: Types.ObjectId;
   /**
-   * Commission charged as the account closed — one payment's amount for every
-   * plan whose cycle was still in progress — in pesewas. Zero on a
-   * withdrawal: commission is taken as cycles complete, never on money out.
+   * Commission taken with this money out — one payment's amount for every
+   * plan whose cycle was still in progress — in pesewas. Set on the closing
+   * payout and on a "withdraw all"; zero on an ordinary withdrawal.
    */
   commissionAmount?: number;
   recordedById: Types.ObjectId;

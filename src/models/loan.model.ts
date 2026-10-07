@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField, trashFields, type TrashFields } from './shared.js';
+import { moneyField, optionalMoneyField, trashFields, type TrashFields } from './shared.js';
 
 /**
  * Tiers: small 1,000–20,000 · big 20,001–50,000 (GHS, stored as pesewas).
@@ -83,6 +83,27 @@ export interface Loan extends TrashFields {
    * night it is entered — see `paperEscalationStart`.
    */
   escalationFrom?: Date;
+  /**
+   * The processing fee, in pesewas: a fixed sum agreed per loan and paid by the
+   * customer on top, not taken out of the principal (client decision, 6 Oct
+   * 2026). Income on the day the money goes out. Never part of `totalDue`.
+   */
+  processingFee?: number;
+  /**
+   * Cash the customer leaves with the branch as security, in pesewas. The
+   * customer's money, not the branch's: held — a liability — from the day the
+   * loan goes out until it is handed back (`collateralReturnedAt`).
+   */
+  collateralAmount?: number;
+  /** When the cash collateral was handed back to the customer. */
+  collateralReturnedAt?: Date;
+  collateralReturnedById?: Types.ObjectId;
+  /**
+   * The last month (`YYYY-MM`) the month-end loan savings deduction has dealt
+   * with this loan, whether or not anything could be taken. Keeps it to once
+   * a month however often the worker runs. See lib/loan-savings.ts.
+   */
+  loanSavingsMonth?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -145,6 +166,11 @@ const loanSchema = new Schema<Loan>(
     paperRef: { type: String, trim: true },
     paperPhotoUrl: { type: String },
     escalationFrom: { type: Date },
+    processingFee: optionalMoneyField,
+    collateralAmount: optionalMoneyField,
+    collateralReturnedAt: { type: Date },
+    collateralReturnedById: { type: Schema.Types.ObjectId, ref: 'User' },
+    loanSavingsMonth: { type: String, match: /^\d{4}-\d{2}$/ },
     ...trashFields,
   },
   { timestamps: true },

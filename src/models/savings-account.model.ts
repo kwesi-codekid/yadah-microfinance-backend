@@ -7,7 +7,13 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
  * withdrawable only on closure. availableToWithdraw = balance − 5000 − 1000
  * is computed in the service layer, never stored.
  */
-export const SAVINGS_ACCOUNT_TYPES = ['standard', 'student'] as const;
+/**
+ * `loan` is the loan savings account (client decision, 6 Oct 2026): one per
+ * customer, paid into like any savings account, but money leaves it only to
+ * repay the customer's loan — by hand, or by the month-end deduction. No
+ * withdrawal, no fee, no minimum balance.
+ */
+export const SAVINGS_ACCOUNT_TYPES = ['standard', 'student', 'fixed', 'loan'] as const;
 export type SavingsAccountType = (typeof SAVINGS_ACCOUNT_TYPES)[number];
 
 export interface SavingsAccount extends TrashFields {
@@ -22,6 +28,19 @@ export interface SavingsAccount extends TrashFields {
    * identification fields. A customer may hold both types at once.
    */
   accountType: SavingsAccountType;
+  /**
+   * Fixed deposits only (client decision, 6 Oct 2026). The Accra day,
+   * `YYYY-MM-DD`, from which withdrawals are free — at least six months after
+   * opening (see domain/savings.ts). Absent on every other type.
+   */
+  maturesOn?: string;
+  /** Fixed deposits only: the term chosen at opening, in months (6 or more). */
+  termMonths?: number;
+  /**
+   * Fixed deposits only. The holder is a child; this is the adult customer —
+   * the parent — who opened it for them and the only one paid out of it.
+   */
+  guardianId?: Types.ObjectId;
   balance: number; // pesewas
   status: 'active' | 'closed';
   openedById: Types.ObjectId;
@@ -41,6 +60,9 @@ const savingsAccountSchema = new Schema<SavingsAccount>(
     },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     accountType: { type: String, enum: SAVINGS_ACCOUNT_TYPES, default: 'standard' },
+    maturesOn: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+    termMonths: { type: Number, min: 1 },
+    guardianId: { type: Schema.Types.ObjectId, ref: 'Customer' },
     balance: { ...moneyField, default: 0 },
     status: { type: String, enum: ['active', 'closed'], default: 'active' },
     openedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -52,6 +74,8 @@ const savingsAccountSchema = new Schema<SavingsAccount>(
 );
 
 savingsAccountSchema.index({ customerId: 1, status: 1 });
+// A parent's page lists the fixed deposits they stand guardian to.
+savingsAccountSchema.index({ guardianId: 1 }, { sparse: true });
 
 export const SavingsAccountModel = model<SavingsAccount>(
   'SavingsAccount',

@@ -70,21 +70,23 @@ describe('susu commission on the ledger', () => {
     expect(feed.totals.feesCollected).toBe(DAILY);
   });
 
-  it('a withdrawal never charges; a plan stopped mid-cycle charges with no cash moving', async () => {
+  it('a withdrawal that leaves the customer money charges nothing; a plan stopped mid-cycle charges with no cash moving', async () => {
     const customerId = await makeCustomer();
     const { account } = await susu.openAccount(officer, customerId, DAILY);
     const id = new Types.ObjectId(account.id);
     await susu.recordDeposit(officer, id, DAILY * 5, randomUUID(), 'cash', undefined, undefined, [
       { planId: account.plans[0]!.id, payments: 5 },
     ]);
-    await susu.withdraw(officer, id, DAILY * 4, randomUUID());
+    // Leaves one payment of the customer's besides the commission due, so the
+    // withdrawal takes no commission (one leaving only commission would).
+    await susu.withdraw(officer, id, DAILY * 3, randomUUID());
     await susu.stopPlan(officer, id, new Types.ObjectId(account.plans[0]!.id));
 
     const feed = await feedFor(customerId);
     expect(feed.items.find((t) => t.type === 'susu-withdrawal')?.fee).toBe(0);
     const stop = feed.items.find((t) => t.type === 'susu-commission');
     expect(stop).toMatchObject({ amount: 0, fee: DAILY, direction: 'internal' });
-    expect(feed.totals.out.amount).toBe(DAILY * 4);
+    expect(feed.totals.out.amount).toBe(DAILY * 3);
     expect(feed.totals.feesCollected).toBe(DAILY);
   });
 });

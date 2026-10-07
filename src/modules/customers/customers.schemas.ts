@@ -15,7 +15,7 @@ import {
 } from '../../schemas/common.js';
 
 const idNumberRules: Record<
-  'ghana-card' | 'passport' | 'drivers-license' | 'voter-id',
+  'ghana-card' | 'passport' | 'drivers-license' | 'voter-id' | 'nhis',
   { schema: z.ZodType<string>; message: string }
 > = {
   'ghana-card': {
@@ -28,11 +28,17 @@ const idNumberRules: Record<
     message: "Driver's licence numbers are 10-20 letters and digits",
   },
   'voter-id': { schema: voterIdNumber, message: 'Voter ID numbers are exactly 8 digits' },
+  // The older cards carry an 8-digit membership number; newer ones are tied to
+  // the Ghana Card, so either is taken.
+  nhis: {
+    schema: z.union([z.string().regex(/^\d{8}$/), ghanaCardNumber]),
+    message: 'NHIS numbers are 8 digits, or a Ghana Card number like GHA-123456789-0',
+  },
 };
 
 export const identification = z
   .object({
-    idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id']),
+    idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id', 'nhis']),
     idNumber: z.string().min(3).max(30).trim(),
   })
   .check((ctx) => {
@@ -201,6 +207,8 @@ export type UpdateCustomerBody = z.infer<typeof updateCustomerBody>;
 export const listCustomersQuery = pagination
   .extend({
     status: z.enum(['active', 'inactive']).optional(),
+    /** By age today, from the date of birth. No date of birth counts as adult. */
+    age: z.enum(['adult', 'child']).optional(),
     search: z.string().min(1).max(100).optional(),
     /** Office filter: one collector's round. Ignored for collectors — they
      *  are always pinned to their own list. */

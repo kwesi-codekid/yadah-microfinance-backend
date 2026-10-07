@@ -115,3 +115,34 @@ export function assertPaperEntryOpen(actor: AccessTokenPayload): void {
 export function paperDay(day: string, now: Date = new Date()): Date {
   return dayAt(day, now);
 }
+
+/**
+ * The day an office decision says money moved, for the everyday flows that
+ * let the office name it: a loan repayment typed in after the customer paid,
+ * or cash collateral handed back (client decision, 6 Oct 2026).
+ *
+ * Not behind `ALLOW_BACKDATED_ENTRY`, because this is not the data-population
+ * stopgap above — it stays. What keeps it honest is who may use it: the office
+ * alone. A teller or collector records what happens in front of them, today,
+ * and the reconciliation of their cash depends on that. Omitted, it is now.
+ */
+export function resolveOfficeDate(actor: AccessTokenPayload, day: string | undefined): Date {
+  const now = new Date();
+  if (day === undefined) return now;
+  if (actor.role !== 'admin' && actor.role !== 'manager') {
+    throw new AppError(
+      'FORBIDDEN',
+      'Only the office can record this on an earlier day — leave the date empty for today',
+      403,
+    );
+  }
+  const at = dayAt(day, now);
+  if (now.getTime() - at.getTime() > MAX_BACKDATE_DAYS * DAY_MS) {
+    throw new AppError(
+      'DATE_TOO_OLD',
+      `This cannot be dated more than ${String(MAX_BACKDATE_DAYS)} days back — check the year`,
+      422,
+    );
+  }
+  return at;
+}

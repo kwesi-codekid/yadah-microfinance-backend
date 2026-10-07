@@ -20,7 +20,11 @@ export interface SusuCycle {
   payments: number;
   /** One payment's amount — the commission this cycle earned. */
   commissionAmount: number;
-  endReason: 'completed' | 'plan-stopped' | 'account-closed';
+  /**
+   * 'withdraw-all': the customer took everything out mid-cycle, so the cycle
+   * ended there and gave its one payment; the plan runs on into the next.
+   */
+  endReason: 'completed' | 'plan-stopped' | 'account-closed' | 'withdraw-all';
   endedAt: Date;
   /** The deposit whose 31st payment completed it; absent on a stop. */
   completedByDepositId?: Types.ObjectId;
@@ -41,7 +45,7 @@ const susuCycleSchema = new Schema<SusuCycle>(
     commissionAmount: moneyField,
     endReason: {
       type: String,
-      enum: ['completed', 'plan-stopped', 'account-closed'],
+      enum: ['completed', 'plan-stopped', 'account-closed', 'withdraw-all'],
       required: true,
     },
     endedAt: { type: Date, required: true },

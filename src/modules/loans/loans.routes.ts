@@ -19,9 +19,13 @@ import {
   putConfigBody,
   rejectBody,
   repayBody,
+  loanSavingsRepayBody,
+  returnCollateralBody,
   susuRepayBody,
   trashBody,
   type ApplyBody,
+  type LoanSavingsRepayBody,
+  type ReturnCollateralBody,
   type CustomerIdParams,
   type ListLoansQuery,
   type LoanIdParams,
@@ -101,6 +105,7 @@ loansRouter.post('/applications', validate({ body: applyBody }), (req, res, next
       guarantor,
       body.signatureUrl,
       req.id as string,
+      { processingFee: body.processingFee, collateralAmount: body.collateralAmount },
     )
     .then((loan) => res.status(201).json({ loan }))
     .catch(next);
@@ -268,8 +273,48 @@ loansRouter.post(
         body.idempotencyKey,
         body.channel,
         req.id as string,
+        body.paidOn,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Pay from the customer's loan savings account — the only road out of it.
+// Counter work, like paying from susu: the money stays inside the branch.
+loansRouter.post(
+  '/:id/repayments/loan-savings',
+  validate({ params: loanIdParams, body: loanSavingsRepayBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: LoanIdParams; body: LoanSavingsRepayBody }>(
+      req,
+    );
+    loansService
+      .repayFromLoanSavings(
+        getAuth(req),
+        params.id,
+        body.amount,
+        body.idempotencyKey,
+        req.id as string,
+      )
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Hand the cash collateral back once the loan is repaid. Office only: cash
+// leaves the branch on a decision.
+loansRouter.post(
+  '/:id/collateral/return',
+  requireOffice,
+  validate({ params: loanIdParams, body: returnCollateralBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: LoanIdParams; body: ReturnCollateralBody }>(
+      req,
+    );
+    loansService
+      .returnCollateral(getAuth(req), params.id, body.returnedOn, req.id as string)
+      .then((loan) => res.json({ loan }))
       .catch(next);
   },
 );

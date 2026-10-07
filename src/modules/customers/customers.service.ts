@@ -1,6 +1,7 @@
 import { MongoServerError } from 'mongodb';
 import mongoose, { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
+import { ADULT_PHONE_TAKEN_MESSAGE, adultBornBy, isMinor } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -61,6 +62,8 @@ export interface PublicCustomer {
   residentialAddress?: string;
   phone: string;
   altPhone?: string;
+  /** Under 18 today, by the date of birth — not the stored flag, which can lag a birthday. */
+  isMinor: boolean;
   identification?: CustomerIdentification;
   occupation?: string;
   nextOfKin?: NextOfKin;
@@ -78,6 +81,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     id: c._id.toHexString(),
     fullName: c.fullName,
     phone: c.phone,
+    isMinor: isMinor(c.dateOfBirth),
     registeredById: c.registeredById.toHexString(),
     status: c.status,
     createdAt: c.createdAt,
@@ -103,6 +107,7 @@ export function toCustomerExportRow(item: PublicCustomer): Record<string, unknow
     altPhone: item.altPhone ?? null,
     gender: item.gender ?? null,
     dateOfBirth: item.dateOfBirth ?? null,
+    ageGroup: item.isMinor ? 'child' : 'adult',
     nationality: item.nationality ?? null,
     residentialAddress: item.residentialAddress ?? null,
     occupation: item.occupation ?? null,
@@ -120,7 +125,12 @@ function throwIfDuplicate(err: unknown): never {
   if (err instanceof MongoServerError && err.code === 11000) {
     const keys = Object.keys((err.keyPattern as Record<string, unknown> | undefined) ?? {});
     if (keys.includes('phone')) {
-      throw new AppError('PHONE_TAKEN', 'A customer with this phone number already exists', 409);
+      // Only adults are held to one number each; a child may share a parent's.
+      throw new AppError(
+        'PHONE_TAKEN',
+        'An adult customer with this phone number already exists',
+        409,
+      );
     }
     if (keys.some((k) => k.startsWith('identification.'))) {
       throw new AppError('ID_TAKEN', 'A customer with this ID document already exists', 409);
@@ -207,6 +217,8 @@ export async function createCustomer(
     // null means "cleared" on an edit form; on a new record it is just absent.
     if (body[key] !== undefined && body[key] !== null) doc[key] = body[key];
   }
+  // Decides whether the phone has to be theirs alone (see the model's index).
+  doc.isMinor = isMinor(body.dateOfBirth);
 
   const customer = await CustomerModel.create(doc).catch(throwIfDuplicate);
 
@@ -249,6 +261,11 @@ export async function listCustomers(
     if (query.unassigned === true) filter.assignedCollectorId = null;
   }
   if (query.status) filter.status = query.status;
+  // By age today, from the date of birth; no date of birth is an adult.
+  if (query.age === 'child') filter.dateOfBirth = { $gt: adultBornBy() };
+  if (query.age === 'adult') {
+    filter.$and = [{ $or: [{ dateOfBirth: null }, { dateOfBirth: { $lte: adultBornBy() } }] }];
+  }
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
 
@@ -370,6 +387,27 @@ export async function updateCustomer(
     before[key] = current ?? null;
     after[key] = next;
     customer.set(key, next);
+  }
+
+  // Worked out again on every edit: a new date of birth, or an 18th birthday
+  // since the last save, can turn a child into an adult — who then needs a
+  // number of their own. Asked up front so the teller is told why; the index
+  // still has the last word if two edits race.
+  const minor = isMinor(customer.dateOfBirth);
+  if (customer.isMinor && !minor) {
+    const shared = await CustomerModel.exists({
+      _id: { $ne: customer._id },
+      phone: customer.phone,
+      isMinor: false,
+    });
+    if (shared) {
+      throw new AppError('PHONE_TAKEN', ADULT_PHONE_TAKEN_MESSAGE, 409, { field: 'phone' });
+    }
+  }
+  if (customer.isMinor !== minor) {
+    before.isMinor = customer.isMinor;
+    after.isMinor = minor;
+    customer.isMinor = minor;
   }
   await customer.save().catch(throwIfDuplicate);
 

@@ -27,7 +27,7 @@ const publicCustomer = z
     altPhone: z.string().optional(),
     identification: z
       .object({
-        idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id']),
+        idType: z.enum(['ghana-card', 'passport', 'drivers-license', 'voter-id', 'nhis']),
         idNumber: z.string(),
       })
       .optional()
@@ -121,7 +121,7 @@ const customerStatement = z
         z.object({
           accountId: z.string(),
           accountNumber: z.string(),
-          accountType: z.enum(['standard', 'student']),
+          accountType: z.enum(['standard', 'student', 'fixed', 'loan']),
           status: z.string(),
           openingBalance: z.number().int().describe('Balance at the start of the period'),
           closingBalance: z.number().int().describe('Balance at the end of the period'),

@@ -45,6 +45,7 @@ const balanceSheet = z
       customerDeposits: z.object({
         susuBalances: money,
         savingsBalances: money,
+        collateralHeld: money.describe('Cash collateral on loans, not yet handed back'),
         total: money,
       }),
       accruedExpenses: money.describe('Incurred but not yet paid'),
@@ -78,6 +79,7 @@ const profitLoss = z
       savingsFees: money,
       outrightSalesProfit: money,
       loanInterest: money.describe('Recognised as repaid, not when the loan was written'),
+      loanProcessingFees: money,
       hirePurchaseInterest: money,
       total: money,
     }),

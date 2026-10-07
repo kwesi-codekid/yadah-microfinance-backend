@@ -10,6 +10,17 @@ export { SusuDepositModel, type SusuDeposit, type SusuDepositLine } from './susu
 export { SusuPlanModel, type SusuPlan } from './susu-plan.model.js';
 export { SusuCycleModel, type SusuCycle } from './susu-cycle.model.js';
 export {
+  CommissionModel,
+  COMMISSION_CHANNELS,
+  COMMISSION_REASONS,
+  COMMISSION_SOURCES,
+  type Commission,
+  type CommissionChannel,
+  type CommissionReason,
+  type CommissionSource,
+} from './commission.model.js';
+export { CommissionMoveModel, type CommissionMove } from './commission-move.model.js';
+export {
   TxnCorrectionModel,
   CORRECTION_KINDS,
   CORRECTION_STATUSES,

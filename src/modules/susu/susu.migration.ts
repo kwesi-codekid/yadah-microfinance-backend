@@ -3,6 +3,7 @@ import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { AppError } from '../../lib/errors.js';
 import { audit } from '../../lib/audit.js';
 import { backfillPayoutLines, migrateSusuPlans } from '../../scripts/migrate-susu-plans.js';
+import { backfillCommissions } from '../commissions/commissions.backfill.js';
 
 /**
  * The susu data update, run from the office's screen rather than a terminal
@@ -16,6 +17,8 @@ export interface MigrationReport {
   apply: boolean;
   migration: Awaited<ReturnType<typeof migrateSusuPlans>>;
   backfill: Awaited<ReturnType<typeof backfillPayoutLines>>;
+  /** Commissions and fees already earned, filed into Yadah's commission account. */
+  commissions: Awaited<ReturnType<typeof backfillCommissions>>;
   /** balanceBefore − commissionTakenNow − balanceAfter; zero when the money reconciles. */
   drift: number;
 }
@@ -34,6 +37,7 @@ export async function runSusuMigration(
   try {
     const migration = await migrateSusuPlans(apply);
     const backfill = await backfillPayoutLines(apply);
+    const commissions = await backfillCommissions(apply);
     const drift = migration.balanceBefore - migration.commissionTakenNow - migration.balanceAfter;
     if (apply) {
       await audit({
@@ -41,11 +45,11 @@ export async function runSusuMigration(
         action: 'susu.migrate',
         entityType: 'susu-account',
         entityId: new Types.ObjectId(),
-        after: { migration, backfill, drift },
+        after: { migration, backfill, commissions, drift },
         ...(requestId !== undefined ? { requestId } : {}),
       });
     }
-    return { apply, migration, backfill, drift };
+    return { apply, migration, backfill, commissions, drift };
   } finally {
     running = false;
   }

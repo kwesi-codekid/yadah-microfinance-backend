@@ -20,6 +20,12 @@ export const TXN_TYPES = [
   'savings-closure',
   'loan-disbursement',
   'loan-repayment',
+  /** The processing fee, paid on top of the loan the day it goes out — income. */
+  'loan-fee',
+  /** Cash collateral taken the day the loan goes out — held, the customer's. */
+  'loan-collateral',
+  /** Cash collateral handed back. */
+  'loan-collateral-return',
   'hp-deposit',
   'hp-installment',
   'hp-redemption',
@@ -64,6 +70,9 @@ export function moduleOf(type: TxnType): TxnModule {
       return 'savings';
     case 'loan-disbursement':
     case 'loan-repayment':
+    case 'loan-fee':
+    case 'loan-collateral':
+    case 'loan-collateral-return':
       return 'loans';
     case 'hp-deposit':
     case 'hp-installment':
@@ -102,7 +111,11 @@ export function directionOf(
       return detail === 'cash' ? 'out' : 'internal';
     case 'loan-repayment':
       return detail === 'cash' ? 'in' : 'internal';
+    case 'loan-fee':
+    case 'loan-collateral':
+      return 'in';
     case 'loan-disbursement':
+    case 'loan-collateral-return':
       return 'out';
     case 'susu-commission':
     case 'transfer':
@@ -128,7 +141,8 @@ export function isRevenueFee(type: TxnType): boolean {
     type === 'savings-closure' ||
     type === 'susu-deposit' ||
     type === 'susu-payout' ||
-    type === 'susu-commission'
+    type === 'susu-commission' ||
+    type === 'loan-fee'
   );
 }
 

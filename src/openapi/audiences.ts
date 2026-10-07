@@ -125,7 +125,7 @@ export const TAG_GROUPS = [
   },
   {
     name: 'Office — books and reporting',
-    tags: ['Dashboard', 'Accounting', 'Expenses', 'Reports'],
+    tags: ['Dashboard', 'Accounting', 'Expenses', 'Commissions', 'Reports'],
   },
   {
     name: 'Office — administration',

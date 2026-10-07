@@ -1,3 +1,4 @@
+import { ADULTS_ONLY } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
@@ -45,6 +46,8 @@ export const IMPORT_FIELDS = [
   'durationMonths',
   'ratePercent',
   'disbursedOn',
+  'processingFee',
+  'collateralAmount',
   'guarantorName',
   'guarantorPhone',
   'guarantorIdNumber',
@@ -104,6 +107,18 @@ export const IMPORT_COLUMNS: readonly SheetColumn<ImportField>[] = [
     example: '15/03/2026',
   },
   {
+    field: 'processingFee',
+    header: 'Processing fee',
+    aliases: ['fee', 'processing', 'processing fee ghs'],
+    example: '50',
+  },
+  {
+    field: 'collateralAmount',
+    header: 'Collateral',
+    aliases: ['collateral amount', 'cash collateral', 'security'],
+    example: '1000',
+  },
+  {
     field: 'guarantorName',
     header: 'Guarantor name',
     aliases: ['guarantor'],
@@ -141,6 +156,8 @@ const LOAN_FIELDS: readonly ImportField[] = [
   'durationMonths',
   'ratePercent',
   'disbursedOn',
+  'processingFee',
+  'collateralAmount',
 ];
 
 const LABEL: Record<ImportField, string> = Object.fromEntries(
@@ -226,7 +243,10 @@ export async function validateRows(
     if (phone.trim() !== '') phones.add(phoneKey(phone));
   }
   const [customers, entered] = await Promise.all([
-    CustomerModel.find({ phone: { $in: [...phones] }, ...NOT_TRASHED }, { fullName: 1, phone: 1 }),
+    CustomerModel.find(
+      { phone: { $in: [...phones] }, ...ADULTS_ONLY, ...NOT_TRASHED },
+      { fullName: 1, phone: 1 },
+    ),
     LoanModel.find({ paperRef: { $in: [...groups.keys()] }, ...NOT_TRASHED }, { paperRef: 1 }),
   ]);
   const byPhone = new Map(customers.map((c) => [c.phone, c]));
@@ -327,6 +347,8 @@ export async function validateRows(
       durationMonths: wholeNumber(first.values.durationMonths),
       ratePercent: wholeNumber(first.values.ratePercent.replace('%', '')),
       disbursedOn: normalizeDay(first.values.disbursedOn),
+      processingFee: cedisToPesewas(first.values.processingFee),
+      collateralAmount: cedisToPesewas(first.values.collateralAmount),
       guarantors,
       repayments,
       paperRef: group.paperRef,
@@ -429,6 +451,8 @@ const PATH_FIELDS: Record<string, ImportField> = {
   durationMonths: 'durationMonths',
   ratePercent: 'ratePercent',
   disbursedOn: 'disbursedOn',
+  processingFee: 'processingFee',
+  collateralAmount: 'collateralAmount',
   paperRef: 'paperRef',
   'guarantors.fullName': 'guarantorName',
   'guarantors.phone': 'guarantorPhone',
@@ -448,6 +472,9 @@ function friendly(field: ImportField, message: string): string {
   if (field === 'ratePercent') return 'must be 10, 20 or 30';
   if (field === 'disbursedOn' || field === 'paidOn') return 'must be a date like 15/03/2026';
   if (field === 'principal') return 'must be an amount in cedis, like 3000';
+  if (field === 'processingFee' || field === 'collateralAmount') {
+    return 'must be an amount in cedis, like 50, or left empty';
+  }
   return message;
 }
 

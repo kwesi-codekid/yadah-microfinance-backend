@@ -69,9 +69,11 @@ export function isMidCycle(plan: PlanState): boolean {
 }
 
 /**
- * The part of the balance nothing may take out: one payment's amount for
- * every plan with a cycle in progress. This is what keeps the end-of-cycle
- * commission collectible however much is withdrawn along the way.
+ * The commission due on the cycles in progress: one payment's amount for
+ * every plan mid-cycle. It is the only part of the balance an ordinary
+ * withdrawal must leave behind, so the commission can always be taken —
+ * when the cycle completes, or when the customer withdraws everything
+ * (computeWithdrawAll), which hands it to Yadah and pays out the rest.
  */
 export function lockedAmount(plans: readonly PlanState[]): number {
   return plans.reduce((sum, p) => (isMidCycle(p) ? sum + p.dailyAmount : sum), 0);
@@ -386,6 +388,47 @@ export function computeStopPlan(plan: PlanState): StopComputation {
     commission: plan.dailyAmount,
     endedCycle: { cycleNumber: plan.cyclesCompleted + 1, payments: plan.paidInCycle },
   };
+}
+
+export interface WithdrawAllComputation {
+  /** Σ one payment per plan mid-cycle — what moves to Yadah's commission account. */
+  commission: number;
+  /** balance − commission: what the customer takes away. */
+  payout: number;
+  /** Per plan mid-cycle: the cycle "withdraw all" ends and the commission it gives. */
+  ends: { planId: string; commission: number; cycleNumber: number; payments: number }[];
+}
+
+/**
+ * The customer takes everything out but keeps the account (client decision,
+ * 7 Oct 2026). Every cycle in progress ends there and gives its one payment
+ * to Yadah; the rest of the balance is paid out. The plans keep running — the
+ * next deposit opens each one's next cycle. As with closing, the balance
+ * always covers the commission; if it does not, the data is wrong.
+ */
+export function computeWithdrawAll(
+  balance: number,
+  plans: readonly PlanState[],
+): WithdrawAllComputation {
+  assertMoneyInt(balance, 'balance');
+  const ends = plans
+    .filter((p) => isMidCycle(p))
+    .map((p) => ({
+      planId: p.planId,
+      commission: p.dailyAmount,
+      cycleNumber: p.cyclesCompleted + 1,
+      payments: p.paidInCycle,
+    }));
+  const commission = ends.reduce((sum, e) => sum + e.commission, 0);
+  if (commission > balance) {
+    throw new Error(
+      `balance ${String(balance)} does not cover the commission ${String(commission)} — the lock was bypassed`,
+    );
+  }
+  // Only commission left is still a withdrawal of everything: it all goes to
+  // Yadah and the customer takes nothing (client decision, 7 Oct 2026).
+  if (balance === 0) throw new RangeError('there is nothing in the account to withdraw');
+  return { commission, payout: balance - commission, ends };
 }
 
 export interface CloseComputation {

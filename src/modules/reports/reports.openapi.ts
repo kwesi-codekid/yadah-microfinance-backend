@@ -135,6 +135,7 @@ const dashboardMetrics = z
       susuCommission: countAmount,
       savingsFees: countAmount,
       outrightSalesProfit: countAmount,
+      loanProcessingFees: countAmount,
       totalRevenue: z.number().int(),
     }),
     portfolio: z.object({

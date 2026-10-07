@@ -5,9 +5,10 @@ import {
   HpSaleModel,
   LoanModel,
   SavingsTxnModel,
-  SusuCycleModel,
+  CommissionModel,
   SusuDepositModel,
   UserModel,
+  type CommissionSource,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 
@@ -216,50 +217,47 @@ export interface CommissionReport {
    * business earned in the period, so it counts toward totalRevenue.
    */
   outrightSalesProfit: { count: number; amount: number };
+  /** Processing fees on loans that went out in the period (client decision, 6 Oct 2026). */
+  loanProcessingFees: { count: number; amount: number };
   totalRevenue: number;
 }
 
 export async function commissionEarned(from?: string, to?: string): Promise<CommissionReport> {
   const window = rangeToWindow(from, to);
 
-  const [susu, savings, sales] = await Promise.all([
-    // One row per ended cycle: completed at its 31st payment, or cut short by
-    // a plan stop or the account closing. Each charged one payment's amount.
-    SusuCycleModel.aggregate<{ count: number; amount: number }>([
-      {
-        $match: {
-          endedAt: { $gte: window.start, $lt: window.end },
-          commissionAmount: { $gt: 0 },
-        },
-      },
-      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$commissionAmount' } } },
-    ]),
-    SavingsTxnModel.aggregate<{ count: number; amount: number }>([
-      {
-        $match: {
-          createdAt: { $gte: window.start, $lt: window.end },
-          type: { $in: ['withdrawal', 'closure'] },
-          fee: { $gt: 0 },
-          ...NOT_TRASHED,
-        },
-      },
-      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$fee' } } },
+  const [ledger, sales] = await Promise.all([
+    // Yadah's commission account: one entry per susu cycle that charged, per
+    // savings withdrawal or closure that kept its fee, per loan that went out
+    // with a processing fee — dated when it was earned.
+    CommissionModel.aggregate<{ _id: CommissionSource; count: number; amount: number }>([
+      { $match: { takenAt: { $gte: window.start, $lt: window.end } } },
+      { $group: { _id: '$source', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
     HpSaleModel.aggregate<{ count: number; amount: number }>([
       { $match: { createdAt: { $gte: window.start, $lt: window.end }, status: 'completed' } },
       { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: '$profit' } } },
     ]),
   ]);
+  const bySource = (source: CommissionSource) => {
+    const row = ledger.find((r) => r._id === source);
+    return { count: row?.count ?? 0, amount: row?.amount ?? 0 };
+  };
 
-  const susuCommission = { count: susu[0]?.count ?? 0, amount: susu[0]?.amount ?? 0 };
-  const savingsFees = { count: savings[0]?.count ?? 0, amount: savings[0]?.amount ?? 0 };
+  const susuCommission = bySource('susu');
+  const savingsFees = bySource('savings-fee');
   const outrightSalesProfit = { count: sales[0]?.count ?? 0, amount: sales[0]?.amount ?? 0 };
+  const loanProcessingFees = bySource('loan-fee');
   return {
     from: window.from,
     to: window.to,
     susuCommission,
     savingsFees,
     outrightSalesProfit,
-    totalRevenue: susuCommission.amount + savingsFees.amount + outrightSalesProfit.amount,
+    loanProcessingFees,
+    totalRevenue:
+      susuCommission.amount +
+      savingsFees.amount +
+      outrightSalesProfit.amount +
+      loanProcessingFees.amount,
   };
 }

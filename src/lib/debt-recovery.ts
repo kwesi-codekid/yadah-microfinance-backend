@@ -130,7 +130,14 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
   }
 
   // 2. Savings — normal withdrawal rules apply (fee, 1/day, min balance).
-  const savings = await SavingsAccountModel.find({ customerId, status: 'active', ...NOT_TRASHED });
+  // Loan savings is left out: it pays the loan through the month-end
+  // deduction (lib/loan-savings.ts), and never anything else.
+  const savings = await SavingsAccountModel.find({
+    customerId,
+    status: 'active',
+    accountType: { $ne: 'loan' },
+    ...NOT_TRASHED,
+  });
   for (const account of savings) {
     if (remaining < 1) return;
     const available = availableToWithdraw(account.balance);

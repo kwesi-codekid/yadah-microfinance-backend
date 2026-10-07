@@ -2,6 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
 import { assertPaperEntryOpen, paperDay } from '../../lib/backdating.js';
+import { isMinor, minorCreditRefused } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { CustomerModel, LoanModel, LoanScheduleModel, RepaymentModel } from '../../models/index.js';
@@ -18,11 +19,13 @@ import {
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import {
   OPEN_LOAN_STATUSES,
+  chargeFields,
   getLoanConfig,
   toPublicLoan,
   type PublicLoan,
 } from './loans.service.js';
 import type { PaperLoanBody } from './loans.schemas.js';
+import { recordLoanFee } from '../commissions/commissions.ledger.js';
 
 /**
  * Loans the branch made on paper before the system existed.
@@ -113,6 +116,8 @@ export async function recordPaperLoan(
   // ------------------------------------------------------------- the checks
   const customer = await CustomerModel.findOne({ _id: input.customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
+  // The same bar as a new application: no loans for children.
+  if (isMinor(customer.dateOfBirth)) throw minorCreditRefused();
 
   if (input.paperRef !== undefined) {
     const copied = await LoanModel.exists({ paperRef: input.paperRef, ...NOT_TRASHED });
@@ -214,10 +219,21 @@ export async function recordPaperLoan(
             origin: 'paper',
             ...(input.paperRef !== undefined ? { paperRef: input.paperRef } : {}),
             ...(input.paperPhotoUrl !== undefined ? { paperPhotoUrl: input.paperPhotoUrl } : {}),
+            // Taken on the day the money went out, so the fee is that month's
+            // income and the collateral held from then.
+            ...chargeFields(input),
           },
         ],
         { session },
       );
+      // Its processing fee was Yadah's from the day the money went out.
+      await recordLoanFee(session, {
+        _id: loanId,
+        customerId: input.customerId,
+        ...chargeFields(input),
+        disbursedAt,
+        approvedById: new Types.ObjectId(actor.sub),
+      });
 
       await LoanScheduleModel.create(
         schedule.map((line, i) => {
@@ -277,6 +293,7 @@ export async function recordPaperLoan(
             repayments: payments.length,
             totalRepaid,
             status: repaid ? 'repaid' : 'active',
+            ...chargeFields(input),
           },
           ...(requestId !== undefined ? { requestId } : {}),
         },

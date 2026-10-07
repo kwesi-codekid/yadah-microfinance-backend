@@ -18,6 +18,7 @@ import {
   summaryQuery,
   updateDepositBody,
   withdrawalBody,
+  withdrawAllBody,
 } from './susu.schemas.js';
 
 const susuPlan = z
@@ -105,8 +106,14 @@ const susuAccount = z
     locked: z
       .number()
       .int()
-      .describe('Σ one payment per plan mid-cycle: the part of the balance nothing may take'),
-    availableToWithdraw: z.number().int().describe('balance − locked, floored at 0'),
+      .describe(
+        'Σ one payment per plan mid-cycle: the commission due. An ordinary withdrawal leaves ' +
+          'it behind; withdraw-all moves it to Yadah’s commission account.',
+      ),
+    availableToWithdraw: z
+      .number()
+      .int()
+      .describe('balance − locked, floored at 0 — the customer’s own money'),
     dailyTotal: z
       .number()
       .int()
@@ -173,7 +180,7 @@ const susuCycle = z
     dailyAmount: z.number().int(),
     payments: z.number().int().describe('31 when completed; fewer when stopped mid-cycle'),
     commissionAmount: z.number().int(),
-    endReason: z.enum(['completed', 'plan-stopped', 'account-closed']),
+    endReason: z.enum(['completed', 'plan-stopped', 'account-closed', 'withdraw-all']),
     endedAt: z.iso.datetime(),
   })
   .meta({ id: 'SusuCycle' });
@@ -424,6 +431,17 @@ export const susuPaths: ZodOpenApiPathsObject = {
               payouts: z.number().int(),
               loose: z.number().int(),
             }),
+            commissions: z
+              .object({
+                susu: z.object({ entries: z.number().int(), amount: z.number().int() }),
+                savings: z.object({ entries: z.number().int(), amount: z.number().int() }),
+                loans: z.object({ entries: z.number().int(), amount: z.number().int() }),
+                entries: z.number().int(),
+                amount: z.number().int(),
+              })
+              .describe(
+                'Commissions and fees already earned, filed into Yadah’s commission account',
+              ),
             drift: z.number().int().describe('Zero when the money reconciles'),
           }),
         ),
@@ -659,6 +677,42 @@ export const susuPaths: ZodOpenApiPathsObject = {
         '409': errorResponse('CONFLICT — account changed concurrently, retry'),
         '422': errorResponse(
           'ACCOUNT_CLOSED, or EXCEEDS_AVAILABLE (details.available, details.balance, details.locked)',
+        ),
+      },
+    },
+  },
+  '/susu/accounts/{id}/withdraw-all': {
+    post: {
+      tags: ['Susu'],
+      summary: 'Withdraw everything, keeping the account open (counter)',
+      description:
+        'Every plan with a cycle in progress ends that cycle here and gives one payment of its ' +
+        'own daily amount to Yadah’s commission account; the rest of the balance is paid out ' +
+        'in cash. The account stays open at zero and the plans keep running — the next deposit ' +
+        'opens each one’s next cycle. `amount` is the cash paid, `commission` what moved to ' +
+        'Yadah. Idempotent on idempotencyKey; sends an SMS.',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(withdrawAllBody),
+      responses: {
+        '201': jsonResponse(
+          'Withdrawn',
+          z.object({
+            account: susuAccount,
+            amount: z.number().int().describe('Cash paid to the customer'),
+            commission: z.number().int().describe('Moved to Yadah’s commission account'),
+            payoutId: z.string(),
+            lines: z.array(withdrawalLine),
+            loose: z.number().int(),
+            replayed: z.boolean(),
+          }),
+        ),
+        '200': jsonResponse('Replay of an earlier identical request', z.object({})),
+        '403': errorResponse('FORBIDDEN — counter only'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — account changed concurrently, retry'),
+        '422': errorResponse(
+          'ACCOUNT_CLOSED, or NOTHING_TO_WITHDRAW (nothing left once the commission is taken)',
         ),
       },
     },

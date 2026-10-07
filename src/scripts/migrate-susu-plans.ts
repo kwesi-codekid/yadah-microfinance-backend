@@ -42,6 +42,7 @@ import {
 } from '../models/index.js';
 import { SUSU_CYCLE_PAYMENTS, allocateWithdrawal } from '../domain/susu-plans.js';
 import { orderPlans, planMoney } from '../modules/susu/susu.service.js';
+import { backfillCommissions } from '../modules/commissions/commissions.backfill.js';
 
 const APPLY = process.argv.includes('--apply');
 const ALLOW_REMOTE = process.argv.includes('--allow-remote');
@@ -509,6 +510,8 @@ async function main(): Promise<void> {
   );
   console.log('Backfilling plan shares on unlabelled withdrawals…');
   console.log(await backfillPayoutLines(APPLY));
+  console.log('Filing commissions already taken into the commission account…');
+  console.log(await backfillCommissions(APPLY));
   await disconnectDb();
 }
 

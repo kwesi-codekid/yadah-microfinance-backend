@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomInt, randomUUID } from 'node
 import jwt from 'jsonwebtoken';
 import { Types } from 'mongoose';
 import { env } from '../../config/env.js';
+import { ADULTS_ONLY } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { enqueueSms } from '../../lib/sms.js';
@@ -146,9 +147,17 @@ async function issueSession(customerId: Types.ObjectId): Promise<PortalTokens> {
  *
  * Returns silently when the number belongs to nobody, so the endpoint cannot
  * be used to discover which numbers are customers.
+ *
+ * Adults only: a child may be registered on a parent's number, and the code
+ * must open the parent's account, never the child's.
  */
 export async function requestOtp(phone: string): Promise<void> {
-  const customer = await CustomerModel.findOne({ phone, status: 'active', ...NOT_TRASHED });
+  const customer = await CustomerModel.findOne({
+    phone,
+    status: 'active',
+    ...ADULTS_ONLY,
+    ...NOT_TRASHED,
+  });
   if (!customer) return;
 
   const existing = await PortalOtpModel.findOne({ customerId: customer._id });
@@ -189,7 +198,12 @@ export async function verifyOtp(
   // be indistinguishable, or the endpoint enumerates customers.
   const invalid = new AppError('INVALID_OTP', 'That code is incorrect or has expired', 401);
 
-  const customer = await CustomerModel.findOne({ phone, status: 'active', ...NOT_TRASHED });
+  const customer = await CustomerModel.findOne({
+    phone,
+    status: 'active',
+    ...ADULTS_ONLY,
+    ...NOT_TRASHED,
+  });
   if (!customer) throw invalid;
 
   const otp = await PortalOtpModel.findOne({ customerId: customer._id });

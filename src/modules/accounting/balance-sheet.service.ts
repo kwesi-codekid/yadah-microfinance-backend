@@ -1,4 +1,4 @@
-import { accraDay, accraMonthKey } from '../../lib/time.js';
+import { accraDay, accraMonthKey, dayWindow } from '../../lib/time.js';
 import {
   HpAgreementModel,
   HpItemModel,
@@ -64,6 +64,8 @@ export interface BalanceSheet {
     customerDeposits: {
       susuBalances: number;
       savingsBalances: number;
+      /** Cash collateral taken on loans and not yet handed back. */
+      collateralHeld: number;
       total: number;
     };
     /** Expenses approved but not yet paid. */
@@ -118,6 +120,30 @@ async function customerLiabilities(): Promise<{
   };
 }
 
+/**
+ * Cash collateral the branch was holding at the end of `asOf`: taken on a
+ * loan that had gone out by then, and not yet handed back by then. The
+ * customer's money, owed back to them like a deposit.
+ */
+async function collateralHeldAt(asOf: string): Promise<number> {
+  const { end } = dayWindow(asOf, asOf);
+  const [row] = await LoanModel.aggregate<{ amount: number }>([
+    {
+      $match: {
+        collateralAmount: { $gt: 0 },
+        disbursedAt: { $lt: end },
+        $or: [
+          { collateralReturnedAt: { $exists: false } },
+          { collateralReturnedAt: { $gte: end } },
+        ],
+        ...NOT_TRASHED,
+      },
+    },
+    { $group: { _id: null, amount: { $sum: '$collateralAmount' } } },
+  ]);
+  return row?.amount ?? 0;
+}
+
 async function receivables(): Promise<{
   loanPrincipal: number;
   unearnedLoanInterest: number;
@@ -166,7 +192,7 @@ async function inventoryAtCost(): Promise<number> {
 }
 
 export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSheet> {
-  const [cash, deposits, recv, inventory, fixedAssets, capital, accrued, earnings] =
+  const [cash, deposits, recv, inventory, fixedAssets, capital, accrued, earnings, collateral] =
     await Promise.all([
       cashPosition(asOf),
       customerLiabilities(),
@@ -176,12 +202,13 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
       capitalAt(asOf),
       accruedExpenses(asOf),
       retainedEarnings(asOf),
+      collateralHeldAt(asOf),
     ]);
 
   const currentAssets = cash.total + recv.loanPrincipal + recv.hpReceivable + inventory;
   const totalAssets = currentAssets + fixedAssets.netBookValue;
 
-  const depositsTotal = deposits.susuBalances + deposits.savingsBalances;
+  const depositsTotal = deposits.susuBalances + deposits.savingsBalances + collateral;
   const totalLiabilities = depositsTotal + accrued.amount;
 
   const totalEquity = capital.net + earnings;
@@ -208,6 +235,7 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
       customerDeposits: {
         susuBalances: deposits.susuBalances,
         savingsBalances: deposits.savingsBalances,
+        collateralHeld: collateral,
         total: depositsTotal,
       },
       accruedExpenses: accrued.amount,
@@ -242,6 +270,8 @@ export interface ProfitAndLoss {
     savingsFees: number;
     outrightSalesProfit: number;
     loanInterest: number;
+    /** Paid on top of loans the day they went out. */
+    loanProcessingFees: number;
     hirePurchaseInterest: number;
     total: number;
   };
@@ -272,6 +302,7 @@ export async function profitAndLoss(from?: string, to?: string): Promise<ProfitA
     savingsFees: revenue.savingsFees.amount,
     outrightSalesProfit: revenue.outrightSalesProfit.amount,
     loanInterest: interest.loanInterest,
+    loanProcessingFees: revenue.loanProcessingFees.amount,
     hirePurchaseInterest: interest.hpInterest,
     total: revenue.totalRevenue + interest.total,
   };

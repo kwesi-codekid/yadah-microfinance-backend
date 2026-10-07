@@ -23,14 +23,20 @@ import {
 } from '../../models/index.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import {
+  FIXED_MIN_MONTHS,
   MIN_DEPOSIT,
   availableToWithdraw,
   computeSavingsClosure,
   computeWithdrawal,
+  maturityAfter,
+  isLoanSavings,
+  isMatured,
 } from '../../domain/savings.js';
+import { isMinor } from '../../lib/age.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type { ListAccountsQuery, ListTrashQuery, ListTxnsQuery } from './savings.schemas.js';
+import { recordSavingsFee, removeSavingsFee } from '../commissions/commissions.ledger.js';
 
 // ---------------------------------------------------------------- shapes
 
@@ -40,10 +46,20 @@ export interface PublicSavingsAccount {
   customerId: string;
   /** Present on list responses for display; joined from the customer. */
   customerName?: string;
-  /** Label only — student accounts follow identical money rules. */
+  /** Standard and student are labels only; a fixed deposit matures. */
   accountType: SavingsAccountType;
+  /** Fixed deposit: the Accra day withdrawals turn free. */
+  maturesOn?: string;
+  /** Fixed deposit: the term chosen at opening, in months. */
+  termMonths?: number;
+  /** A fixed deposit on or past its maturity day. False for every other type. */
+  matured: boolean;
+  /** Fixed deposit: the adult customer paid out of it. */
+  guardianId?: string;
+  /** Joined where the caller can use it — the account page, the listing. */
+  guardianName?: string;
   balance: number;
-  /** balance − 50 − 10, never negative (rule 4 — always exposed). */
+  /** balance − 50 − 10, never negative (rule 4 — always exposed); all of a matured fixed deposit. */
   availableToWithdraw: number;
   status: 'active' | 'closed';
   openedAt: Date;
@@ -51,13 +67,20 @@ export interface PublicSavingsAccount {
 }
 
 export function toPublicSavingsAccount(a: SavingsAccount): PublicSavingsAccount {
+  const matured = isMatured(a, accraDay());
   return {
     id: a._id.toHexString(),
     accountNumber: a.accountNumber,
     customerId: a.customerId.toHexString(),
     accountType: a.accountType,
+    ...(a.maturesOn !== undefined ? { maturesOn: a.maturesOn } : {}),
+    ...(a.termMonths !== undefined ? { termMonths: a.termMonths } : {}),
+    matured,
+    ...(a.guardianId !== undefined ? { guardianId: a.guardianId.toHexString() } : {}),
     balance: a.balance,
-    availableToWithdraw: a.status === 'active' ? availableToWithdraw(a.balance) : 0,
+    // Loan savings is never withdrawn — its money only goes to the loan.
+    availableToWithdraw:
+      a.status === 'active' && !isLoanSavings(a) ? availableToWithdraw(a.balance, matured) : 0,
     status: a.status,
     openedAt: a.createdAt,
     ...(a.closedAt !== undefined ? { closedAt: a.closedAt } : {}),
@@ -72,6 +95,9 @@ export function toSavingsAccountExportRow(a: PublicSavingsAccount): Record<strin
     customerName: a.customerName ?? '',
     customerId: a.customerId,
     accountType: a.accountType,
+    termMonths: a.termMonths ?? null,
+    maturesOn: a.maturesOn ?? null,
+    guardianName: a.guardianName ?? null,
     balance: a.balance,
     availableToWithdraw: a.availableToWithdraw,
     status: a.status,
@@ -196,6 +222,100 @@ async function shiftBalancesAfter(
   await SavingsTxnModel.updateMany(later, { $inc: { balanceAfter: delta } }, { session });
 }
 
+/**
+ * Refuses taking money out of a loan savings account by any road but the
+ * loan: a cash withdrawal, a portal request, a transfer to another product.
+ * Exported for the transfers and portal modules, which reach savings balances
+ * on their own.
+ */
+export function assertNotLoanSavings(account: { accountType: string }): void {
+  if (isLoanSavings(account)) {
+    throw new AppError(
+      'LOAN_SAVINGS_LOCKED',
+      'Money in a loan savings account can only be used to repay the loan',
+      422,
+    );
+  }
+}
+
+/**
+ * Takes money out of a loan savings account to repay its holder's loan, INSIDE
+ * the caller's transaction — the loan side is written in the same one, so the
+ * money is never out of the account without being on the loan.
+ *
+ * No fee, no floor and no once-a-day limit: none of the withdrawal rules are
+ * about this, because nothing is being withdrawn. The row reads as a transfer
+ * leg (`channel: 'transfer'`), which keeps it out of the cash totals — the
+ * cash arrived when it was deposited — and out of reach of the trash.
+ */
+export async function debitLoanSavingsInTxn(
+  session: mongoose.ClientSession,
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  amount: number,
+  loanId: Types.ObjectId,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<{ balanceAfter: number }> {
+  const account = await SavingsAccountModel.findOne({
+    _id: accountId,
+    status: 'active',
+    ...NOT_TRASHED,
+  }).session(session);
+  if (!account) throw new AppError('ACCOUNT_NOT_ACTIVE', 'Loan savings account is not active', 422);
+  if (!isLoanSavings(account)) {
+    throw new AppError('NOT_LOAN_SAVINGS', 'That is not a loan savings account', 422);
+  }
+  if (amount > account.balance) {
+    throw new AppError(
+      'EXCEEDS_AVAILABLE',
+      `Only ${formatGhs(account.balance)} is in the loan savings account`,
+      422,
+      { available: account.balance },
+    );
+  }
+  const balanceAfter = account.balance - amount;
+  const upd = await SavingsAccountModel.updateOne(
+    { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
+    { $inc: { balance: -amount } },
+    { session },
+  );
+  if (upd.modifiedCount !== 1) {
+    throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+  }
+  await SavingsTxnModel.create(
+    [
+      {
+        accountId: account._id,
+        customerId: account.customerId,
+        type: 'withdrawal',
+        amount,
+        fee: 0,
+        balanceAfter,
+        channel: 'transfer',
+        accraDay: accraDay(),
+        recordedById: new Types.ObjectId(actor.sub),
+        idempotencyKey: `loan-savings:${idempotencyKey}`,
+      },
+    ],
+    { session },
+  );
+  await audit(
+    {
+      actorId: actor.sub,
+      action: 'savings.withdrawal.record',
+      entityType: 'savings-account',
+      entityId: account._id,
+      amountBefore: account.balance,
+      amountAfter: balanceAfter,
+      after: { amount, fee: 0, via: 'loan-repayment', loanId: loanId.toHexString() },
+      ...(requestId !== undefined ? { requestId } : {}),
+    },
+    session,
+  );
+  return { balanceAfter };
+}
+
 function mapDuplicateKey(err: unknown): never {
   if (err instanceof MongoServerError && err.code === 11000) {
     const keys = Object.keys((err.keyPattern as Record<string, unknown> | undefined) ?? {});
@@ -210,6 +330,69 @@ function mapDuplicateKey(err: unknown): never {
   throw err as Error;
 }
 
+/**
+ * The terms a fixed deposit is opened on (client decision, 6 Oct 2026): it is
+ * a child's account — the holder under 18 that day — kept for them by an
+ * adult customer, and it runs at least six months.
+ */
+async function assertFixedDepositTerms(
+  holder: Customer,
+  terms: { guardianId: Types.ObjectId; termMonths: number },
+): Promise<void> {
+  if (!isMinor(holder.dateOfBirth)) {
+    throw new AppError(
+      'FIXED_DEPOSIT_CHILDREN_ONLY',
+      'A fixed deposit is opened for a child — this customer is 18 or older, or has no date of birth on file',
+      422,
+    );
+  }
+  if (terms.guardianId.equals(holder._id)) {
+    throw new AppError('GUARDIAN_INVALID', 'A child cannot be their own guardian', 422);
+  }
+  const guardian = await CustomerModel.findOne({ _id: terms.guardianId, ...NOT_TRASHED });
+  if (!guardian) throw new AppError('GUARDIAN_NOT_FOUND', 'That guardian is not on our books', 404);
+  if (guardian.status !== 'active') {
+    throw new AppError('GUARDIAN_INVALID', `${guardian.fullName} is deactivated`, 422);
+  }
+  if (isMinor(guardian.dateOfBirth)) {
+    throw new AppError(
+      'GUARDIAN_INVALID',
+      `${guardian.fullName} is under 18 and cannot be a guardian`,
+      422,
+    );
+  }
+  if (!Number.isInteger(terms.termMonths) || terms.termMonths < FIXED_MIN_MONTHS) {
+    throw new AppError(
+      'TERM_TOO_SHORT',
+      `A fixed deposit runs at least ${String(FIXED_MIN_MONTHS)} months`,
+      422,
+      { minimum: FIXED_MIN_MONTHS },
+    );
+  }
+}
+
+/** Guardian names by id, for the accounts that have one. */
+async function guardianNames(accounts: SavingsAccount[]): Promise<Map<string, string>> {
+  const ids = [
+    ...new Set(accounts.flatMap((a) => (a.guardianId ? [a.guardianId.toHexString()] : []))),
+  ];
+  if (ids.length === 0) return new Map();
+  const people = await CustomerModel.find({ _id: { $in: ids } }, { fullName: 1 });
+  return new Map(people.map((c) => [c._id.toHexString(), c.fullName]));
+}
+
+/** Where a fixed deposit's messages go: to the guardian, who is the one paid. */
+async function smsRecipient(
+  account: SavingsAccount,
+  holder: Customer | null,
+): Promise<string | undefined> {
+  if (account.guardianId) {
+    const guardian = await CustomerModel.findById(account.guardianId, { phone: 1 });
+    if (guardian) return guardian.phone;
+  }
+  return holder?.phone;
+}
+
 // ---------------------------------------------------------------- accounts
 
 export async function openAccount(
@@ -220,11 +403,41 @@ export async function openAccount(
   channel: Channel,
   accountType: SavingsAccountType = 'standard',
   requestId?: string,
+  /** Required for, and only for, a fixed deposit. */
+  fixed?: { guardianId: Types.ObjectId; termMonths: number },
 ): Promise<{ account: PublicSavingsAccount; initialTxn?: PublicSavingsTxn }> {
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
     throw new AppError('CUSTOMER_INACTIVE', 'Customer is not active', 422);
+  }
+  if (accountType === 'fixed') {
+    if (!fixed) {
+      throw new AppError(
+        'FIXED_DEPOSIT_INCOMPLETE',
+        'A fixed deposit needs a guardian and a term',
+        422,
+      );
+    }
+    await assertFixedDepositTerms(customer, fixed);
+  }
+  // One loan savings account per customer, kept across loans (client
+  // decision, 6 Oct 2026) — the month-end deduction must know which to use.
+  if (accountType === 'loan') {
+    const existing = await SavingsAccountModel.findOne({
+      customerId,
+      accountType: 'loan',
+      status: 'active',
+      ...NOT_TRASHED,
+    });
+    if (existing) {
+      throw new AppError(
+        'LOAN_SAVINGS_EXISTS',
+        `${customer.fullName} already has a loan savings account (${existing.accountNumber})`,
+        409,
+        { accountId: existing._id.toHexString() },
+      );
+    }
   }
 
   // Reserved before the session opens: the counter must not join the money
@@ -246,6 +459,14 @@ export async function openAccount(
                 accountNumber,
                 customerId,
                 accountType,
+                ...(accountType === 'fixed' && fixed
+                  ? {
+                      guardianId: fixed.guardianId,
+                      termMonths: fixed.termMonths,
+                      // Counted from the day it opens, as the term was agreed.
+                      maturesOn: maturityAfter(accraDay(), fixed.termMonths),
+                    }
+                  : {}),
                 balance: initialDeposit ?? 0,
                 openedById: new Types.ObjectId(actor.sub),
               },
@@ -319,6 +540,7 @@ export async function listAccounts(
 ): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
+  if (query.guardianId) filter.guardianId = query.guardianId;
   if (query.accountType) filter.accountType = query.accountType;
   if (query.status) filter.status = query.status;
   if (query.accountNumber !== undefined) filter.accountNumber = query.accountNumber;
@@ -350,10 +572,12 @@ export async function listAccounts(
   const unique = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
   const customers = await CustomerModel.find({ _id: { $in: unique } }, { fullName: 1 });
   const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  const guardians = await guardianNames(accounts);
   return {
     items: accounts.map((a) => ({
       ...toPublicSavingsAccount(a),
       customerName: names.get(a.customerId.toHexString()) ?? '',
+      ...(a.guardianId ? { guardianName: guardians.get(a.guardianId.toHexString()) ?? '' } : {}),
     })),
     page: query.page,
     limit: query.limit,
@@ -368,7 +592,14 @@ export async function getAccount(
   const account = await SavingsAccountModel.findOne({ _id: id, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
   await assertCanActOnCustomer(actor, account.customerId);
-  return toPublicSavingsAccount(account);
+  const guardians = await guardianNames([account]);
+  const guardianName = account.guardianId
+    ? guardians.get(account.guardianId.toHexString())
+    : undefined;
+  return {
+    ...toPublicSavingsAccount(account),
+    ...(guardianName !== undefined ? { guardianName } : {}),
+  };
 }
 
 export async function listTransactions(
@@ -544,6 +775,7 @@ export async function withdraw(
 
   const pre = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  assertNotLoanSavings(pre);
   const customer = await CustomerModel.findById(pre.customerId);
 
   const session = await mongoose.startSession();
@@ -579,13 +811,16 @@ export async function withdraw(
       // fee are the rules that applied then, so they are applied to the
       // balance as it stood then rather than to today's.
       const opening = backdated ? await balanceAsOf(session, account._id, at) : account.balance;
+      // A fixed deposit pays out free from its maturity day — the day this is
+      // dated, like everything else here.
+      const matured = isMatured(account, day);
       let computation;
       try {
-        computation = computeWithdrawal(opening, amount);
+        computation = computeWithdrawal(opening, amount, matured);
       } catch (err) {
         if (err instanceof RangeError) {
           throw new AppError('EXCEEDS_AVAILABLE', 'Amount exceeds the available balance', 422, {
-            available: availableToWithdraw(opening),
+            available: availableToWithdraw(opening, matured),
           });
         }
         throw err;
@@ -627,6 +862,8 @@ export async function withdraw(
         { session, timestamps: false },
       );
       txn = created as SavingsTxn;
+      // The flat fee is Yadah's: it goes to the commission account.
+      await recordSavingsFee(session, txn);
 
       await audit(
         {
@@ -651,9 +888,10 @@ export async function withdraw(
   const after = await SavingsAccountModel.findById(accountId);
   if (!after) throw new AppError('NOT_FOUND', 'Account not found', 404);
 
-  if (customer) {
+  const withdrawalTo = await smsRecipient(after, customer);
+  if (withdrawalTo) {
     await enqueueSms({
-      to: customer.phone,
+      to: withdrawalTo,
       template: 'savings-withdrawal',
       message:
         `Yadah: withdrawal of ${formatGhs(txn.amount)} processed on acct ${after.accountNumber} ` +
@@ -743,6 +981,15 @@ export async function closeAccount(
   if (!pre) throw new AppError('NOT_FOUND', 'Account not found', 404);
   if (pre.status === 'closed')
     throw new AppError('ALREADY_CLOSED', 'Account is already closed', 409);
+  // A loan savings account closes only once there is nothing in it: closing
+  // pays the balance out, and its money goes to the loan or nowhere.
+  if (isLoanSavings(pre) && pre.balance > 0) {
+    throw new AppError(
+      'LOAN_SAVINGS_LOCKED',
+      `${formatGhs(pre.balance)} is still in this loan savings account — it can only go to the loan`,
+      422,
+    );
+  }
   const customer = await CustomerModel.findById(pre.customerId);
 
   const session = await mongoose.startSession();
@@ -770,7 +1017,11 @@ export async function closeAccount(
         );
       }
 
-      const { fee, payout, flagged } = computeSavingsClosure(account.balance);
+      // An empty loan savings account closes free, like a matured one.
+      const { fee, payout, flagged } = computeSavingsClosure(
+        account.balance,
+        isMatured(account, today) || isLoanSavings(account),
+      );
       const now = new Date();
       const upd = await SavingsAccountModel.updateOne(
         { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
@@ -788,7 +1039,7 @@ export async function closeAccount(
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
       }
 
-      await SavingsTxnModel.create(
+      const [closure] = await SavingsTxnModel.create(
         [
           {
             accountId: account._id,
@@ -805,6 +1056,7 @@ export async function closeAccount(
         ],
         { session },
       );
+      if (closure) await recordSavingsFee(session, closure);
 
       await audit(
         {
@@ -831,9 +1083,10 @@ export async function closeAccount(
     await session.endSession();
   }
 
-  if (customer) {
+  const closureTo = await smsRecipient(pre, customer);
+  if (closureTo) {
     await enqueueSms({
-      to: customer.phone,
+      to: closureTo,
       template: 'savings-closure',
       message:
         `Yadah: savings acct ${pre.accountNumber} has been closed. Payout: ${formatGhs(result.payout)} ` +
@@ -1087,6 +1340,8 @@ export async function trashSavingsTxn(
       if (txnUpd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Transaction changed concurrently — retry', 409);
       }
+      // The fee was never really kept: it leaves the commission account too.
+      await removeSavingsFee(session, txnId);
       await audit(
         {
           actorId: actor.sub,
@@ -1184,6 +1439,7 @@ export async function restoreSavingsTxn(
       if (txnUpd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Transaction changed concurrently — retry', 409);
       }
+      await recordSavingsFee(session, txn);
       await audit(
         {
           actorId: actor.sub,
@@ -1290,7 +1546,8 @@ export const prepareTxnCorrection: CorrectionPreparer = async (accountId, txnId)
         });
       }
     } else {
-      const available = availableToWithdraw(balanceBefore);
+      // A matured fixed deposit held nothing back on the day it was dated.
+      const available = availableToWithdraw(balanceBefore, isMatured(account, txn.accraDay));
       if (amount > available) {
         throw new AppError('EXCEEDS_AVAILABLE', 'Amount exceeds the available balance', 422, {
           available,
@@ -1432,10 +1689,31 @@ export async function txnReceipt(
     // The minimum balance only comes out on closure, so it is worth stating.
     lines.push({
       label: 'Withdrawable now',
-      value: formatGhs(availableToWithdraw(txn.balanceAfter)),
+      value: formatGhs(availableToWithdraw(txn.balanceAfter, isMatured(account, txn.accraDay))),
     });
   }
-  lines.push({ label: 'Account type', value: account.accountType });
+  lines.push({
+    label: 'Account type',
+    value: account.accountType === 'fixed' ? 'fixed deposit' : account.accountType,
+  });
+  if (account.accountType === 'fixed') {
+    // A child's account: the money goes out to the parent standing for them.
+    const guardian = account.guardianId
+      ? await CustomerModel.findById(account.guardianId, { fullName: 1 })
+      : null;
+    if (guardian) {
+      lines.push({
+        label: txn.type === 'deposit' ? 'Guardian' : 'Paid to guardian',
+        value: guardian.fullName,
+      });
+    }
+    if (account.maturesOn) {
+      lines.push({
+        label: isMatured(account, txn.accraDay) ? 'Matured' : 'Matures',
+        value: account.maturesOn,
+      });
+    }
+  }
 
   const prefix = txn.type === 'deposit' ? 'VD' : 'VW';
   const buffer = await buildReceiptPdf({

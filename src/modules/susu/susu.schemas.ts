@@ -155,6 +155,12 @@ export const withdrawalBody = z.object({
 });
 export type WithdrawalBody = z.infer<typeof withdrawalBody>;
 
+/**
+ * Everything out of an open account: each cycle in progress ends and gives
+ * its one payment to Yadah's commission account; the rest is paid in cash.
+ */
+export const withdrawAllBody = z.object({ idempotencyKey });
+export type WithdrawAllBody = z.infer<typeof withdrawAllBody>;
 export const summaryQuery = z.object({
   /** Accra calendar day, defaults to today. */
   date: z

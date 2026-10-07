@@ -14,6 +14,7 @@ import {
 } from '../../src/models/index.js';
 import { dashboardMetrics } from '../../src/modules/dashboard/dashboard.service.js';
 import { makeCustomer, setupDb, teardownDb } from './helpers.js';
+import { recordSavingsFee } from '../../src/modules/commissions/commissions.ledger.js';
 
 beforeAll(setupDb);
 afterAll(teardownDb);
@@ -118,7 +119,8 @@ async function seed(): Promise<void> {
   });
 
   // Internal transfer legs: savings withdrawal (fee 1_000) → loan repayment.
-  await SavingsTxnModel.create({
+  // The fee is filed in the commission account, as transfers.service does.
+  const leg = await SavingsTxnModel.create({
     accountId: savingsAccount._id,
     customerId,
     type: 'withdrawal',
@@ -129,6 +131,7 @@ async function seed(): Promise<void> {
     accraDay: accraDay(),
     recordedById: staffId,
   });
+  await recordSavingsFee(null, leg);
   await RepaymentModel.create({
     loanId: loan._id,
     customerId,

@@ -86,3 +86,27 @@ describe('isRevenueFee', () => {
     }
   });
 });
+
+describe('loan fee and cash collateral (client decision, 6 Oct 2026)', () => {
+  it('belong to the loans module', () => {
+    expect(moduleOf('loan-fee')).toBe('loans');
+    expect(moduleOf('loan-collateral')).toBe('loans');
+    expect(moduleOf('loan-collateral-return')).toBe('loans');
+  });
+
+  it('come in, and the collateral goes back out', () => {
+    expect(directionOf('loan-fee', 'cash', null)).toBe('in');
+    expect(directionOf('loan-collateral', 'cash', null)).toBe('in');
+    expect(directionOf('loan-collateral-return', 'cash', null)).toBe('out');
+  });
+
+  it('counts the fee as revenue, never the collateral', () => {
+    expect(isRevenueFee('loan-fee')).toBe(true);
+    expect(isRevenueFee('loan-collateral')).toBe(false);
+    expect(isRevenueFee('loan-collateral-return')).toBe(false);
+  });
+
+  it('reads a repayment from loan savings as internal — the cash came in on deposit', () => {
+    expect(directionOf('loan-repayment', 'transfer', 'loan-savings')).toBe('internal');
+  });
+});

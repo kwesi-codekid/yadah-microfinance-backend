@@ -3,6 +3,7 @@ import { nextAccountNumber } from '../../lib/account-number.js';
 import { recordPriceChanges } from './hp-pricing.service.js';
 import { audit } from '../../lib/audit.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
+import { isMinor, MINOR_CREDIT_MESSAGE } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
 import { createdAtFilter } from '../../lib/time.js';
 import { formatGhs } from '../../lib/money.js';
@@ -526,6 +527,8 @@ export async function hpEligibility(customerId: Types.ObjectId): Promise<HpEligi
     : 0;
 
   const reasons: string[] = [];
+  // No credit for children (client decision, 5 Oct 2026), by age today.
+  if (isMinor(customer.dateOfBirth)) reasons.push(MINOR_CREDIT_MESSAGE);
   if (!hasIdDocument(customer)) reasons.push(ID_DOCUMENT_REQUIRED_MESSAGE);
   if (!activeSusu && !activeSavings) reasons.push('No active susu or savings account');
   if (monthsOfHistory < HP_ELIGIBILITY_MIN_MONTHS) {

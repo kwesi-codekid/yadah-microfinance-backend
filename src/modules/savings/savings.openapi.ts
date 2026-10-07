@@ -24,17 +24,30 @@ const savingsAccount = z
     customerId: z.string(),
     customerName: z.string().optional().describe('On list responses, for display'),
     accountType: z
-      .enum(['standard', 'student'])
+      .enum(['standard', 'student', 'fixed', 'loan'])
       .describe(
-        'Label only — money rules are identical. Student accounts: the customer record ' +
-          "is the minor; the guardian's ID goes in the customer identification fields " +
-          'and the guardian is recorded as next of kin (office procedure).',
+        'Standard and student are labels only — money rules are identical. Student ' +
+          "accounts: the customer record is the minor; the guardian's ID goes in the " +
+          "customer identification fields. Fixed: a child's account with a guardian and a " +
+          'maturity date; normal charges before maturity, free withdrawals from it. Loan: the ' +
+          'loan savings account, one per customer — deposits only; its money leaves only to ' +
+          'repay the loan (POST /loans/{id}/repayments/loan-savings and the month-end ' +
+          'deduction). Withdrawal, transfer out and closure with money in it are refused ' +
+          'with LOAN_SAVINGS_LOCKED.',
       ),
+    maturesOn: z.string().optional().describe('Fixed deposit: YYYY-MM-DD withdrawals turn free'),
+    termMonths: z.number().int().optional().describe('Fixed deposit: the term chosen at opening'),
+    matured: z.boolean().describe('Fixed deposit past its maturity day — always false otherwise'),
+    guardianId: z.string().optional().describe('Fixed deposit: the adult customer paid out of it'),
+    guardianName: z.string().optional(),
     balance: z.number().int().describe('Pesewas'),
     availableToWithdraw: z
       .number()
       .int()
-      .describe('balance − GHS 10 min balance − GHS 10 fee, never negative'),
+      .describe(
+        'balance − GHS 10 min balance − GHS 10 fee, never negative; the whole balance on a ' +
+          'matured fixed deposit',
+      ),
     status: z.enum(['active', 'closed']),
     openedAt: z.iso.datetime(),
     closedAt: z.iso.datetime().optional(),

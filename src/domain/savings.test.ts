@@ -5,6 +5,8 @@ import {
   availableToWithdraw,
   computeSavingsClosure,
   computeWithdrawal,
+  earliestMaturity,
+  isMatured,
 } from './savings.js';
 
 /** What a withdrawal cannot touch: the floor plus the fee that funds it. */
@@ -70,5 +72,43 @@ describe('computeSavingsClosure — fee applies on the closing withdrawal too', 
   it('balance below the fee → payout 0, flagged, never negative', () => {
     expect(computeSavingsClosure(500)).toEqual({ fee: 500, payout: 0, flagged: true });
     expect(computeSavingsClosure(0)).toEqual({ fee: 0, payout: 0, flagged: true });
+  });
+});
+
+describe('fixed deposits', () => {
+  const fixed = { accountType: 'fixed', maturesOn: '2027-04-06' };
+
+  it('matures on its maturity day, not the day before', () => {
+    expect(isMatured(fixed, '2027-04-05')).toBe(false);
+    expect(isMatured(fixed, '2027-04-06')).toBe(true);
+    expect(isMatured(fixed, '2030-01-01')).toBe(true);
+  });
+
+  it('never matures anything that is not a fixed deposit', () => {
+    expect(isMatured({ accountType: 'standard', maturesOn: '2000-01-01' }, '2027-01-01')).toBe(
+      false,
+    );
+    expect(isMatured({ accountType: 'fixed' }, '2027-01-01')).toBe(false);
+  });
+
+  it('runs at least six months, clamped to the end of a short month', () => {
+    expect(earliestMaturity('2026-10-06')).toBe('2027-04-06');
+    expect(earliestMaturity('2026-08-31')).toBe('2027-02-28');
+  });
+
+  it('charges the normal fee and keeps the floor until it matures', () => {
+    expect(availableToWithdraw(20_000, false)).toBe(20_000 - RESERVED);
+    expect(computeWithdrawal(20_000, 5_000, false).fee).toBe(WITHDRAWAL_FEE);
+  });
+
+  it('once matured, pays out all of it with no fee', () => {
+    expect(availableToWithdraw(20_000, true)).toBe(20_000);
+    expect(computeWithdrawal(20_000, 20_000, true)).toEqual({
+      fee: 0,
+      totalDebit: 20_000,
+      balanceAfter: 0,
+    });
+    expect(computeSavingsClosure(20_000, true)).toEqual({ fee: 0, payout: 20_000, flagged: false });
+    expect(computeSavingsClosure(0, true).flagged).toBe(false);
   });
 });

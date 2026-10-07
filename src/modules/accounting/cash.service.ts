@@ -1,16 +1,19 @@
 import { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { AppError } from '../../lib/errors.js';
-import { accraDay } from '../../lib/time.js';
+import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   CapitalEntryModel,
   CashAccountModel,
+  CommissionModel,
+  CommissionMoveModel,
   ExpenseModel,
   FixedAssetModel,
   type CashAccount,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
 import { transactionGroups } from '../reports/transactions.service.js';
+import { commissionBalance } from '../commissions/commissions.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type { CreateCashAccountBody } from './accounting.schemas.js';
 
@@ -27,6 +30,13 @@ import type { CreateCashAccountBody } from './accounting.schemas.js';
  *   − expenses paid from it
  *   − fixed assets bought from it
  *   + proceeds from assets it was paid into
+ *   − commission earned on this channel (it sits in Yadah's commission account)
+ *   + commission moved into it
+ *
+ * Commission is counted out of the account it physically landed in, whatever
+ * the date, and held apart in the commission account until office staff move
+ * it to an account of their choosing (client decision, 7 Oct 2026) — so the
+ * company's cash total never changes, and nothing is counted twice.
  *
  * Nothing writes a running total, so no missed update can leave a stored
  * balance quietly wrong — the cost is a handful of aggregates per read, which
@@ -75,6 +85,10 @@ export interface CashAccountBalance extends PublicCashAccount {
     expensesPaid: number;
     assetPurchases: number;
     assetDisposalProceeds: number;
+    /** Commission and fees earned on this channel — held in the commission account. */
+    commissionHeld: number;
+    /** Commission moved from the commission account into this one. */
+    commissionMovedIn: number;
   };
   /** Opening balance plus every movement above. May be negative if overdrawn. */
   balance: number;
@@ -150,50 +164,62 @@ export async function accountBalance(
     }
   }
 
-  const [capital, expenses, assets, disposals] = await Promise.all([
-    CapitalEntryModel.aggregate<{ _id: string; amount: number }>([
-      {
-        $match: {
-          cashAccountId: accountId,
-          occurredOn: { $gte: openingDay, $lte: asOf },
-          ...NOT_TRASHED,
+  const [capital, expenses, assets, disposals, commissionHeld, commissionMovedIn] =
+    await Promise.all([
+      CapitalEntryModel.aggregate<{ _id: string; amount: number }>([
+        {
+          $match: {
+            cashAccountId: accountId,
+            occurredOn: { $gte: openingDay, $lte: asOf },
+            ...NOT_TRASHED,
+          },
         },
-      },
-      { $group: { _id: '$kind', amount: { $sum: '$amount' } } },
-    ]),
-    ExpenseModel.aggregate<{ amount: number }>([
-      {
-        $match: {
-          cashAccountId: accountId,
-          status: 'paid',
-          paidOn: { $gte: openingDay, $lte: asOf },
-          ...NOT_TRASHED,
+        { $group: { _id: '$kind', amount: { $sum: '$amount' } } },
+      ]),
+      ExpenseModel.aggregate<{ amount: number }>([
+        {
+          $match: {
+            cashAccountId: accountId,
+            status: 'paid',
+            paidOn: { $gte: openingDay, $lte: asOf },
+            ...NOT_TRASHED,
+          },
         },
-      },
-      { $group: { _id: null, amount: { $sum: '$amount' } } },
-    ]),
-    FixedAssetModel.aggregate<{ amount: number }>([
-      {
-        $match: {
-          cashAccountId: accountId,
-          acquiredOn: { $gte: openingDay, $lte: asOf },
-          ...NOT_TRASHED,
+        { $group: { _id: null, amount: { $sum: '$amount' } } },
+      ]),
+      FixedAssetModel.aggregate<{ amount: number }>([
+        {
+          $match: {
+            cashAccountId: accountId,
+            acquiredOn: { $gte: openingDay, $lte: asOf },
+            ...NOT_TRASHED,
+          },
         },
-      },
-      { $group: { _id: null, amount: { $sum: '$cost' } } },
-    ]),
-    FixedAssetModel.aggregate<{ amount: number }>([
-      {
-        $match: {
-          cashAccountId: accountId,
-          status: 'disposed',
-          disposedOn: { $gte: openingDay, $lte: asOf },
-          ...NOT_TRASHED,
+        { $group: { _id: null, amount: { $sum: '$cost' } } },
+      ]),
+      FixedAssetModel.aggregate<{ amount: number }>([
+        {
+          $match: {
+            cashAccountId: accountId,
+            status: 'disposed',
+            disposedOn: { $gte: openingDay, $lte: asOf },
+            ...NOT_TRASHED,
+          },
         },
-      },
-      { $group: { _id: null, amount: { $sum: { $ifNull: ['$disposalProceeds', 0] } } } },
-    ]),
-  ]);
+        { $group: { _id: null, amount: { $sum: { $ifNull: ['$disposalProceeds', 0] } } } },
+      ]),
+      // All of it, not just since the opening date: an opening count of the
+      // drawer included commission not yet moved, and that is the commission
+      // account's now.
+      CommissionModel.aggregate<{ amount: number }>([
+        { $match: { channel: account.channel, takenAt: { $lt: dayEnd(asOf) } } },
+        { $group: { _id: null, amount: { $sum: '$amount' } } },
+      ]),
+      CommissionMoveModel.aggregate<{ amount: number }>([
+        { $match: { cashAccountId: accountId, occurredOn: { $lte: asOf }, ...NOT_TRASHED } },
+        { $group: { _id: null, amount: { $sum: '$amount' } } },
+      ]),
+    ]);
 
   const byKind = new Map(capital.map((c) => [c._id, c.amount]));
   const movement = {
@@ -204,6 +230,8 @@ export async function accountBalance(
     expensesPaid: expenses[0]?.amount ?? 0,
     assetPurchases: assets[0]?.amount ?? 0,
     assetDisposalProceeds: disposals[0]?.amount ?? 0,
+    commissionHeld: commissionHeld[0]?.amount ?? 0,
+    commissionMovedIn: commissionMovedIn[0]?.amount ?? 0,
   };
 
   const balance =
@@ -214,7 +242,9 @@ export async function accountBalance(
     movement.drawings -
     movement.expensesPaid -
     movement.assetPurchases +
-    movement.assetDisposalProceeds;
+    movement.assetDisposalProceeds -
+    movement.commissionHeld +
+    movement.commissionMovedIn;
 
   return { ...toPublicCashAccount(account), movement, balance };
 }
@@ -225,6 +255,13 @@ export async function accountBalance(
  * A null channel means the record did not store one — loan disbursements and
  * susu payouts, which are handed over at the office. Those count as cash.
  */
+/** The first instant after an inclusive Accra day. */
+function dayEnd(day: string): Date {
+  const window = createdAtFilter(undefined, day);
+  if (!window?.$lt) throw new Error(`no end for day ${day}`);
+  return window.$lt;
+}
+
 function matchesChannel(accountChannel: string, txnChannel: string | null): boolean {
   return (txnChannel ?? 'cash') === accountChannel;
 }
@@ -232,7 +269,12 @@ function matchesChannel(accountChannel: string, txnChannel: string | null): bool
 export interface CashPosition {
   asOf: string;
   accounts: CashAccountBalance[];
-  /** Every account added together — the cash line on the balance sheet. */
+  /**
+   * Yadah's commission account at the close of the day: commission and fees
+   * taken out of the accounts above and not yet moved back into one.
+   */
+  commission: number;
+  /** Every account plus the commission account — the cash line on the balance sheet. */
   total: number;
 }
 
@@ -241,11 +283,15 @@ export async function cashPosition(asOf: string = accraDay()): Promise<CashPosit
     kind: 1,
     name: 1,
   });
-  const balances = await Promise.all(accounts.map((a) => accountBalance(a, asOf)));
+  const [balances, commission] = await Promise.all([
+    Promise.all(accounts.map((a) => accountBalance(a, asOf))),
+    commissionBalance(asOf),
+  ]);
   return {
     asOf,
     accounts: balances,
-    total: balances.reduce((sum, b) => sum + b.balance, 0),
+    commission: commission.balance,
+    total: balances.reduce((sum, b) => sum + b.balance, 0) + commission.balance,
   };
 }
 

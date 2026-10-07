@@ -7,6 +7,7 @@ import {
   ghanaPhone,
   isoDay,
   idempotencyKey,
+  moneyPesewas,
   objectId,
   pagination,
   positiveMoneyPesewas,
@@ -23,6 +24,18 @@ export const guarantorDetails = z.object({
   idNumber: z.string().trim().min(1).max(40).optional(),
 });
 export type GuarantorDetails = z.infer<typeof guarantorDetails>;
+
+/**
+ * What the customer pays and leaves on top of the loan (client decision,
+ * 6 Oct 2026), on a new application and a paper loan alike. Each is a fixed
+ * sum in pesewas, and each is optional — a loan written without them has none.
+ */
+export const loanCharges = {
+  /** The processing fee, paid on top — never taken out of the principal. */
+  processingFee: moneyPesewas.optional(),
+  /** Cash left with the branch as security, held until it is handed back. */
+  collateralAmount: moneyPesewas.optional(),
+};
 
 export const applyBody = z
   .object({
@@ -41,6 +54,7 @@ export const applyBody = z
     guarantors: z.array(guarantorDetails).min(1).max(10).optional(),
     /** A picture of the customer's signature on the application, from POST /uploads/images?kind=signature. */
     signatureUrl: uploadedImageUrl,
+    ...loanCharges,
   })
   .check((ctx) => {
     // Exactly one of the three ways of naming the guarantor.
@@ -84,6 +98,8 @@ export const paperLoanBody = z.object({
   paperRef: z.string().trim().min(1).max(40).optional(),
   /** A photograph of the paper form, from POST /uploads/images?kind=document. */
   paperPhotoUrl: uploadedImageUrl.optional(),
+  /** What the paper says was charged and left, if anything. */
+  ...loanCharges,
 });
 export type PaperLoanBody = z.infer<typeof paperLoanBody>;
 
@@ -123,10 +139,23 @@ export const rejectBody = z.object({
 });
 export type RejectBody = z.infer<typeof rejectBody>;
 
+/**
+ * The Accra day the customer paid. Omit it and the repayment is dated now.
+ * Office only (client decision, 6 Oct 2026) — see resolveOfficeDate.
+ */
+export const paidOn = isoDay
+  .optional()
+  .describe(
+    'The Accra day the customer paid (YYYY-MM-DD). Omit it and the repayment is dated now. ' +
+      'Admin and manager only; a teller or collector is refused with FORBIDDEN. Not in the ' +
+      'future, not before the loan went out, at most 730 days back.',
+  );
+
 export const repayBody = z.object({
   amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
   channel,
+  paidOn,
 });
 export type RepayBody = z.infer<typeof repayBody>;
 
@@ -137,6 +166,19 @@ export const susuRepayBody = z.object({
   idempotencyKey,
 });
 export type SusuRepayBody = z.infer<typeof susuRepayBody>;
+
+export const loanSavingsRepayBody = z.object({
+  /** Taken from the loan savings balance — at most that, and at most what the loan still owes. */
+  amount: positiveMoneyPesewas.min(1),
+  idempotencyKey,
+});
+export type LoanSavingsRepayBody = z.infer<typeof loanSavingsRepayBody>;
+
+export const returnCollateralBody = z.object({
+  /** The Accra day it was handed back; omit for today. */
+  returnedOn: isoDay.optional(),
+});
+export type ReturnCollateralBody = z.infer<typeof returnCollateralBody>;
 
 export const putConfigBody = z
   .object({

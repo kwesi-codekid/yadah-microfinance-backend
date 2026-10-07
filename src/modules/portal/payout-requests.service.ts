@@ -109,6 +109,7 @@ export async function submitRequest(
     if (account?.status !== 'active') {
       throw new AppError('ACCOUNT_NOT_ACTIVE', 'Account is not active', 422);
     }
+    savings.assertNotLoanSavings(account);
     const available = availableToWithdraw(account.balance);
     if (body.amount === undefined) {
       throw new AppError('AMOUNT_REQUIRED', 'Specify how much to withdraw', 422);

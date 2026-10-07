@@ -276,14 +276,16 @@ describe('the lock and withdrawals', () => {
       details: { available: 5_000, locked: 1_000 },
     });
     const ok = await susu.withdraw(officer, accountId, 5_000, randomUUID());
-    expect(ok.account.balance).toBe(1_000);
-    expect(ok.account.availableToWithdraw).toBe(0);
-    // The last payment stays in, locked, and stays on the card.
-    expect(ok.account.plans[0]?.paidInCycle).toBe(1);
+    // Only the commission was left behind, so it went to Yadah and the cycle
+    // ended there (client decision, 7 Oct 2026).
+    expect(ok.commission).toBe(1_000);
+    expect(ok.account.balance).toBe(0);
+    expect(ok.account.plans[0]).toMatchObject({ paidInCycle: 0, cycleNumber: 2 });
 
     const rows = await SusuPayoutModel.find({ accountId });
     expect(rows).toHaveLength(2);
-    expect(rows.every((p) => p.kind === 'withdrawal' && p.commissionAmount === 0)).toBe(true);
+    expect(rows.every((p) => p.kind === 'withdrawal')).toBe(true);
+    expect(rows.map((p) => p.commissionAmount).sort()).toEqual([0, 1_000]);
   });
 
   it('the whole balance is withdrawable when no cycle is in progress', async () => {
@@ -464,8 +466,8 @@ describe('closing the account', () => {
   });
 
   it('still records the closure when nothing is left to hand over', async () => {
-    const { accountId } = await accountWith(1_000, 5);
-    await susu.withdraw(officer, accountId, 4_000, randomUUID());
+    // One payment in: the whole balance is the commission due.
+    const { accountId } = await accountWith(1_000, 1);
     const r = await susu.closeAccount(officer, accountId);
     expect(r.payout).toBe(0);
     expect(r.commission).toBe(1_000);

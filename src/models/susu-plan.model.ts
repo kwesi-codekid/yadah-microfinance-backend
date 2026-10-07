@@ -24,8 +24,13 @@ export interface SusuPlan {
    * takes the commission and resets this to 0 — so 31 never rests here.
    */
   paidInCycle: number;
-  /** Finished cycles; the current cycle's number is this + 1. */
+  /**
+   * Finished cycles; the current cycle's number is this + 1. Includes the
+   * cycles a "withdraw all" ended early — see cyclesEndedEarly.
+   */
   cyclesCompleted: number;
+  /** Of cyclesCompleted, how many a "withdraw all" ended before the 31st payment. */
+  cyclesEndedEarly?: number;
   status: 'active' | 'stopped';
   startedById: Types.ObjectId;
   stoppedById?: Types.ObjectId;
@@ -43,6 +48,7 @@ const susuPlanSchema = new Schema<SusuPlan>(
     dailyAmount: moneyField,
     paidInCycle: { type: Number, default: 0, min: 0, max: 30 },
     cyclesCompleted: { type: Number, default: 0, min: 0 },
+    cyclesEndedEarly: { type: Number, min: 0 },
     status: { type: String, enum: ['active', 'stopped'], default: 'active' },
     startedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     stoppedById: { type: Schema.Types.ObjectId, ref: 'User' },

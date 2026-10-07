@@ -10,14 +10,27 @@ import {
   pagination,
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
-import { MIN_DEPOSIT } from '../../domain/savings.js';
+import { FIXED_MAX_MONTHS, FIXED_MIN_MONTHS, MIN_DEPOSIT } from '../../domain/savings.js';
 import { SAVINGS_ACCOUNT_TYPES } from '../../models/savings-account.model.js';
 
 export const openAccountBody = z
   .object({
     customerId: objectId,
-    /** Label only — student accounts follow identical money rules. */
+    /**
+     * Standard and student are labels only — identical money rules. A fixed
+     * deposit is opened for a child, needs `guardianId` and `termMonths`, and
+     * withdraws free once the term is up.
+     */
     accountType: z.enum(SAVINGS_ACCOUNT_TYPES).default('standard'),
+    /** Fixed deposit: the adult customer — the parent — who is paid out of it. */
+    guardianId: objectId.optional(),
+    /** Fixed deposit: the term in months — six or more. The maturity day is worked out from it. */
+    termMonths: z
+      .number()
+      .int()
+      .min(FIXED_MIN_MONTHS, `A fixed deposit runs at least ${String(FIXED_MIN_MONTHS)} months`)
+      .max(FIXED_MAX_MONTHS, 'A fixed deposit runs at most 18 years')
+      .optional(),
     /** Optional opening deposit — subject to the GHS 5 minimum. */
     initialDeposit: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 5').optional(),
     idempotencyKey: idempotencyKey.optional(),
@@ -26,12 +39,39 @@ export const openAccountBody = z
   .refine((v) => v.initialDeposit === undefined || v.idempotencyKey !== undefined, {
     message: 'idempotencyKey is required when initialDeposit is provided',
     path: ['idempotencyKey'],
+  })
+  .check((ctx) => {
+    const fixed = ctx.value.accountType === 'fixed';
+    for (const key of ['guardianId', 'termMonths'] as const) {
+      const given = ctx.value[key] !== undefined;
+      if (fixed && !given) {
+        ctx.issues.push({
+          code: 'custom',
+          message:
+            key === 'guardianId'
+              ? 'A fixed deposit needs a guardian'
+              : 'A fixed deposit needs a term',
+          path: [key],
+          input: ctx.value[key],
+        });
+      }
+      if (!fixed && given) {
+        ctx.issues.push({
+          code: 'custom',
+          message: 'Only a fixed deposit has a guardian and a term',
+          path: [key],
+          input: ctx.value[key],
+        });
+      }
+    }
   });
 export type OpenAccountBody = z.infer<typeof openAccountBody>;
 
 export const listAccountsQuery = pagination
   .extend({
     customerId: objectId.optional(),
+    /** The fixed deposits this customer stands guardian to. */
+    guardianId: objectId.optional(),
     accountType: z.enum(SAVINGS_ACCOUNT_TYPES).optional(),
     status: z.enum(['active', 'closed']).optional(),
     /** Current format (SV26080001) or a grandfathered 10-digit number. */
