@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   channel,
+  collectedBy,
   dateRangeFields,
   exportFormat,
   fromToIssue,
@@ -143,6 +144,7 @@ export const withdrawalBody = z.object({
   amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
   occurredOn,
+  collectedBy,
 });
 export type WithdrawalBody = z.infer<typeof withdrawalBody>;
 

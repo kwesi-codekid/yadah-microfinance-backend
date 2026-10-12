@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
-import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { collectedByShape, errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import {
   correctionPathsFor,
   proposeCorrectionPathFor,
@@ -67,6 +67,9 @@ const savingsTxn = z
       .enum(['cash', 'paystack', 'momo', 'transfer'])
       .describe("'transfer' = created by an internal transfer"),
     accraDay: z.string().describe('Accra calendar day, YYYY-MM-DD'),
+    collectedBy: collectedByShape
+      .optional()
+      .describe('Someone the account holder sent to collect; absent when they came themselves'),
     recordedById: z.string(),
     createdAt: z.iso.datetime(),
   })
@@ -352,7 +355,9 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       description:
         'amount = what the customer receives; the flat GHS 10 fee is debited on top. ' +
         'Max one withdrawal per account per Accra day. The balance can never drop ' +
-        'below the GHS 10 minimum except via closure. SMS notification sent.',
+        'below the GHS 10 minimum except via closure. SMS notification sent. ' +
+        'collectedBy records someone the holder sent to collect for them; the SMS and ' +
+        'the receipt both name them.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(withdrawalBody),

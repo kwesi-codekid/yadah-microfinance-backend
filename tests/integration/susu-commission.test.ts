@@ -7,6 +7,7 @@ import {
   SusuCycleModel,
   SusuPayoutModel,
   SusuPlanModel,
+  SmsLogModel,
 } from '../../src/models/index.js';
 import { commissionEarned } from '../../src/modules/reports/reports.service.js';
 import { backfillCommissions } from '../../src/modules/commissions/commissions.backfill.js';
@@ -140,6 +141,32 @@ describe('withdrawing everything', () => {
     const r = await susu.withdraw(officer, accountId, 3_000, randomUUID());
     expect(r.commission).toBe(0);
     expect(r.account.balance).toBe(2_000);
+  });
+
+  it('records who collected on the holder’s behalf, on a part and on everything', async () => {
+    const collectedBy = { name: 'Kofi Boateng', phone: '0551234567' };
+    const { accountId } = await accountWith(1_000, 5);
+
+    const part = await susu.withdraw(
+      officer,
+      accountId,
+      1_000,
+      randomUUID(),
+      undefined,
+      collectedBy,
+    );
+    expect(await SusuPayoutModel.findById(part.payoutId)).toMatchObject({ collectedBy });
+    const [listed] = (await susu.listAccountPayouts(officer, accountId, { page: 1, limit: 5 }))
+      .items;
+    expect(listed?.collectedBy).toEqual(collectedBy);
+
+    const all = await susu.withdrawAll(officer, accountId, randomUUID(), undefined, collectedBy);
+    expect(await SusuPayoutModel.findById(all.payoutId)).toMatchObject({ collectedBy });
+    const sms = await SmsLogModel.find({ relatedEntityId: accountId, template: 'susu-withdrawal' });
+    expect(sms.map((s) => s.message.includes('Collected by Kofi Boateng (0551234567).'))).toEqual([
+      true,
+      true,
+    ]);
   });
 
   it('a withdrawal that leaves only commission moves it to Yadah and ends the cycle', async () => {

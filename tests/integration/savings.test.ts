@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import { AuditLogModel, SavingsAccountModel, SavingsTxnModel } from '../../src/models/index.js';
+import {
+  AuditLogModel,
+  SavingsAccountModel,
+  SavingsTxnModel,
+  SmsLogModel,
+} from '../../src/models/index.js';
 import { accountPeriodKey } from '../../src/lib/account-number.js';
 import { renumberThisMonth } from '../../src/modules/savings/savings.renumber.js';
 import { MIN_BALANCE, WITHDRAWAL_FEE } from '../../src/domain/savings.js';
@@ -48,6 +53,49 @@ describe('savings withdrawal race (WBS 7.2)', () => {
 
     const result = await savings.withdraw(officer, accountId, available, randomUUID());
     expect(result.account.balance).toBe(MIN_BALANCE); // lands exactly on the floor
+  });
+});
+
+describe('collecting a withdrawal on the holder’s behalf', () => {
+  it('records who collected, audits it, and tells the holder by SMS', async () => {
+    const customerId = await makeCustomer();
+    const opened = await savings.openAccount(officer, customerId, 50_000, randomUUID(), 'cash');
+    const accountId = new Types.ObjectId(opened.account.id);
+    const collectedBy = { name: 'Ama Mensah', phone: '0241234567' };
+
+    const r = await savings.withdraw(
+      officer,
+      accountId,
+      1_000,
+      randomUUID(),
+      undefined,
+      undefined,
+      collectedBy,
+    );
+    expect(r.txn.collectedBy).toEqual(collectedBy);
+    expect((await SavingsTxnModel.findById(r.txn.id))?.collectedBy).toMatchObject(collectedBy);
+
+    const logged = await AuditLogModel.findOne({
+      action: 'savings.withdrawal.record',
+      entityId: accountId,
+    });
+    expect(logged?.after).toMatchObject({ collectedBy });
+
+    const sms = await SmsLogModel.findOne({ relatedEntityId: new Types.ObjectId(r.txn.id) });
+    expect(sms?.message).toContain('Collected by Ama Mensah (0241234567).');
+  });
+
+  it('leaves the record unmarked when the holder collects in person', async () => {
+    const customerId = await makeCustomer();
+    const opened = await savings.openAccount(officer, customerId, 50_000, randomUUID(), 'cash');
+    const r = await savings.withdraw(
+      officer,
+      new Types.ObjectId(opened.account.id),
+      1_000,
+      randomUUID(),
+    );
+    expect(r.txn.collectedBy).toBeUndefined();
+    expect((await SavingsTxnModel.findById(r.txn.id))?.collectedBy).toBeUndefined();
   });
 });
 

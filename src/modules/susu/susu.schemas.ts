@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   channel,
+  collectedBy,
   dateRangeFields,
   exportFormat,
   fromToIssue,
@@ -152,6 +153,7 @@ export const withdrawalBody = z.object({
   /** What the customer receives, in pesewas. */
   amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
+  collectedBy,
 });
 export type WithdrawalBody = z.infer<typeof withdrawalBody>;
 
@@ -159,7 +161,7 @@ export type WithdrawalBody = z.infer<typeof withdrawalBody>;
  * Everything out of an open account: each cycle in progress ends and gives
  * its one payment to Yadah's commission account; the rest is paid in cash.
  */
-export const withdrawAllBody = z.object({ idempotencyKey });
+export const withdrawAllBody = z.object({ idempotencyKey, collectedBy });
 export type WithdrawAllBody = z.infer<typeof withdrawAllBody>;
 export const summaryQuery = z.object({
   /** Accra calendar day, defaults to today. */

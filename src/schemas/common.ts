@@ -128,3 +128,17 @@ export const channel = z.enum(['cash', 'paystack', 'momo']).default('cash');
 
 /** Idempotency key for money-mutating endpoints (rule 7). */
 export const idempotencyKey = z.string().min(8).max(128);
+
+/**
+ * The person the account holder sent to collect a withdrawal for them.
+ * Omitted when the holder collects in person. Name and phone are what the
+ * counter takes down, so a disputed withdrawal can be traced to a person.
+ */
+export const collectedBy = z
+  .object({
+    name: z.string().trim().min(2, 'Enter the full name of the person collecting').max(100),
+    phone: ghanaPhone,
+  })
+  .optional()
+  .describe('Someone collecting on the account holder’s behalf; omit when the holder collects');
+export type CollectedBy = NonNullable<z.infer<typeof collectedBy>>;

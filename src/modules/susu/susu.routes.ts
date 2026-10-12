@@ -334,7 +334,14 @@ susuRouter.post(
   (req, res, next) => {
     const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawalBody }>(req);
     susuService
-      .withdraw(getAuth(req), params.id, body.amount, body.idempotencyKey, req.id as string)
+      .withdraw(
+        getAuth(req),
+        params.id,
+        body.amount,
+        body.idempotencyKey,
+        req.id as string,
+        body.collectedBy,
+      )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },
@@ -348,7 +355,7 @@ susuRouter.post(
   (req, res, next) => {
     const { params, body } = getValidated<{ params: AccountIdParams; body: WithdrawAllBody }>(req);
     susuService
-      .withdrawAll(getAuth(req), params.id, body.idempotencyKey, req.id as string)
+      .withdrawAll(getAuth(req), params.id, body.idempotencyKey, req.id as string, body.collectedBy)
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);
   },

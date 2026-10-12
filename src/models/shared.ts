@@ -26,6 +26,23 @@ export type Channel = (typeof CHANNELS)[number];
 export const ROLES = ['admin', 'manager', 'teller', 'collector'] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Someone the account holder sent to collect money out on their behalf. */
+export interface CollectedBy {
+  name: string;
+  phone: string;
+}
+
+export const collectedByField = {
+  type: new Schema<CollectedBy>(
+    {
+      name: { type: String, required: true, trim: true, maxlength: 100 },
+      phone: { type: String, required: true },
+    },
+    { _id: false },
+  ),
+  default: undefined,
+} as const;
+
 /**
  * Soft-delete (trash) fields shared by every trashable model. Trashed docs
  * stay in their collection; queries opt out of them with NOT_TRASHED —

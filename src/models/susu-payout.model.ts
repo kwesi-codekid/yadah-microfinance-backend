@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { moneyField, optionalMoneyField } from './shared.js';
+import { collectedByField, moneyField, optionalMoneyField, type CollectedBy } from './shared.js';
 
 /**
  * One disbursement of a susu account's value: cash at the office, or an
@@ -46,6 +46,8 @@ export interface SusuPayout {
    * payout and on a "withdraw all"; zero on an ordinary withdrawal.
    */
   commissionAmount?: number;
+  /** Set when someone other than the account holder collected the cash. */
+  collectedBy?: CollectedBy;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
@@ -79,6 +81,7 @@ const susuPayoutSchema = new Schema<SusuPayout>(
     },
     destinationId: { type: Schema.Types.ObjectId },
     commissionAmount: optionalMoneyField,
+    collectedBy: collectedByField,
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
   },

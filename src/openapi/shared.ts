@@ -11,6 +11,14 @@ export const errorEnvelope = z
   })
   .meta({ id: 'ErrorEnvelope' });
 
+/** Someone the account holder sent to collect money out for them. */
+export const collectedByShape = z
+  .object({
+    name: z.string(),
+    phone: z.string().describe('Local form, e.g. 0241234567'),
+  })
+  .meta({ id: 'CollectedBy' });
+
 export function errorResponse(description: string): {
   description: string;
   content: { 'application/json': { schema: typeof errorEnvelope } };

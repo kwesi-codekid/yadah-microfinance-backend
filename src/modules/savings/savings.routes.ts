@@ -324,6 +324,7 @@ savingsRouter.post(
         body.idempotencyKey,
         req.id as string,
         body.occurredOn,
+        body.collectedBy,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);

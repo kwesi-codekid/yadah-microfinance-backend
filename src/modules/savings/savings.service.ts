@@ -34,7 +34,12 @@ import {
 } from '../../domain/savings.js';
 import { isMinor } from '../../lib/age.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
+import {
+  NOT_TRASHED,
+  requireDeletedAt,
+  type Channel,
+  type CollectedBy,
+} from '../../models/shared.js';
 import type { ListAccountsQuery, ListTrashQuery, ListTxnsQuery } from './savings.schemas.js';
 import { recordSavingsFee, removeSavingsFee } from '../commissions/commissions.ledger.js';
 
@@ -116,6 +121,8 @@ export interface PublicSavingsTxn {
   balanceAfter: number;
   channel: string;
   accraDay: string;
+  /** Someone the account holder sent to collect; absent when they came themselves. */
+  collectedBy?: CollectedBy;
   recordedById: string;
   createdAt: Date;
 }
@@ -131,6 +138,9 @@ export function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
     balanceAfter: t.balanceAfter,
     channel: t.channel,
     accraDay: t.accraDay,
+    ...(t.collectedBy
+      ? { collectedBy: { name: t.collectedBy.name, phone: t.collectedBy.phone } }
+      : {}),
     recordedById: t.recordedById.toHexString(),
     createdAt: t.createdAt,
   };
@@ -146,6 +156,8 @@ export function toSavingsTxnExportRow(t: PublicSavingsTxn): Record<string, unkno
     balanceAfter: t.balanceAfter,
     channel: t.channel,
     accraDay: t.accraDay,
+    collectedByName: t.collectedBy?.name ?? null,
+    collectedByPhone: t.collectedBy?.phone ?? null,
     recordedById: t.recordedById,
     createdAt: t.createdAt,
   };
@@ -755,6 +767,7 @@ export async function withdraw(
   idempotencyKey: string,
   requestId?: string,
   occurredOn?: string,
+  collectedBy?: CollectedBy,
 ): Promise<TxnResult> {
   // The day the customer was handed the cash.
   const at = resolveOccurredAt(actor, occurredOn);
@@ -853,6 +866,7 @@ export async function withdraw(
             channel: 'cash',
             accraDay: day,
             countsTowardDailyLimit: true,
+            ...(collectedBy ? { collectedBy } : {}),
             recordedById: new Types.ObjectId(actor.sub),
             idempotencyKey,
             createdAt: at,
@@ -873,7 +887,7 @@ export async function withdraw(
           entityId: account._id,
           amountBefore: account.balance,
           amountAfter: computation.balanceAfter,
-          after: { amount, fee: computation.fee },
+          after: { amount, fee: computation.fee, ...(collectedBy ? { collectedBy } : {}) },
           ...(requestId !== undefined ? { requestId } : {}),
         },
         session,
@@ -895,7 +909,9 @@ export async function withdraw(
       template: 'savings-withdrawal',
       message:
         `Yadah: withdrawal of ${formatGhs(txn.amount)} processed on acct ${after.accountNumber} ` +
-        `(fee ${formatGhs(txn.fee ?? 0)}). New balance: ${formatGhs(after.balance)}.`,
+        `(fee ${formatGhs(txn.fee ?? 0)}). New balance: ${formatGhs(after.balance)}.` +
+        // Told to the holder, so a collection they never sent anyone for is noticed.
+        (collectedBy ? ` Collected by ${collectedBy.name} (${collectedBy.phone}).` : ''),
       relatedEntityType: 'savings-txn',
       relatedEntityId: txn._id,
     });
@@ -1680,6 +1696,12 @@ export async function txnReceipt(
     lines.push({ label: 'Total debited', value: formatGhs(txn.amount + txn.fee) });
   }
   lines.push({ label: 'Balance after', value: formatGhs(txn.balanceAfter), emphasis: true });
+  if (txn.collectedBy) {
+    lines.push({
+      label: 'Collected on behalf by',
+      value: `${txn.collectedBy.name} · ${txn.collectedBy.phone}`,
+    });
+  }
   if (txn.type === 'deposit') {
     lines.push({ label: 'Payment method', value: txn.channel });
   }

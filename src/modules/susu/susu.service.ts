@@ -49,7 +49,12 @@ import { cashChannel, recordSusuCommission } from '../commissions/commissions.le
 import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
 import { notifyOffice } from '../../lib/notifications.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
-import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
+import {
+  NOT_TRASHED,
+  requireDeletedAt,
+  type Channel,
+  type CollectedBy,
+} from '../../models/shared.js';
 import type {
   ListAccountsQuery,
   ListCyclesQuery,
@@ -808,6 +813,8 @@ export interface PublicPayout {
   commissionAmount: number;
   /** How the money was spread over the plans; absent on closing payouts and pre-plan rows. */
   lines?: PublicWithdrawalLine[];
+  /** Someone the account holder sent to collect; absent when they came themselves. */
+  collectedBy?: CollectedBy;
   recordedById: string;
   createdAt: Date;
 }
@@ -821,6 +828,9 @@ export function toPublicPayout(p: SusuPayout): PublicPayout {
     destination: p.destination,
     commissionAmount: p.commissionAmount ?? 0,
     ...(p.lines ? { lines: p.lines.map(toPublicWithdrawalLine) } : {}),
+    ...(p.collectedBy
+      ? { collectedBy: { name: p.collectedBy.name, phone: p.collectedBy.phone } }
+      : {}),
     recordedById: p.recordedById.toHexString(),
     createdAt: p.createdAt,
   };
@@ -1472,6 +1482,8 @@ export interface MoneyOut {
    * paid from susu records its shares but leaves the cycles where they were.
    */
   costsDays?: boolean;
+  /** Cash only: someone the account holder sent to collect for them. */
+  collectedBy?: CollectedBy;
   idempotencyKey: string;
   requestId?: string;
 }
@@ -1582,6 +1594,7 @@ export async function withdrawWithin(
         ...(out.destinationId ? { destinationId: out.destinationId } : {}),
         // Only when the withdrawal left nothing but commission behind.
         commissionAmount: commission,
+        ...(out.collectedBy ? { collectedBy: out.collectedBy } : {}),
         recordedById: new Types.ObjectId(actor.sub),
         idempotencyKey: out.idempotencyKey,
       },
@@ -1609,6 +1622,7 @@ export async function withdrawWithin(
         })),
         loose: allocation.loose,
         ...(out.destinationId ? { destinationId: out.destinationId.toHexString() } : {}),
+        ...(out.collectedBy ? { collectedBy: out.collectedBy } : {}),
       },
       ...(out.requestId !== undefined ? { requestId: out.requestId } : {}),
     },
@@ -1631,6 +1645,7 @@ export async function withdraw(
   amount: number,
   idempotencyKey: string,
   requestId?: string,
+  collectedBy?: CollectedBy,
 ): Promise<WithdrawalResult> {
   const existing = await SusuPayoutModel.findOne({ idempotencyKey });
   if (existing) {
@@ -1675,6 +1690,7 @@ export async function withdraw(
       const r = await withdrawWithin(session, actor, accountId, amount, {
         destination: 'cash',
         costsDays: true,
+        ...(collectedBy ? { collectedBy } : {}),
         idempotencyKey,
         ...(requestId !== undefined ? { requestId } : {}),
       });
@@ -1694,7 +1710,9 @@ export async function withdraw(
     message:
       `Yadah: ${formatGhs(amount)} withdrawn from susu acct ${account.accountNumber}` +
       (commission > 0 ? ` (commission ${formatGhs(commission)}). ` : '. ') +
-      `Balance: ${formatGhs(account.balance)}.`,
+      `Balance: ${formatGhs(account.balance)}.` +
+      // Told to the holder, so a collection they never sent anyone for is noticed.
+      (collectedBy ? ` Collected by ${collectedBy.name} (${collectedBy.phone}).` : ''),
     relatedEntityType: 'susu-account',
     relatedEntityId: accountId,
   });
@@ -1784,6 +1802,7 @@ export async function withdrawAll(
   accountId: Types.ObjectId,
   idempotencyKey: string,
   requestId?: string,
+  collectedBy?: CollectedBy,
 ): Promise<WithdrawAllResult> {
   const existing = await SusuPayoutModel.findOne({ idempotencyKey });
   if (existing) {
@@ -1863,6 +1882,7 @@ export async function withdrawAll(
             ...(lines.length > 0 ? { lines } : {}),
             destination: 'cash',
             commissionAmount: all.commission,
+            ...(collectedBy ? { collectedBy } : {}),
             recordedById: actorId,
             idempotencyKey,
           },
@@ -1887,6 +1907,7 @@ export async function withdrawAll(
               commission: e.commission,
             })),
             loose: allocation.loose,
+            ...(collectedBy ? { collectedBy } : {}),
           },
           ...(requestId !== undefined ? { requestId } : {}),
         },
@@ -1911,7 +1932,8 @@ export async function withdrawAll(
     message:
       `Yadah: ${formatGhs(result.amount)} withdrawn from susu acct ${account.accountNumber}` +
       (result.commission > 0 ? ` (commission ${formatGhs(result.commission)}). ` : '. ') +
-      `Balance: ${formatGhs(account.balance)}.`,
+      `Balance: ${formatGhs(account.balance)}.` +
+      (collectedBy ? ` Collected by ${collectedBy.name} (${collectedBy.phone}).` : ''),
     relatedEntityType: 'susu-account',
     relatedEntityId: accountId,
   });
@@ -3048,6 +3070,12 @@ export async function withdrawalReceipt(
       { label: 'Destination', value: payout.destination },
       { label: 'Account status', value: 'Still open' },
     );
+  }
+  if (payout.collectedBy) {
+    lines.push({
+      label: 'Collected on behalf by',
+      value: `${payout.collectedBy.name} · ${payout.collectedBy.phone}`,
+    });
   }
 
   const prefix = closing ? 'SP' : 'SW';

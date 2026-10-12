@@ -1,10 +1,12 @@
 import { Schema, model, type Types } from 'mongoose';
 import {
   CHANNELS,
+  collectedByField,
   moneyField,
   optionalMoneyField,
   trashFields,
   type Channel,
+  type CollectedBy,
   type TrashFields,
 } from './shared.js';
 
@@ -25,6 +27,8 @@ export interface SavingsTxn extends TrashFields {
    * txn is trashed so the day frees up; restore re-sets it.
    */
   countsTowardDailyLimit?: boolean;
+  /** Set when someone other than the account holder collected the cash. */
+  collectedBy?: CollectedBy;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
@@ -42,6 +46,7 @@ const savingsTxnSchema = new Schema<SavingsTxn>(
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     accraDay: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     countsTowardDailyLimit: { type: Boolean },
+    collectedBy: collectedByField,
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
     ...trashFields,

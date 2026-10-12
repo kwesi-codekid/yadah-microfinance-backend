@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ZodOpenApiPathsObject } from 'zod-openapi';
-import { errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { collectedByShape, errorResponse, jsonBody, jsonResponse } from '../../openapi/shared.js';
 import { trashBody } from '../../schemas/common.js';
 import { proposeCorrectionPathFor } from '../corrections/corrections.openapi.js';
 import {
@@ -89,6 +89,9 @@ const susuPayout = z
       .describe(
         'How the money was spread over the plans; absent on closing payouts and pre-plan rows',
       ),
+    collectedBy: collectedByShape
+      .optional()
+      .describe('Someone the account holder sent to collect; absent when they came themselves'),
     recordedById: z.string(),
     createdAt: z.iso.datetime(),
   })
