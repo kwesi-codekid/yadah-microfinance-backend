@@ -82,6 +82,12 @@ export interface Customer extends TrashFields {
    * them — a number is burnt only when one is actually needed.
    */
   susuNumber?: string;
+  /**
+   * The Accra day (YYYY-MM-DD) the customer started saving with Yadah — often
+   * years before they were entered into the app. Absent on customers
+   * registered before the field existed; read their registration day instead.
+   */
+  joinedOn?: string;
   registeredById: Types.ObjectId;
   status: 'active' | 'inactive';
   createdAt: Date;
@@ -136,6 +142,7 @@ const customerSchema = new Schema<Customer>(
     // findOneAndUpdate claim, which would then silently write nothing. The
     // claim's own filter (`susuNumber: null`) is what enforces write-once.
     susuNumber: { type: String },
+    joinedOn: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
     registeredById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     ...trashFields,

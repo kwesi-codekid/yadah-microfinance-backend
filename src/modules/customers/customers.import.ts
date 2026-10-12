@@ -52,6 +52,7 @@ export const IMPORT_FIELDS = [
   'kinRelationship',
   'kinPhone',
   'kinAddress',
+  'joinedOn',
 ] as const;
 
 export type ImportField = (typeof IMPORT_FIELDS)[number];
@@ -102,6 +103,13 @@ export const IMPORT_COLUMNS: readonly ImportColumn[] = [
   { field: 'kinRelationship', header: 'Next of kin relationship', example: 'SPOUSE' },
   { field: 'kinPhone', header: 'Next of kin phone', example: '0209876543' },
   { field: 'kinAddress', header: 'Next of kin address', example: 'ESIAMA' },
+  {
+    field: 'joinedOn',
+    // When they started saving with Yadah — on paper, before the app. Blank is today.
+    header: 'Date joined',
+    aliases: ['joined', 'date started', 'start date', 'member since', 'customer since'],
+    example: '2019-03-01',
+  },
 ];
 
 export { MAX_IMPORT_ROWS };
@@ -175,6 +183,7 @@ function toCandidate(values: Record<ImportField, string>, collectorId: string) {
     phone: plain(values.phone) ?? '',
     ...(collectorId ? { assignedCollectorId: collectorId } : {}),
     dateOfBirth: normalizeDay(values.dateOfBirth),
+    joinedOn: normalizeDay(values.joinedOn),
     gender: matchEnum(values.gender, GENDERS),
     maritalStatus: matchEnum(values.maritalStatus, MARITAL_STATUSES),
     nationality: caps(values.nationality),

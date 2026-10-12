@@ -205,6 +205,7 @@ export async function buildRegistrationFormPdf(
   ]);
 
   section('Administration', [
+    ['With Yadah since', customer.joinedOn ?? formatDate(customer.createdAt)],
     ['Registered on', formatDate(customer.createdAt)],
     ['Registered by', registeredByName ?? '—'],
     ['Status', customer.status],

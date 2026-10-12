@@ -7,12 +7,14 @@ import {
   fromToIssue,
   ghanaCardNumber,
   ghanaPhone,
+  isoDay,
   objectId,
   pagination,
   passportNumber,
   voterIdNumber,
   uploadedImageUrl,
 } from '../../schemas/common.js';
+import { accraDay } from '../../lib/time.js';
 
 const idNumberRules: Record<
   'ghana-card' | 'passport' | 'drivers-license' | 'voter-id' | 'nhis',
@@ -107,6 +109,14 @@ export const profileRules = {
   maritalStatus: z.enum(['single', 'married', 'other']),
   residentialAddress: z.string().min(2).max(300).trim(),
   occupation: z.string().min(2).max(120).trim(),
+  /**
+   * The Accra day the customer started saving with Yadah. Many did so on paper
+   * long before the app, so the office may enter the real date; omitted, it is
+   * the day they are registered.
+   */
+  joinedOn: isoDay
+    .refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)), 'Not a real date')
+    .refine((d) => d <= accraDay(new Date()), 'The date joined cannot be in the future'),
 };
 
 /**
@@ -129,6 +139,10 @@ export const profileFields = {
   identification: clearable(identification).optional(),
   // Occupation
   occupation: clearable(profileRules.occupation).optional(),
+  // With Yadah since — today when omitted. Not clearable: every customer has one.
+  joinedOn: profileRules.joinedOn
+    .optional()
+    .describe('YYYY-MM-DD the customer started saving with Yadah; defaults to today'),
   // Next of kin
   nextOfKin: clearable(nextOfKin).optional(),
   // Attachments — URLs minted by POST /uploads/images. The photo is required at
@@ -249,6 +263,8 @@ export const importedCustomer = z
     altPhone: ghanaPhone.optional(),
     identification: identification.optional(),
     nextOfKin: nextOfKin.optional(),
+    /** Blank in the sheet means the day of the import. */
+    joinedOn: profileRules.joinedOn.optional(),
     /** Blank in the sheet means the customer pays at the office. */
     assignedCollectorId: objectId.optional(),
   })

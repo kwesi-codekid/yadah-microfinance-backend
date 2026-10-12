@@ -33,6 +33,12 @@ const publicCustomer = z
       .optional()
       .describe('Optional for susu/savings; loans require a Ghana Card'),
     occupation: z.string().optional(),
+    joinedOn: z
+      .string()
+      .describe(
+        'YYYY-MM-DD the customer started saving with Yadah — may predate the app. ' +
+          'Customers registered before the field existed report their registration day.',
+      ),
     assignedCollectorId: z
       .string()
       .optional()

@@ -121,6 +121,35 @@ describe('dateOfBirth — no minimum age, past dates only', () => {
   });
 });
 
+describe('joinedOn — when they started saving with Yadah', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const parse = (joinedOn: unknown) =>
+    createCustomerBody.safeParse({ ...validBody, joinedOn }).success;
+
+  it('is optional — the service fills in today', () => {
+    expect(createCustomerBody.safeParse(validBody).success).toBe(true);
+  });
+
+  it('takes a date from before the app, and today', () => {
+    vi.setSystemTime(new Date('2026-10-12T12:00:00Z'));
+    expect(parse('2015-06-01')).toBe(true);
+    expect(parse('2026-10-12')).toBe(true);
+  });
+
+  it('refuses tomorrow by the Accra calendar, a malformed day and an impossible one', () => {
+    vi.setSystemTime(new Date('2026-10-12T23:30:00Z')); // still the 12th in Accra (UTC+0)
+    expect(parse('2026-10-13')).toBe(false);
+    expect(parse('12/10/2026')).toBe(false);
+    expect(parse('2026-13-40')).toBe(false);
+  });
+
+  it('can be corrected on an edit', () => {
+    expect(updateCustomerBody.safeParse({ joinedOn: '2018-01-15' }).success).toBe(true);
+  });
+});
+
 describe('editing a customer — the demo bugs', () => {
   it('lets the office clear an alternate phone', () => {
     for (const cleared of ['', null]) {

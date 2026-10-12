@@ -3,7 +3,7 @@ import mongoose, { Types } from 'mongoose';
 import { audit } from '../../lib/audit.js';
 import { ADULT_PHONE_TAKEN_MESSAGE, adultBornBy, isMinor } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
-import { createdAtFilter } from '../../lib/time.js';
+import { accraDay, createdAtFilter } from '../../lib/time.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { notifyInBackground } from '../../lib/notifications.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
@@ -45,6 +45,7 @@ const SCALAR_FIELDS = [
   'phone',
   'altPhone',
   'occupation',
+  'joinedOn',
   'photoUrl',
   'idDocumentFrontUrl',
   'idDocumentBackUrl',
@@ -66,6 +67,8 @@ export interface PublicCustomer {
   isMinor: boolean;
   identification?: CustomerIdentification;
   occupation?: string;
+  /** YYYY-MM-DD the customer started saving with Yadah; their registration day if never set. */
+  joinedOn: string;
   nextOfKin?: NextOfKin;
   photoUrl?: string;
   idDocumentFrontUrl?: string;
@@ -82,6 +85,9 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     fullName: c.fullName,
     phone: c.phone,
     isMinor: isMinor(c.dateOfBirth),
+    // Customers registered before the field existed joined, as far as the app
+    // knows, the day they were registered.
+    joinedOn: c.joinedOn ?? accraDay(c.createdAt),
     registeredById: c.registeredById.toHexString(),
     status: c.status,
     createdAt: c.createdAt,
@@ -111,6 +117,7 @@ export function toCustomerExportRow(item: PublicCustomer): Record<string, unknow
     nationality: item.nationality ?? null,
     residentialAddress: item.residentialAddress ?? null,
     occupation: item.occupation ?? null,
+    joinedOn: item.joinedOn,
     idType: item.identification?.idType ?? null,
     idNumber: item.identification?.idNumber ?? null,
     nextOfKinName: item.nextOfKin?.fullName ?? null,
@@ -219,6 +226,8 @@ export async function createCustomer(
   }
   // Decides whether the phone has to be theirs alone (see the model's index).
   doc.isMinor = isMinor(body.dateOfBirth);
+  // Left blank, they started with Yadah today.
+  doc.joinedOn ??= accraDay(new Date());
 
   const customer = await CustomerModel.create(doc).catch(throwIfDuplicate);
 
@@ -230,6 +239,7 @@ export async function createCustomer(
     after: {
       fullName: customer.fullName,
       phone: customer.phone,
+      joinedOn: customer.joinedOn ?? null,
       assignedCollectorId: customer.assignedCollectorId?.toHexString() ?? null,
     },
     ...(requestId !== undefined ? { requestId } : {}),

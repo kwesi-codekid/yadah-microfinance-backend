@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CustomerModel, SusuDepositModel } from '../../src/models/index.js';
-import { createCustomer, updateCustomer } from '../../src/modules/customers/customers.service.js';
+import {
+  createCustomer,
+  toPublicCustomer,
+  updateCustomer,
+} from '../../src/modules/customers/customers.service.js';
+import { accraDay } from '../../src/lib/time.js';
 import {
   createCustomerBody,
   updateCustomerBody,
@@ -236,5 +241,34 @@ describe('the ID document and open credit', () => {
       code: 'ID_DOCUMENT_IN_USE',
       details: { loans: 0, hirePurchase: 1 },
     });
+  });
+});
+
+describe('the date a customer joined Yadah', () => {
+  it('is today when left blank, kept when given, and correctable on an edit', async () => {
+    const actor = asOfficer();
+    const today = accraDay(new Date());
+
+    const blank = await createCustomer(actor, registration());
+    expect(blank.joinedOn).toBe(today);
+    expect((await CustomerModel.findById(blank.id))?.joinedOn).toBe(today);
+
+    const paper = await createCustomer(actor, registration({ joinedOn: '2017-05-02' }));
+    expect(paper.joinedOn).toBe('2017-05-02');
+
+    const fixed = await updateCustomer(
+      actor,
+      new Types.ObjectId(paper.id),
+      patch({ joinedOn: '2016-11-20' }),
+    );
+    expect(fixed.joinedOn).toBe('2016-11-20');
+  });
+
+  it('falls back to the registration day for customers from before the field', async () => {
+    const actor = asOfficer();
+    const created = await createCustomer(actor, registration());
+    await CustomerModel.updateOne({ _id: created.id }, { $unset: { joinedOn: 1 } });
+    const raw = await CustomerModel.findById(created.id);
+    expect(toPublicCustomer(raw!).joinedOn).toBe(accraDay(raw!.createdAt));
   });
 });
