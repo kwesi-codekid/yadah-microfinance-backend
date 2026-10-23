@@ -12,9 +12,11 @@ import { enqueueSms } from '../../lib/sms.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import { assertCanActOnCustomer, withCustomerScope } from '../../lib/customer-scope.js';
 import {
+  CommissionModel,
   CustomerModel,
   SavingsAccountModel,
   SavingsTxnModel,
+  TxnCorrectionModel,
   UserModel,
   type Customer,
   type SavingsAccount,
@@ -321,6 +323,75 @@ export async function debitLoanSavingsInTxn(
       amountBefore: account.balance,
       amountAfter: balanceAfter,
       after: { amount, fee: 0, via: 'loan-repayment', loanId: loanId.toHexString() },
+      ...(requestId !== undefined ? { requestId } : {}),
+    },
+    session,
+  );
+  return { balanceAfter };
+}
+
+/**
+ * Puts money that repaid a loan back into the savings account it came from,
+ * INSIDE the caller's transaction, when that loan is deleted. A new deposit
+ * dated today rather than an erased withdrawal: every later row's
+ * `balanceAfter` stays true. A transfer leg, so it stays out of the cash
+ * totals — no cash crossed the counter. Any withdrawal fee the original
+ * transfer charged is not refunded.
+ */
+export async function refundToSavingsInTxn(
+  session: mongoose.ClientSession,
+  actor: AccessTokenPayload,
+  accountId: Types.ObjectId,
+  amount: number,
+  loanId: Types.ObjectId,
+  requestId?: string,
+): Promise<{ balanceAfter: number }> {
+  const account = await SavingsAccountModel.findOne({
+    _id: accountId,
+    status: 'active',
+    ...NOT_TRASHED,
+  }).session(session);
+  if (!account) {
+    throw new AppError(
+      'ACCOUNT_NOT_ACTIVE',
+      'The savings account that repaid this loan is no longer open',
+      422,
+    );
+  }
+  const balanceAfter = account.balance + amount;
+  const upd = await SavingsAccountModel.updateOne(
+    { _id: account._id, status: 'active', balance: account.balance, ...NOT_TRASHED },
+    { $inc: { balance: amount } },
+    { session },
+  );
+  if (upd.modifiedCount !== 1) {
+    throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+  }
+  await SavingsTxnModel.create(
+    [
+      {
+        accountId: account._id,
+        customerId: account.customerId,
+        type: 'deposit',
+        amount,
+        balanceAfter,
+        channel: 'transfer',
+        accraDay: accraDay(),
+        recordedById: new Types.ObjectId(actor.sub),
+        idempotencyKey: `loan-trash:${loanId.toHexString()}:${account._id.toHexString()}`,
+      },
+    ],
+    { session },
+  );
+  await audit(
+    {
+      actorId: actor.sub,
+      action: 'savings.deposit.record',
+      entityType: 'savings-account',
+      entityId: account._id,
+      amountBefore: account.balance,
+      amountAfter: balanceAfter,
+      after: { amount, via: 'loan-deleted', loanId: loanId.toHexString() },
       ...(requestId !== undefined ? { requestId } : {}),
     },
     session,
@@ -1140,6 +1211,15 @@ function toTrashedSavingsAccount(a: SavingsAccount): TrashedSavingsAccount {
   };
 }
 
+/**
+ * Delete a savings account, reversing its money (admin/manager, client
+ * decision 23 Oct 2026). Any account, whatever it holds: the account and all
+ * its live transactions go to the trash together, so every deposit and
+ * withdrawal leaves the books and the withdrawal fees come back out of the
+ * commission account. The standing balance is the customer's own money, cash
+ * for the office to hand back. The balance is left on the record untouched so
+ * a restore brings the account back exactly as it was. All in one transaction.
+ */
 export async function trashSavingsAccount(
   actor: AccessTokenPayload,
   accountId: Types.ObjectId,
@@ -1149,46 +1229,67 @@ export async function trashSavingsAccount(
   const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
 
-  // Trashed transactions count too — any history at all blocks the trash.
-  const txnCount = await SavingsTxnModel.countDocuments({ accountId: account._id });
-  if (account.status !== 'active' || account.balance !== 0 || txnCount !== 0) {
-    throw new AppError(
-      'CANNOT_TRASH',
-      'Only empty, unused savings accounts can be moved to the trash',
-      422,
-      { status: account.status, balance: account.balance, txnCount },
-    );
+  const now = new Date();
+  const deleted = {
+    deletedAt: now,
+    deletedById: new Types.ObjectId(actor.sub),
+    ...(reason !== undefined ? { deleteReason: reason } : {}),
+  };
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const live = await SavingsTxnModel.find({ accountId, ...NOT_TRASHED }, { _id: 1 }).session(
+        session,
+      );
+      const acctUpd = await SavingsAccountModel.updateOne(
+        { _id: account._id, ...NOT_TRASHED },
+        { $set: deleted },
+        { session },
+      );
+      if (acctUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      if (live.length > 0) {
+        // The txns are trashed on the SAME instant as the account, which is
+        // how a restore tells them apart from one trashed on its own earlier.
+        await SavingsTxnModel.updateMany(
+          { accountId, ...NOT_TRASHED },
+          { $set: deleted, $unset: { countsTowardDailyLimit: '' } },
+          { session },
+        );
+        // Every withdrawal fee this account earned leaves the commission account.
+        await CommissionModel.deleteMany(
+          { savingsTxnId: { $in: live.map((t) => t._id) } },
+          { session },
+        );
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'savings.account.trash',
+          entityType: 'savings-account',
+          entityId: account._id,
+          amountBefore: account.balance,
+          amountAfter: 0,
+          before: { status: account.status, deletedAt: null },
+          after: {
+            status: account.status,
+            deletedAt: now.toISOString(),
+            txnsRemoved: live.length,
+            ...(reason !== undefined ? { reason } : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
   }
 
-  const now = new Date();
-  await SavingsAccountModel.updateOne(
-    { _id: account._id },
-    {
-      $set: {
-        deletedAt: now,
-        deletedById: new Types.ObjectId(actor.sub),
-        ...(reason !== undefined ? { deleteReason: reason } : {}),
-      },
-    },
-  );
   account.deletedAt = now;
   account.deletedById = new Types.ObjectId(actor.sub);
   if (reason !== undefined) account.deleteReason = reason;
-
-  await audit({
-    actorId: actor.sub,
-    action: 'savings.account.trash',
-    entityType: 'savings-account',
-    entityId: account._id,
-    before: { status: account.status, deletedAt: null },
-    after: {
-      status: account.status,
-      deletedAt: now,
-      ...(reason !== undefined ? { reason } : {}),
-    },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
-
   emitAdminEvent('savings.account.trashed', {
     id: account._id.toHexString(),
     accountNumber: account.accountNumber,
@@ -1216,20 +1317,57 @@ export async function restoreSavingsAccount(
     );
   }
 
-  await SavingsAccountModel.updateOne(
-    { _id: account._id },
-    { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
-  );
-
-  await audit({
-    actorId: actor.sub,
-    action: 'savings.account.restore',
-    entityType: 'savings-account',
-    entityId: account._id,
-    before: { status: account.status, deletedAt: account.deletedAt },
-    after: { status: account.status, deletedAt: null },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
+  // The transactions trashed with the account (same instant) come back with it;
+  // one trashed on its own earlier, at a different instant, stays in the trash.
+  const deletedAt = account.deletedAt;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await SavingsAccountModel.updateOne(
+        { _id: account._id },
+        { $set: { deletedAt: null }, $unset: { deletedById: '', deleteReason: '' } },
+        { session },
+      );
+      const txns = await SavingsTxnModel.find({ accountId, deletedAt }).session(session);
+      for (const txn of txns) {
+        await SavingsTxnModel.updateOne(
+          { _id: txn._id },
+          {
+            $set: {
+              deletedAt: null,
+              // Re-claims the 1-per-day slot these held; at most one a day, so
+              // they cannot collide with each other.
+              ...(txn.type === 'withdrawal' || txn.type === 'closure'
+                ? { countsTowardDailyLimit: true }
+                : {}),
+            },
+            $unset: { deletedById: '', deleteReason: '' },
+          },
+          { session },
+        );
+        // The fee each one kept goes back onto the commission account.
+        await recordSavingsFee(session, txn);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'savings.account.restore',
+          entityType: 'savings-account',
+          entityId: account._id,
+          before: { status: account.status, deletedAt },
+          after: { status: account.status, deletedAt: null, txnsRestored: txns.length },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } catch (err) {
+    // A withdrawal's day may have been claimed by another account meanwhile.
+    mapDuplicateKey(err);
+  } finally {
+    await session.endSession();
+  }
+  account.deletedAt = null;
 
   emitAdminEvent('savings.account.restored', {
     id: account._id.toHexString(),
@@ -1266,6 +1404,69 @@ export async function listSavingsAccountTrash(
   };
 }
 
+/** A deleted savings transaction with the account and customer it belonged to,
+ *  for the whole-branch trash list. */
+export interface TrashedSavingsTxnRow {
+  id: string;
+  accountId: string;
+  accountNumber: string;
+  customerId: string;
+  customerName: string;
+  type: string;
+  amount: number;
+  fee: number;
+  deletedAt: Date;
+  deleteReason?: string;
+}
+
+/** Every deleted savings transaction across every account, newest first. Backs
+ *  the branch-wide trash; restore is still per account. */
+export async function listSavingsTxnTrashAll(
+  query: ListTrashQuery,
+): Promise<{ items: TrashedSavingsTxnRow[]; page: number; limit: number; total: number }> {
+  // A trashed account's transactions went to the trash with it and come back
+  // with it, so only the account is listed — not each of its transactions.
+  const trashedAccountIds = await SavingsAccountModel.distinct('_id', { deletedAt: { $ne: null } });
+  const filter = { deletedAt: { $ne: null }, accountId: { $nin: trashedAccountIds } };
+  const [txns, total] = await Promise.all([
+    SavingsTxnModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SavingsTxnModel.countDocuments(filter),
+  ]);
+  const accountIds = [...new Set(txns.map((t) => t.accountId.toHexString()))];
+  const accounts = await SavingsAccountModel.find(
+    { _id: { $in: accountIds } },
+    { accountNumber: 1, customerId: 1 },
+  );
+  const acctById = new Map(accounts.map((a) => [a._id.toHexString(), a]));
+  const custIds = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: custIds } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: txns.map((t) => {
+      const acct = acctById.get(t.accountId.toHexString());
+      const customerId = acct?.customerId.toHexString() ?? '';
+      return {
+        id: t._id.toHexString(),
+        accountId: t.accountId.toHexString(),
+        accountNumber: acct?.accountNumber ?? '',
+        customerId,
+        customerName: names.get(customerId) ?? '',
+        type: t.type,
+        amount: t.amount,
+        fee: t.fee ?? 0,
+        deletedAt: requireDeletedAt(t.deletedAt),
+        ...(t.deleteReason !== undefined ? { deleteReason: t.deleteReason } : {}),
+      };
+    }),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
+}
+
 // ---------------------------------------------------------------- txn trash
 
 export interface TrashedSavingsTxn extends PublicSavingsTxn {
@@ -1283,11 +1484,53 @@ function toTrashedTxn(t: SavingsTxn): TrashedSavingsTxn {
   };
 }
 
+type BalanceTxn = Pick<SavingsTxn, '_id' | 'type' | 'amount' | 'fee' | 'createdAt'>;
+
+/** One live transaction's effect on the balance: a deposit adds; a withdrawal
+ *  takes the money and its fee. A closure never sits among an active account's
+ *  live transactions. */
+function balanceDelta(t: Pick<SavingsTxn, 'type' | 'amount' | 'fee'>): number {
+  return t.type === 'deposit' ? t.amount : -(t.amount + (t.fee ?? 0));
+}
+
+/** The order the ledger reads in: when it happened, then the id as a tiebreak —
+ *  the same ordering Mongo's `{ createdAt: 1, _id: 1 }` gives. */
+function byLedgerOrder(a: BalanceTxn, b: BalanceTxn): number {
+  return (
+    a.createdAt.getTime() - b.createdAt.getTime() ||
+    a._id.toHexString().localeCompare(b._id.toHexString())
+  );
+}
+
 /**
- * Moving a transaction to the trash reverses its balance effect, so only the
- * newest live transaction of an active account qualifies — older mistakes are
- * corrected by trashing forward from the end, keeping the balance history
- * consistent. Trashing a withdrawal also frees its 1-per-day slot.
+ * Replays a set of live transactions in ledger order and returns the balance
+ * each one leaves. Refuses (422) if the running balance ever drops below zero:
+ * the account would have been overdrawn, so this is not a history that could
+ * have happened, and the delete or restore that produced it is rejected.
+ */
+function replayBalances(
+  ordered: readonly BalanceTxn[],
+  code: string,
+  message: string,
+): { balances: Map<string, number>; final: number } {
+  const balances = new Map<string, number>();
+  let bal = 0;
+  for (const t of [...ordered].sort(byLedgerOrder)) {
+    bal += balanceDelta(t);
+    if (bal < 0) throw new AppError(code, message, 422);
+    balances.set(t._id.toHexString(), bal);
+  }
+  return { balances, final: bal };
+}
+
+/**
+ * Move a transaction to the trash, reversing its balance effect (admin/manager,
+ * client decision 23 Oct 2026). Any transaction, not only the newest: the
+ * account's remaining transactions are replayed in ledger order and every later
+ * running balance is rewritten, so removing one from the middle leaves the
+ * history consistent. Refused when that replay would overdraw the account at
+ * some later point — a position that could never have happened. Trashing a
+ * withdrawal frees its 1-per-day slot; its fee leaves the commission account.
  */
 export async function trashSavingsTxn(
   actor: AccessTokenPayload,
@@ -1314,32 +1557,49 @@ export async function trashSavingsTxn(
   if (account.status !== 'active') {
     throw new AppError('CANNOT_TRASH', 'Only transactions on active accounts can be trashed', 422);
   }
-  const newest = await SavingsTxnModel.findOne({ accountId, ...NOT_TRASHED }).sort({
-    createdAt: -1,
-    _id: -1,
-  });
-  if (!newest?._id.equals(txn._id)) {
+  // An open correction request on this transaction must be decided first, or it
+  // would be left pointing at nothing.
+  const openRequest = await TxnCorrectionModel.exists({ txnId, status: 'pending' });
+  if (openRequest) {
     throw new AppError(
       'CANNOT_TRASH',
-      'Only the most recent transaction can be moved to the trash',
+      'A correction request is waiting on this transaction — decide it first',
       422,
     );
   }
 
-  // deposit: take the money back out; withdrawal: put amount + fee back in.
-  const delta = txn.type === 'deposit' ? -txn.amount : txn.amount + (txn.fee ?? 0);
   const now = new Date();
-
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      const live = await SavingsTxnModel.find({ accountId, ...NOT_TRASHED })
+        .sort({ createdAt: 1, _id: 1 })
+        .session(session);
+      const remaining = live.filter((t) => !t._id.equals(txnId));
+      const { balances, final } = replayBalances(
+        remaining,
+        'CANNOT_TRASH',
+        'Deleting this would overdraw the account at a later point',
+      );
+
       const upd = await SavingsAccountModel.updateOne(
-        { _id: accountId, status: 'active', balance: txn.balanceAfter, ...NOT_TRASHED },
-        { $inc: { balance: delta } },
+        { _id: accountId, status: 'active', balance: account.balance, ...NOT_TRASHED },
+        { $set: { balance: final } },
         { session },
       );
       if (upd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      // Every later transaction's running balance shifts by what this one moved.
+      for (const t of remaining) {
+        const b = balances.get(t._id.toHexString()) ?? 0;
+        if (b !== t.balanceAfter) {
+          await SavingsTxnModel.updateOne(
+            { _id: t._id },
+            { $set: { balanceAfter: b } },
+            { session },
+          );
+        }
       }
       const txnUpd = await SavingsTxnModel.updateOne(
         { _id: txnId, deletedAt: null },
@@ -1364,8 +1624,8 @@ export async function trashSavingsTxn(
           action: 'savings.txn.trash',
           entityType: 'savings-txn',
           entityId: txnId,
-          amountBefore: txn.balanceAfter,
-          amountAfter: txn.balanceAfter + delta,
+          amountBefore: account.balance,
+          amountAfter: final,
           before: { type: txn.type, amount: txn.amount, deletedAt: null },
           after: {
             type: txn.type,
@@ -1403,8 +1663,15 @@ export async function restoreSavingsTxn(
   txnId: Types.ObjectId,
   requestId?: string,
 ): Promise<{ txn: PublicSavingsTxn; account: PublicSavingsAccount }> {
-  const account = await SavingsAccountModel.findOne({ _id: accountId, ...NOT_TRASHED });
+  const account = await SavingsAccountModel.findById(accountId);
   if (!account) throw new AppError('NOT_FOUND', 'Account not found', 404);
+  if (account.deletedAt) {
+    throw new AppError(
+      'CANNOT_RESTORE',
+      'The account is in the trash — restore the account and its transactions come back with it',
+      422,
+    );
+  }
   const txn = await SavingsTxnModel.findOne({ _id: txnId, accountId });
   if (!txn) throw new AppError('NOT_FOUND', 'Transaction not found', 404);
   if (!txn.deletedAt) {
@@ -1413,40 +1680,47 @@ export async function restoreSavingsTxn(
   if (account.status !== 'active') {
     throw new AppError('CANNOT_RESTORE', 'Only active accounts can take a restore', 422);
   }
-  const newerLive = await SavingsTxnModel.findOne({
-    accountId,
-    ...NOT_TRASHED,
-    createdAt: { $gt: txn.createdAt },
-  });
-  if (newerLive) {
-    throw new AppError(
-      'CANNOT_RESTORE',
-      'Newer transactions exist on the account — the balance has moved on',
-      422,
-    );
-  }
-
-  // Reverse of trash: deposit puts the money back; withdrawal re-debits.
-  const delta = txn.type === 'deposit' ? txn.amount : -(txn.amount + (txn.fee ?? 0));
-  const expectedBalance = txn.balanceAfter - delta;
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      const live = await SavingsTxnModel.find({ accountId, ...NOT_TRASHED })
+        .sort({ createdAt: 1, _id: 1 })
+        .session(session);
+      // Replay with this transaction back in its place among the live ones.
+      const { balances, final } = replayBalances(
+        [...live, txn],
+        'CANNOT_RESTORE',
+        'Restoring this would overdraw the account at a later point',
+      );
+
       const upd = await SavingsAccountModel.updateOne(
-        { _id: accountId, status: 'active', balance: expectedBalance, ...NOT_TRASHED },
-        { $inc: { balance: delta } },
+        { _id: accountId, status: 'active', balance: account.balance, ...NOT_TRASHED },
+        { $set: { balance: final } },
         { session },
       );
       if (upd.modifiedCount !== 1) {
         throw new AppError('CONFLICT', 'Account was updated concurrently — retry', 409);
+      }
+      for (const t of live) {
+        const b = balances.get(t._id.toHexString()) ?? 0;
+        if (b !== t.balanceAfter) {
+          await SavingsTxnModel.updateOne(
+            { _id: t._id },
+            { $set: { balanceAfter: b } },
+            { session },
+          );
+        }
       }
       const txnUpd = await SavingsTxnModel.updateOne(
         { _id: txnId, deletedAt: { $ne: null } },
         {
           $set: {
             deletedAt: null,
-            ...(txn.type === 'withdrawal' ? { countsTowardDailyLimit: true } : {}),
+            balanceAfter: balances.get(txnId.toHexString()) ?? txn.balanceAfter,
+            ...(txn.type === 'withdrawal' || txn.type === 'closure'
+              ? { countsTowardDailyLimit: true }
+              : {}),
           },
           $unset: { deletedById: '', deleteReason: '' },
         },
@@ -1462,8 +1736,8 @@ export async function restoreSavingsTxn(
           action: 'savings.txn.restore',
           entityType: 'savings-txn',
           entityId: txnId,
-          amountBefore: expectedBalance,
-          amountAfter: txn.balanceAfter,
+          amountBefore: account.balance,
+          amountAfter: final,
           before: { type: txn.type, amount: txn.amount, deletedAt: txn.deletedAt },
           after: { type: txn.type, amount: txn.amount, deletedAt: null },
           ...(requestId !== undefined ? { requestId } : {}),

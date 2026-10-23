@@ -2,17 +2,29 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import {
+  CommissionModel,
   HpItemModel,
+  LoanModel,
+  RepaymentModel,
   SavingsAccountModel,
+  SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
 } from '../../src/models/index.js';
+import * as corrections from '../../src/modules/corrections/corrections.service.js';
 import * as customers from '../../src/modules/customers/customers.service.js';
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import { asOfficer, makeCustomer, makeGuarantor, setupDb, teardownDb } from './helpers.js';
+import {
+  asOfficer,
+  makeCustomer,
+  makeGuarantor,
+  makeTeller,
+  setupDb,
+  teardownDb,
+} from './helpers.js';
 
 /** Stands behind every application in this file. One is enough: the rule is
  *  about who the guarantor is, not how many loans they carry. */
@@ -130,7 +142,7 @@ describe('susu account trash', () => {
 });
 
 describe('savings account trash', () => {
-  it('pristine account trashes; an account with any transaction does not', async () => {
+  it('a pristine account trashes and is gone from the book', async () => {
     const customerId = await makeCustomer();
     const pristine = await savings.openAccount(officer, customerId, undefined, undefined, 'cash');
     const pristineId = new Types.ObjectId(pristine.account.id);
@@ -138,11 +150,30 @@ describe('savings account trash', () => {
     await expect(savings.getAccount(officer, pristineId)).rejects.toMatchObject({
       code: 'NOT_FOUND',
     });
+  });
 
-    const funded = await savings.openAccount(officer, customerId, 5_000, randomUUID(), 'cash');
-    await expect(
-      savings.trashSavingsAccount(officer, new Types.ObjectId(funded.account.id), undefined),
-    ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
+  it('a funded account trashes with its transactions and restores intact', async () => {
+    const customerId = await makeCustomer();
+    const opened = await savings.openAccount(officer, customerId, 20_000, randomUUID(), 'cash');
+    const accountId = new Types.ObjectId(opened.account.id);
+    await savings.withdraw(officer, accountId, 2_000, randomUUID()); // fee → commission
+    expect(await CommissionModel.countDocuments({ source: 'savings-fee' })).toBeGreaterThan(0);
+    const feesBefore = await CommissionModel.countDocuments({ source: 'savings-fee' });
+
+    await savings.trashSavingsAccount(officer, accountId, 'opened for the wrong person');
+    // Gone from the book, and every transaction went with it.
+    await expect(savings.getAccount(officer, accountId)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    expect(await SavingsTxnModel.countDocuments({ accountId, deletedAt: null })).toBe(0);
+    // The withdrawal fee left the commission account.
+    expect(await CommissionModel.countDocuments({ source: 'savings-fee' })).toBe(feesBefore - 1);
+
+    await savings.restoreSavingsAccount(officer, accountId);
+    const back = await savings.getAccount(officer, accountId);
+    expect(back.balance).toBe(opened.account.balance - 2_000 - 1_000); // 20k − 2k − 10 fee
+    expect(await SavingsTxnModel.countDocuments({ accountId, deletedAt: null })).toBe(2);
+    expect(await CommissionModel.countDocuments({ source: 'savings-fee' })).toBe(feesBefore);
   });
 });
 
@@ -167,15 +198,136 @@ describe('loan trash', () => {
     });
   });
 
-  it('active loans can never be trashed', async () => {
+  it('an active loan is deleted with its money: fee out, repayments out, accounts refunded', async () => {
     const customerId = await makeCustomer(true);
-    const loan = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
-    const loanId = new Types.ObjectId(loan.id);
+    const { account: susuAccount } = await susu.openAccount(officer, customerId, 2_000);
+    const susuId = new Types.ObjectId(susuAccount.id);
+    await susu.recordDeposit(officer, susuId, 20_000, randomUUID(), 'cash', undefined, undefined, [
+      { planId: susuAccount.plans[0]!.id, payments: 10 },
+    ]);
+    const { account: loanSavings } = await savings.openAccount(
+      officer,
+      customerId,
+      30_000,
+      randomUUID(),
+      'cash',
+      'loan',
+    );
+    const loanSavingsId = new Types.ObjectId(loanSavings.id);
+
+    const applied = await loans.applyForLoan(
+      officer,
+      customerId,
+      100_000,
+      3,
+      guarantor,
+      undefined,
+      undefined,
+      { processingFee: 5_000 },
+    );
+    const loanId = new Types.ObjectId(applied.id);
     await loans.approveLoan(officer, loanId);
+    await loans.repayCash(officer, loanId, 5_000, randomUUID(), 'cash');
+    await loans.repayFromSusu(officer, loanId, susuId, 10_000, randomUUID());
+    await loans.repayFromLoanSavings(officer, loanId, 20_000, randomUUID());
+    expect((await SusuAccountModel.findById(susuId))?.balance).toBe(10_000);
+    expect(await CommissionModel.countDocuments({ source: 'loan-fee', accountId: loanId })).toBe(1);
+
+    const trashed = await loans.trashLoan(officer, loanId, 'wrong customer');
+    expect(trashed.deleteReason).toBe('wrong customer');
+
+    const repayments = await RepaymentModel.find({ loanId });
+    expect(repayments).toHaveLength(3);
+    expect(repayments.every((r) => r.deletedAt)).toBe(true);
+    expect(await CommissionModel.countDocuments({ source: 'loan-fee', accountId: loanId })).toBe(0);
+    // Susu gets its 10,000 back as five whole rounds; loan savings its 20,000.
+    expect((await SusuAccountModel.findById(susuId))?.balance).toBe(20_000);
+    expect((await SavingsAccountModel.findById(loanSavingsId))?.balance).toBe(30_000);
+
+    await expect(loans.restoreLoan(officer, loanId)).rejects.toMatchObject({
+      code: 'CANNOT_RESTORE',
+    });
+    // The one-open-loan slot is free again.
+    const again = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
+    expect(again.status).toBe('pending');
+  });
+
+  it('refuses, touching nothing, when a susu repayment is too small to go back', async () => {
+    const customerId = await makeCustomer(true);
+    const { account: susuAccount } = await susu.openAccount(officer, customerId, 2_000);
+    const susuId = new Types.ObjectId(susuAccount.id);
+    await susu.recordDeposit(officer, susuId, 20_000, randomUUID(), 'cash', undefined, undefined, [
+      { planId: susuAccount.plans[0]!.id, payments: 10 },
+    ]);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
+    const loanId = new Types.ObjectId(applied.id);
+    await loans.approveLoan(officer, loanId);
+    await loans.repayFromSusu(officer, loanId, susuId, 1_500, randomUUID());
 
     await expect(loans.trashLoan(officer, loanId, undefined)).rejects.toMatchObject({
       code: 'CANNOT_TRASH',
     });
+    expect((await LoanModel.findById(loanId))?.deletedAt).toBeNull();
+    expect((await RepaymentModel.findOne({ loanId }))?.deletedAt).toBeNull();
+    expect((await SusuAccountModel.findById(susuId))?.balance).toBe(18_500);
+  });
+});
+
+describe('single repayment delete', () => {
+  it('removes any repayment, refunds its source, and reopens a settled loan', async () => {
+    const customerId = await makeCustomer(true);
+    const { account: loanSavings } = await savings.openAccount(
+      officer,
+      customerId,
+      60_000,
+      randomUUID(),
+      'cash',
+      'loan',
+    );
+    const loanSavingsId = new Types.ObjectId(loanSavings.id);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
+    const loanId = new Types.ObjectId(applied.id);
+    await loans.approveLoan(officer, loanId); // totalDue 110,000
+
+    const first = await loans.repayFromLoanSavings(officer, loanId, 40_000, randomUUID());
+    await loans.repayCash(officer, loanId, 70_000, randomUUID(), 'cash'); // settles → repaid
+    expect((await LoanModel.findById(loanId))?.status).toBe('repaid');
+    expect((await SavingsAccountModel.findById(loanSavingsId))?.balance).toBe(20_000);
+
+    // Delete the FIRST (not newest) repayment: its 40,000 goes back to loan
+    // savings, the loan reopens, and only two repayments remain live.
+    const { loan } = await loans.trashRepayment(
+      officer,
+      loanId,
+      new Types.ObjectId(first.repayment.id),
+      'wrong account',
+    );
+    expect(loan.status).toBe('active');
+    expect(loan.totalRepaid).toBe(70_000);
+    expect((await SavingsAccountModel.findById(loanSavingsId))?.balance).toBe(60_000);
+    const live = await RepaymentModel.find({ loanId, deletedAt: null });
+    expect(live).toHaveLength(1);
+    expect((await RepaymentModel.findById(first.repayment.id))?.deletedAt).toBeTruthy();
+  });
+
+  it('refuses while a correction request is pending on the repayment', async () => {
+    const customerId = await makeCustomer(true);
+    const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
+    const loanId = new Types.ObjectId(applied.id);
+    await loans.approveLoan(officer, loanId);
+    const rep = await loans.repayCash(officer, loanId, 30_000, randomUUID(), 'cash');
+    const repaymentId = new Types.ObjectId(rep.repayment.id);
+
+    const teller = await makeTeller();
+    await corrections.propose(teller, 'loan-repayment', loanId, repaymentId, {
+      amount: 25_000,
+      reason: 'typo',
+    });
+
+    await expect(
+      loans.trashRepayment(officer, loanId, repaymentId, undefined),
+    ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
+    expect((await RepaymentModel.findById(repaymentId))?.deletedAt).toBeNull();
   });
 });
 
@@ -331,9 +483,9 @@ describe('savings txn trash', () => {
     const redo = await savings.withdraw(officer, accountId, 3_000, randomUUID());
     expect(redo.txn.amount).toBe(3_000);
 
-    // Restoring the trashed withdrawal must now be refused (newer txns + day taken).
+    // Restoring the trashed withdrawal is refused: its day was taken meanwhile.
     await expect(savings.restoreSavingsTxn(officer, accountId, txnId)).rejects.toMatchObject({
-      code: 'CANNOT_RESTORE',
+      code: 'WITHDRAWAL_LIMIT',
     });
   });
 
@@ -366,5 +518,45 @@ describe('savings txn trash', () => {
     await expect(
       savings.trashSavingsTxn(officer, accountId, new Types.ObjectId(closureTxn.id), undefined),
     ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
+  });
+
+  it('deletes a middle deposit and rewrites the later running balances', async () => {
+    const customerId = await makeCustomer();
+    const opened = await savings.openAccount(officer, customerId, undefined, undefined, 'cash');
+    const accountId = new Types.ObjectId(opened.account.id);
+    const first = await savings.deposit(officer, accountId, 5_000, randomUUID(), 'cash');
+    const middle = await savings.deposit(officer, accountId, 3_000, randomUUID(), 'cash');
+    await savings.deposit(officer, accountId, 2_000, randomUUID(), 'cash'); // bal 10,000
+
+    // Remove the middle 3,000 — not the newest.
+    const trashed = await savings.trashSavingsTxn(
+      officer,
+      accountId,
+      new Types.ObjectId(middle.txn.id),
+      'duplicate',
+    );
+    expect(trashed.account.balance).toBe(7_000);
+
+    // The first keeps 5,000; the last now reads 7,000, not 10,000.
+    const firstRow = await SavingsTxnModel.findById(first.txn.id);
+    expect(firstRow?.balanceAfter).toBe(5_000);
+    const live = await SavingsTxnModel.find({ accountId, deletedAt: null }).sort({ createdAt: 1 });
+    expect(live.at(-1)?.balanceAfter).toBe(7_000);
+  });
+
+  it('refuses to delete a deposit that a later withdrawal has already spent', async () => {
+    const customerId = await makeCustomer();
+    const opened = await savings.openAccount(officer, customerId, 6_000, randomUUID(), 'cash');
+    const accountId = new Types.ObjectId(opened.account.id);
+    const dep = await savings.deposit(officer, accountId, 5_000, randomUUID(), 'cash'); // bal 11,000
+    await savings.withdraw(officer, accountId, 9_000, randomUUID()); // bal 1,000
+
+    // Removing the 5,000 deposit would drop the balance below zero at the
+    // withdrawal — an impossible history, so it is refused and nothing moves.
+    await expect(
+      savings.trashSavingsTxn(officer, accountId, new Types.ObjectId(dep.txn.id), undefined),
+    ).rejects.toMatchObject({ code: 'CANNOT_TRASH' });
+    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(1_000);
+    expect((await SavingsTxnModel.findById(dep.txn.id))?.deletedAt).toBeNull();
   });
 });

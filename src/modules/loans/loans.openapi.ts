@@ -334,6 +334,18 @@ export const loanPaths: ZodOpenApiPathsObject = {
                 createdAt: z.iso.datetime(),
               }),
             ),
+            trashedRepayments: z.array(
+              z.object({
+                id: z.string(),
+                amount: z.number().int(),
+                source: z.string(),
+                recordedById: z.string(),
+                createdAt: z.iso.datetime(),
+                deletedAt: z.iso.datetime(),
+                deletedById: z.string().optional(),
+                deleteReason: z.string().optional(),
+              }),
+            ),
           }),
         ),
         '404': errorResponse('NOT_FOUND'),
@@ -341,17 +353,25 @@ export const loanPaths: ZodOpenApiPathsObject = {
     },
     delete: {
       tags: ['Loans'],
-      summary: 'Move a loan application to the trash (soft delete)',
+      summary: 'Move a loan to the trash (soft delete, office)',
       description:
-        'Only pending or rejected applications can be trashed — approved money ' +
-        'history never leaves the ledger. Optional reason is recorded.',
+        'Any loan. One that went out is deleted as if it never happened: its ' +
+        'disbursement, processing fee, collateral and repayments leave the books. ' +
+        'Repayments from savings or loan savings go back to that account, and ' +
+        'repayments from susu go back as a deposit in whole rounds, each dated ' +
+        'today. Cash and Paystack repayments are the office’s to hand back. A ' +
+        'deleted disbursed loan cannot be restored. Optional reason is recorded.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(trashBody),
       responses: {
         '200': jsonResponse('Trashed', z.object({ loan: trashedLoan })),
         '404': errorResponse('NOT_FOUND'),
-        '422': errorResponse('CANNOT_TRASH — loan is not pending or rejected'),
+        '409': errorResponse('CONFLICT — the loan moved meanwhile; retry'),
+        '422': errorResponse(
+          'CANNOT_TRASH — a repayment cannot go back to the account it came from ' +
+            '(closed, or less than one susu round)',
+        ),
       },
     },
   },
@@ -514,19 +534,44 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
-  '/loans/{id}/repayments/{repaymentId}': correctionPathsFor(
-    'Loans',
-    'a cash repayment',
-    'Only the newest repayment can change, and only one paid as cash: repayments paid ' +
-      'by a susu closure or a transfer, and Paystack charges, cannot (CANNOT_CORRECT). ' +
-      'The new amount may not exceed what the loan owed before the repayment landed ' +
-      '(EXCEEDS_BALANCE, details.remaining). The schedule is rebuilt from the new total, ' +
-      'oldest instalment first. A repayment corrected to exactly what was owed settles ' +
-      'the loan; a settlement corrected down reopens it as active.',
-    repaymentIdParam,
-    repaymentTxn,
-    publicLoan,
-  ),
+  '/loans/{id}/repayments/{repaymentId}': {
+    ...correctionPathsFor(
+      'Loans',
+      'a cash repayment',
+      'Only the newest repayment can change, and only one paid as cash: repayments paid ' +
+        'by a susu closure or a transfer, and Paystack charges, cannot (CANNOT_CORRECT). ' +
+        'The new amount may not exceed what the loan owed before the repayment landed ' +
+        '(EXCEEDS_BALANCE, details.remaining). The schedule is rebuilt from the new total, ' +
+        'oldest instalment first. A repayment corrected to exactly what was owed settles ' +
+        'the loan; a settlement corrected down reopens it as active.',
+      repaymentIdParam,
+      repaymentTxn,
+      publicLoan,
+    ),
+    delete: {
+      tags: ['Loans'],
+      summary: 'Delete a single repayment, reversing its money (office)',
+      description:
+        'Any repayment, not only the newest. Its amount comes off the loan; a loan it had ' +
+        'settled reopens as active, and the schedule is rebuilt from the new total, oldest ' +
+        'instalment first. Money paid from the customer’s susu, savings or loan savings goes ' +
+        'back to that account as a deposit dated today (a susu refund must cover at least one ' +
+        'whole round); cash and Paystack repayments leave the books for the office to hand ' +
+        'back. Refused while a correction request is waiting on the repayment.',
+      security,
+      requestParams: { path: repaymentIdParam },
+      requestBody: jsonBody(trashBody),
+      responses: {
+        '200': jsonResponse('Deleted', loanResult),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT — the loan or repayment moved meanwhile; retry'),
+        '422': errorResponse(
+          'CANNOT_TRASH — the loan has no repayments to remove, a correction request is ' +
+            'pending on it, or a susu refund is less than one round',
+        ),
+      },
+    },
+  },
   '/loans/{id}/repayments/{repaymentId}/corrections': proposeCorrectionPathFor(
     'Loans',
     'a repayment',

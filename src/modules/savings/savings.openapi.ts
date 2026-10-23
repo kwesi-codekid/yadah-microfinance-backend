@@ -169,10 +169,13 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     },
     delete: {
       tags: ['Savings'],
-      summary: 'Move an account to the trash (office only)',
+      summary: 'Delete an account, reversing its money (office only)',
       description:
-        'Only an active account with zero balance and no transactions ever recorded ' +
-        'can be trashed. Optional reason (2-300 chars) is stored with the entry.',
+        'Any account, whatever it holds. The account and all its live transactions go ' +
+        'to the trash together, so every deposit and withdrawal leaves the books and the ' +
+        'withdrawal fees come back out of the commission account; the standing balance is ' +
+        'the customer’s cash for the office to hand back. A restore brings the account and ' +
+        'those same transactions back. Optional reason (2-300 chars) is stored.',
       security,
       requestParams: { path: idParam },
       requestBody: jsonBody(trashBody),
@@ -180,7 +183,7 @@ export const savingsPaths: ZodOpenApiPathsObject = {
         '200': jsonResponse('Trashed', z.object({ account: trashedSavingsAccount })),
         '403': errorResponse('FORBIDDEN — office only'),
         '404': errorResponse('NOT_FOUND — missing or already trashed'),
-        '422': errorResponse('CANNOT_TRASH — account has a balance, transactions, or is closed'),
+        '409': errorResponse('CONFLICT — the account moved meanwhile; retry'),
       },
     },
   },
@@ -245,8 +248,9 @@ export const savingsPaths: ZodOpenApiPathsObject = {
     ...correctionPathsFor(
       'Savings',
       'a deposit or withdrawal',
-      'Only the newest live transaction of an active account can change, for the same ' +
-        'reason only that one can be trashed: every later running balance is built on it. ' +
+      'Only the newest live transaction of an active account can change: every later ' +
+        'running balance is built on it (deleting a transaction, which rewrites those ' +
+        'balances, is not limited this way). ' +
         'A withdrawal keeps its flat fee and is checked against what the account held ' +
         'before it (EXCEEDS_AVAILABLE, details.available); a deposit keeps the GHS 5 ' +
         'floor (AMOUNT_TOO_SMALL). Transfer legs, Paystack charges and closures cannot ' +
@@ -259,9 +263,11 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       tags: ['Savings'],
       summary: 'Move a transaction to the trash (office only)',
       description:
-        'Reverses the balance effect atomically. Only the newest live deposit or ' +
-        'withdrawal of an active account qualifies — closures and transfer-created ' +
-        'transactions are immutable. Trashing a withdrawal frees its 1-per-day slot.',
+        'Any live deposit or withdrawal of an active account, not only the newest: every ' +
+        'later running balance is rewritten so the history stays consistent. Closures, ' +
+        'transfer-created transactions, and one with a pending correction request cannot. ' +
+        'Refused (CANNOT_TRASH) when the replay would overdraw the account at a later ' +
+        'point. Trashing a withdrawal frees its 1-per-day slot and removes its fee.',
       security,
       requestParams: { path: txnIdParam },
       requestBody: jsonBody(trashBody),
@@ -282,9 +288,10 @@ export const savingsPaths: ZodOpenApiPathsObject = {
       tags: ['Savings'],
       summary: 'Restore a trashed transaction (office only)',
       description:
-        'Re-applies the balance effect. Only possible while no newer live ' +
-        'transactions exist; restoring a withdrawal re-claims its day — if the day ' +
-        'is taken meanwhile the restore is refused (WITHDRAWAL_LIMIT).',
+        'Puts the transaction back in its place and rewrites every later running balance. ' +
+        'Refused (CANNOT_RESTORE) if that would overdraw the account at a later point. ' +
+        'Restoring a withdrawal re-claims its day — if the day is taken meanwhile the ' +
+        'restore is refused (WITHDRAWAL_LIMIT).',
       security,
       requestParams: { path: txnIdParam },
       responses: {

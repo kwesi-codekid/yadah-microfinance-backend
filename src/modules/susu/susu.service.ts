@@ -2673,6 +2673,62 @@ export async function listDepositTrash(
   return { items: deposits.map(toTrashedDeposit), page: query.page, limit: query.limit, total };
 }
 
+/** A deleted susu deposit with the account and customer it belonged to, for the
+ *  whole-branch trash list. */
+export interface TrashedDepositRow {
+  id: string;
+  accountId: string;
+  accountNumber: string;
+  customerId: string;
+  customerName: string;
+  amount: number;
+  deletedAt: Date;
+  deleteReason?: string;
+}
+
+/** Every deleted susu deposit across every account, newest first. Backs the
+ *  branch-wide trash; restore is still per account. */
+export async function listDepositTrashAll(
+  query: ListTrashQuery,
+): Promise<{ items: TrashedDepositRow[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [deposits, total] = await Promise.all([
+    SusuDepositModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    SusuDepositModel.countDocuments(filter),
+  ]);
+  const accountIds = [...new Set(deposits.map((d) => d.accountId.toHexString()))];
+  const accounts = await SusuAccountModel.find(
+    { _id: { $in: accountIds } },
+    { accountNumber: 1, customerId: 1 },
+  );
+  const acctById = new Map(accounts.map((a) => [a._id.toHexString(), a]));
+  const custIds = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: custIds } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: deposits.map((d) => {
+      const acct = acctById.get(d.accountId.toHexString());
+      const customerId = acct?.customerId.toHexString() ?? '';
+      return {
+        id: d._id.toHexString(),
+        accountId: d.accountId.toHexString(),
+        accountNumber: acct?.accountNumber ?? '',
+        customerId,
+        customerName: names.get(customerId) ?? '',
+        amount: d.amount,
+        deletedAt: requireDeletedAt(d.deletedAt),
+        ...(d.deleteReason !== undefined ? { deleteReason: d.deleteReason } : {}),
+      };
+    }),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
+}
+
 /**
  * The split a corrected amount is credited with. Given explicitly, it is
  * used as-is. Omitted, it is derived only when the deposit paid one plan:

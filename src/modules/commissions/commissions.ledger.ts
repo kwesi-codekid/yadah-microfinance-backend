@@ -111,6 +111,17 @@ export async function removeSavingsFee(
   await CommissionModel.deleteOne({ savingsTxnId }, session ? { session } : {});
 }
 
+/** A disbursed loan deleted: its processing fee leaves the commission account. */
+export async function removeLoanFee(
+  session: ClientSession | null,
+  loanId: Types.ObjectId,
+): Promise<void> {
+  await CommissionModel.deleteOne(
+    { source: 'loan-fee', accountId: loanId },
+    session ? { session } : {},
+  );
+}
+
 /** The processing fee paid the day a loan went out — handed over at the office. */
 export async function recordLoanFee(
   session: ClientSession | null,

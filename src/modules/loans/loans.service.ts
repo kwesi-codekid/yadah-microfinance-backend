@@ -21,13 +21,15 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  TransferModel,
+  TxnCorrectionModel,
   UserModel,
   type Customer,
   type Loan,
   type Repayment,
   type SavingsAccount,
 } from '../../models/index.js';
-import { debitLoanSavingsInTxn } from '../savings/savings.service.js';
+import { debitLoanSavingsInTxn, refundToSavingsInTxn } from '../savings/savings.service.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   DEFAULT_RATES,
@@ -41,7 +43,8 @@ import {
   type LoanRates,
   type TierLimits,
 } from '../../domain/loans.js';
-import { withdrawWithin } from '../susu/susu.service.js';
+import type { PlanSplit } from '../../domain/susu-plans.js';
+import { depositWithin, roundsSplit, withdrawWithin } from '../susu/susu.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { NOT_TRASHED, requireDeletedAt, type Channel } from '../../models/shared.js';
 import type {
@@ -50,7 +53,7 @@ import type {
   LoanTrashQuery,
   PutConfigBody,
 } from './loans.schemas.js';
-import { recordLoanFee } from '../commissions/commissions.ledger.js';
+import { recordLoanFee, removeLoanFee } from '../commissions/commissions.ledger.js';
 
 // ---------------------------------------------------------------- config
 
@@ -777,14 +780,26 @@ export interface LoanDetail {
     recordedById: string;
     createdAt: Date;
   }[];
+  /** Repayments deleted on their own (not restorable — the money was reversed). */
+  trashedRepayments: {
+    id: string;
+    amount: number;
+    source: string;
+    recordedById: string;
+    createdAt: Date;
+    deletedAt: Date;
+    deletedById?: string;
+    deleteReason?: string;
+  }[];
 }
 
 export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
   const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
-  const [schedule, repayments] = await Promise.all([
+  const [schedule, repayments, trashedRepayments] = await Promise.all([
     LoanScheduleModel.find({ loanId }).sort({ installmentNumber: 1 }),
-    RepaymentModel.find({ loanId }).sort({ createdAt: -1 }),
+    RepaymentModel.find({ loanId, ...NOT_TRASHED }).sort({ createdAt: -1 }),
+    RepaymentModel.find({ loanId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }),
   ]);
   return {
     loan: toPublicLoan(loan),
@@ -804,6 +819,16 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       ...(r.savingsAccountId ? { savingsAccountId: r.savingsAccountId.toHexString() } : {}),
       recordedById: r.recordedById.toHexString(),
       createdAt: r.createdAt,
+    })),
+    trashedRepayments: trashedRepayments.map((r) => ({
+      id: r._id.toHexString(),
+      amount: r.amount,
+      source: r.source,
+      recordedById: r.recordedById.toHexString(),
+      createdAt: r.createdAt,
+      deletedAt: requireDeletedAt(r.deletedAt),
+      ...(r.deletedById ? { deletedById: r.deletedById.toHexString() } : {}),
+      ...(r.deleteReason !== undefined ? { deleteReason: r.deleteReason } : {}),
     })),
   };
 }
@@ -1064,9 +1089,12 @@ export async function repayCash(
 export const prepareRepaymentCorrection: CorrectionPreparer = async (loanId, repaymentId) => {
   const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
-  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId });
+  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId, ...NOT_TRASHED });
   if (!repayment) throw new AppError('NOT_FOUND', 'Repayment not found', 404);
-  const newest = await RepaymentModel.findOne({ loanId }).sort({ createdAt: -1, _id: -1 });
+  const newest = await RepaymentModel.findOne({ loanId, ...NOT_TRASHED }).sort({
+    createdAt: -1,
+    _id: -1,
+  });
   const isNewest = newest?._id.equals(repayment._id) ?? false;
   // What the loan still owed before this repayment landed.
   const remainingBefore = loan.totalDue - (loan.totalRepaid - repayment.amount);
@@ -1498,8 +1526,69 @@ function toTrashedLoan(l: Loan): TrashedLoan {
 }
 
 /**
- * Soft delete. Only applications that never moved money — pending or
- * rejected — can go to the trash; everything else is ledger history.
+ * Where a deleted loan's repayments go back to, keyed by account id: what each
+ * of the customer's susu and savings accounts paid in. Cash and Paystack
+ * repayments go nowhere — they simply leave the books, and the office hands
+ * that money back.
+ */
+interface LoanRefunds {
+  susu: Map<string, number>;
+  savings: Map<string, number>;
+}
+
+async function refundsFor(loanId: Types.ObjectId, repayments: Repayment[]): Promise<LoanRefunds> {
+  const refunds: LoanRefunds = { susu: new Map(), savings: new Map() };
+  const add = (into: Map<string, number>, id: Types.ObjectId, amount: number): void => {
+    into.set(id.toHexString(), (into.get(id.toHexString()) ?? 0) + amount);
+  };
+  for (const r of repayments) {
+    if (r.source === 'cash') continue;
+    if ((r.source === 'susu' || r.source === 'susu-closure') && r.susuAccountId) {
+      add(refunds.susu, r.susuAccountId, r.amount);
+    } else if (r.source === 'loan-savings' && r.savingsAccountId) {
+      add(refunds.savings, r.savingsAccountId, r.amount);
+    } else if (r.source === 'transfer') {
+      // A transfer from savings records the account on the transfer, not here.
+      const t = r.idempotencyKey
+        ? await TransferModel.findOne({
+            toType: 'loan',
+            toId: loanId,
+            idempotencyKey: r.idempotencyKey,
+          })
+        : null;
+      if (t?.fromType !== 'savings') {
+        throw new AppError(
+          'CANNOT_TRASH',
+          `Cannot tell which account the ${formatGhs(r.amount)} transfer onto this loan came from`,
+          422,
+          { repaymentId: r._id.toHexString() },
+        );
+      }
+      add(refunds.savings, t.fromId, r.amount);
+    } else {
+      throw new AppError(
+        'CANNOT_TRASH',
+        `Cannot tell which account the ${formatGhs(r.amount)} repayment came from`,
+        422,
+        { repaymentId: r._id.toHexString() },
+      );
+    }
+  }
+  return refunds;
+}
+
+/**
+ * Soft delete — any loan, office only (client decision, 23 Oct 2026).
+ *
+ * A loan that went out is deleted as if it never happened: the disbursement,
+ * the processing fee, the collateral and every repayment leave the books
+ * together (each report already skips a trashed loan, and the repayments are
+ * trashed with it). Money that repaid it from the customer's own accounts goes
+ * back there as a new deposit dated today: into the savings account it came
+ * from, and into the susu account as whole rounds on its plans, where it
+ * counts toward the cycles like any deposit. Cash and Paystack repayments,
+ * and collateral still held, are the office's to hand back. All in one
+ * transaction (rule 2). Such a loan cannot be restored — re-enter it instead.
  */
 export async function trashLoan(
   actor: AccessTokenPayload,
@@ -1509,42 +1598,108 @@ export async function trashLoan(
 ): Promise<TrashedLoan> {
   const pre = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
   if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
-  if (pre.status !== 'pending' && pre.status !== 'rejected') {
-    throw new AppError(
-      'CANNOT_TRASH',
-      'Only pending or rejected loan applications can be moved to the trash',
-      422,
-      { status: pre.status },
-    );
+
+  const repayments = await RepaymentModel.find({ loanId, ...NOT_TRASHED });
+  const refunds = await refundsFor(loanId, repayments);
+  // Worked out before the transaction, so a refund susu refuses says why
+  // before anything is written.
+  const susuSplits = new Map<string, PlanSplit[]>();
+  for (const [accountId, amount] of refunds.susu) {
+    try {
+      const { split } = await roundsSplit(new Types.ObjectId(accountId), amount);
+      susuSplits.set(accountId, split);
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      throw new AppError(
+        'CANNOT_TRASH',
+        `${formatGhs(amount)} of this loan was repaid from susu and cannot go back: ${err.message}`,
+        422,
+        { susuAccountId: accountId, amount },
+      );
+    }
   }
 
   const now = new Date();
-  const loan = await LoanModel.findOneAndUpdate(
-    { _id: loanId, status: pre.status, ...NOT_TRASHED },
-    {
-      $set: {
-        deletedAt: now,
-        deletedById: new Types.ObjectId(actor.sub),
-        ...(reason !== undefined ? { deleteReason: reason } : {}),
-      },
-    },
-    { returnDocument: 'after' },
-  );
-  if (!loan) throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+  const deleted = {
+    deletedAt: now,
+    deletedById: new Types.ObjectId(actor.sub),
+    ...(reason !== undefined ? { deleteReason: reason } : {}),
+  };
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await LoanModel.updateOne(
+        { _id: loanId, status: pre.status, totalRepaid: pre.totalRepaid, ...NOT_TRASHED },
+        { $set: deleted },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+      }
+      if (repayments.length > 0) {
+        const reps = await RepaymentModel.updateMany(
+          { loanId, ...NOT_TRASHED },
+          { $set: deleted },
+          { session },
+        );
+        if (reps.modifiedCount !== repayments.length) {
+          throw new AppError('CONFLICT', 'Loan was repaid concurrently — retry', 409);
+        }
+      }
+      await removeLoanFee(session, loanId);
+      for (const [accountId, amount] of refunds.susu) {
+        await depositWithin(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          susuSplits.get(accountId),
+          {
+            channel: 'transfer',
+            idempotencyKey: `loan-trash:${loanId.toHexString()}:${accountId}`,
+            ...(requestId !== undefined ? { requestId } : {}),
+          },
+        );
+      }
+      for (const [accountId, amount] of refunds.savings) {
+        await refundToSavingsInTxn(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          loanId,
+          requestId,
+        );
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'loan.trash',
+          entityType: 'loan',
+          entityId: pre._id,
+          ...(pre.disbursedAt ? { amountBefore: pre.totalRepaid, amountAfter: 0 } : {}),
+          before: { status: pre.status, deletedAt: null },
+          after: {
+            status: pre.status,
+            deletedAt: now.toISOString(),
+            ...(reason !== undefined ? { reason } : {}),
+            ...(repayments.length > 0 ? { repaymentsRemoved: repayments.length } : {}),
+            ...(refunds.susu.size > 0 ? { refundedToSusu: Object.fromEntries(refunds.susu) } : {}),
+            ...(refunds.savings.size > 0
+              ? { refundedToSavings: Object.fromEntries(refunds.savings) }
+              : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
 
-  await audit({
-    actorId: actor.sub,
-    action: 'loan.trash',
-    entityType: 'loan',
-    entityId: pre._id,
-    before: { status: pre.status, deletedAt: null },
-    after: {
-      status: loan.status,
-      deletedAt: now.toISOString(),
-      ...(reason !== undefined ? { reason } : {}),
-    },
-    ...(requestId !== undefined ? { requestId } : {}),
-  });
+  const loan = await LoanModel.findById(loanId);
+  if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   emitAdminEvent('loan.trashed', {
     id: pre._id.toHexString(),
     customerId: pre.customerId.toHexString(),
@@ -1562,6 +1717,15 @@ export async function restoreLoan(
   const pre = await LoanModel.findById(loanId);
   if (!pre) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   if (!pre.deletedAt) throw new AppError('NOT_TRASHED', 'Loan is not in the trash', 409);
+  // Its money was reversed when it was deleted; bringing it back would mean
+  // taking the refunds out of the customer's accounts again.
+  if (pre.disbursedAt) {
+    throw new AppError(
+      'CANNOT_RESTORE',
+      'A loan that went out cannot be restored — its money was reversed. Enter it again instead.',
+      422,
+    );
+  }
 
   // A restored pending application re-enters the open set, so the one-open-
   // loan rule must still hold. Rejected loans restore unconditionally.
@@ -1603,6 +1767,186 @@ export async function restoreLoan(
   return toPublicLoan(loan);
 }
 
+/**
+ * Delete a single repayment, reversing just its money (admin/manager, client
+ * decision 23 Oct 2026). Any repayment, not only the newest: the schedule is
+ * filled oldest instalment first, so what it shows depends only on the total
+ * repaid, and every repayment's running balance is derived afresh on read — so
+ * removing one from the middle leaves the rest consistent.
+ *
+ * The amount comes off the loan's total; a loan that this repayment had
+ * settled reopens as active (the escalation worker decides arrears on its own,
+ * from the due date). Money paid from the customer's own susu, savings or loan
+ * savings goes back there as a deposit dated today; cash and Paystack leave the
+ * books for the office to hand back. All in one transaction (rule 2).
+ */
+export async function trashRepayment(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  repaymentId: Types.ObjectId,
+  reason?: string,
+  requestId?: string,
+): Promise<{ loan: PublicLoan }> {
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId, ...NOT_TRASHED });
+  if (!repayment) throw new AppError('NOT_FOUND', 'Repayment not found', 404);
+  if (loan.status !== 'active' && loan.status !== 'arrears' && loan.status !== 'repaid') {
+    throw new AppError('CANNOT_TRASH', `Loan is ${loan.status} — nothing has been repaid`, 422);
+  }
+  // A repayment with an open correction request must be decided first: removing
+  // it would leave the request pointing at nothing.
+  const openRequest = await TxnCorrectionModel.exists({ txnId: repaymentId, status: 'pending' });
+  if (openRequest) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'A correction request is waiting on this repayment — decide it first',
+      422,
+    );
+  }
+
+  // Where the money goes back, worked out (and refused) before the transaction.
+  const refunds = await refundsFor(loanId, [repayment]);
+  const susuSplits = new Map<string, PlanSplit[]>();
+  for (const [accountId, amount] of refunds.susu) {
+    try {
+      const { split } = await roundsSplit(new Types.ObjectId(accountId), amount);
+      susuSplits.set(accountId, split);
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      throw new AppError(
+        'CANNOT_TRASH',
+        `${formatGhs(amount)} was repaid from susu and cannot go back: ${err.message}`,
+        422,
+        { susuAccountId: accountId, amount },
+      );
+    }
+  }
+
+  const totalRepaid = loan.totalRepaid - repayment.amount;
+  const wasRepaid = loan.status === 'repaid';
+  const now = new Date();
+  const deleted = {
+    deletedAt: now,
+    deletedById: new Types.ObjectId(actor.sub),
+    ...(reason !== undefined ? { deleteReason: reason } : {}),
+  };
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await LoanModel.updateOne(
+        { _id: loanId, status: loan.status, totalRepaid: loan.totalRepaid, ...NOT_TRASHED },
+        {
+          $inc: { totalRepaid: -repayment.amount },
+          // A loan this repayment had settled is open again; otherwise the
+          // escalation worker is left to judge arrears from the due date.
+          ...(wasRepaid
+            ? { $set: { status: 'active' }, $unset: { closedAt: '', repaidOnTime: '' } }
+            : {}),
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+      }
+      const repUpd = await RepaymentModel.updateOne(
+        { _id: repaymentId, ...NOT_TRASHED },
+        { $set: deleted },
+        { session },
+      );
+      if (repUpd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Repayment changed concurrently — retry', 409);
+      }
+
+      // The schedule as the reduced total fills it, oldest instalment first —
+      // the same arithmetic the original allocation did.
+      const schedule = await LoanScheduleModel.find({ loanId })
+        .sort({ installmentNumber: 1 })
+        .session(session);
+      const filled = allocateRepayment(
+        schedule.map((line) => ({ amountDue: line.amountDue, amountPaid: 0 })),
+        totalRepaid,
+      );
+      for (const [i, line] of schedule.entries()) {
+        const paid = filled[i] ?? 0;
+        const status =
+          paid >= line.amountDue
+            ? 'paid'
+            : paid > 0
+              ? 'partial'
+              : line.status === 'overdue'
+                ? 'overdue'
+                : 'pending';
+        if (paid === line.amountPaid && status === line.status) continue;
+        await LoanScheduleModel.updateOne(
+          { _id: line._id },
+          { $set: { amountPaid: paid, status } },
+          { session },
+        );
+      }
+
+      for (const [accountId, amount] of refunds.susu) {
+        await depositWithin(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          susuSplits.get(accountId),
+          {
+            channel: 'transfer',
+            idempotencyKey: `repayment-trash:${repaymentId.toHexString()}:${accountId}`,
+            ...(requestId !== undefined ? { requestId } : {}),
+          },
+        );
+      }
+      for (const [accountId, amount] of refunds.savings) {
+        await refundToSavingsInTxn(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          loanId,
+          requestId,
+        );
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'loan.repayment.trash',
+          entityType: 'repayment',
+          entityId: repaymentId,
+          amountBefore: loan.totalRepaid,
+          amountAfter: totalRepaid,
+          before: { amount: repayment.amount, source: repayment.source },
+          after: {
+            deletedAt: now.toISOString(),
+            ...(reason !== undefined ? { reason } : {}),
+            ...(refunds.susu.size > 0 ? { refundedToSusu: Object.fromEntries(refunds.susu) } : {}),
+            ...(refunds.savings.size > 0
+              ? { refundedToSavings: Object.fromEntries(refunds.savings) }
+              : {}),
+          },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await LoanModel.findById(loanId);
+  if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  emitAdminEvent('loan.repayment.trashed', {
+    id: loanId.toHexString(),
+    customerId: loan.customerId.toHexString(),
+    repaymentId: repaymentId.toHexString(),
+    amount: repayment.amount,
+    remaining: after.totalDue - after.totalRepaid,
+  });
+  return { loan: toPublicLoan(after) };
+}
+
 export async function listLoanTrash(
   query: LoanTrashQuery,
 ): Promise<{ items: TrashedLoan[]; page: number; limit: number; total: number }> {
@@ -1622,6 +1966,65 @@ export async function listLoanTrash(
       ...toTrashedLoan(l),
       customerName: names.get(l.customerId.toHexString()) ?? '',
     })),
+    page: query.page,
+    limit: query.limit,
+    total,
+  };
+}
+
+/** A deleted loan repayment with the loan and customer it belonged to, for the
+ *  whole-branch trash list. Not restorable — shown for the record. */
+export interface TrashedRepaymentRow {
+  id: string;
+  loanId: string;
+  loanAccountNumber: string;
+  customerId: string;
+  customerName: string;
+  amount: number;
+  source: string;
+  deletedAt: Date;
+  deleteReason?: string;
+}
+
+/** Every deleted loan repayment across every loan, newest first. These are not
+ *  restorable (their money was reversed); the branch-wide trash shows them so a
+ *  deletion is never invisible. */
+export async function listRepaymentTrashAll(
+  query: LoanTrashQuery,
+): Promise<{ items: TrashedRepaymentRow[]; page: number; limit: number; total: number }> {
+  const filter = { deletedAt: { $ne: null } };
+  const [reps, total] = await Promise.all([
+    RepaymentModel.find(filter)
+      .sort({ deletedAt: -1 })
+      .skip((query.page - 1) * query.limit)
+      .limit(query.limit),
+    RepaymentModel.countDocuments(filter),
+  ]);
+  const loanIds = [...new Set(reps.map((r) => r.loanId.toHexString()))];
+  const loans = await LoanModel.find(
+    { _id: { $in: loanIds } },
+    { accountNumber: 1, customerId: 1 },
+  );
+  const loanById = new Map(loans.map((l) => [l._id.toHexString(), l]));
+  const custIds = [...new Set(loans.map((l) => l.customerId.toHexString()))];
+  const customers = await CustomerModel.find({ _id: { $in: custIds } }, { fullName: 1 });
+  const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
+  return {
+    items: reps.map((r) => {
+      const loan = loanById.get(r.loanId.toHexString());
+      const customerId = loan?.customerId.toHexString() ?? '';
+      return {
+        id: r._id.toHexString(),
+        loanId: r.loanId.toHexString(),
+        loanAccountNumber: loan?.accountNumber ?? '',
+        customerId,
+        customerName: names.get(customerId) ?? '',
+        amount: r.amount,
+        source: r.source,
+        deletedAt: requireDeletedAt(r.deletedAt),
+        ...(r.deleteReason !== undefined ? { deleteReason: r.deleteReason } : {}),
+      };
+    }),
     page: query.page,
     limit: query.limit,
     total,
@@ -1722,11 +2125,11 @@ export async function repaymentReceipt(
   repaymentId: Types.ObjectId,
 ): Promise<ReceiptFile> {
   const { loan, customer, reference } = await loanReceiptContext(loanId);
-  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId });
+  const repayment = await RepaymentModel.findOne({ _id: repaymentId, loanId, ...NOT_TRASHED });
   if (!repayment) throw new AppError('NOT_FOUND', 'Repayment not found', 404);
 
   const [{ paid } = { paid: 0 }] = await RepaymentModel.aggregate<{ paid: number }>([
-    { $match: { loanId, createdAt: { $lte: repayment.createdAt } } },
+    { $match: { loanId, deletedAt: null, createdAt: { $lte: repayment.createdAt } } },
     { $group: { _id: null, paid: { $sum: '$amount' } } },
   ]);
 

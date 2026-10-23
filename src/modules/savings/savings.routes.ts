@@ -103,6 +103,21 @@ savingsRouter.get(
   },
 );
 
+// Every deleted savings transaction across all accounts (office), for the
+// branch-wide trash. Restore stays per account.
+savingsRouter.get(
+  '/transactions/trash',
+  requireOffice,
+  validate({ query: listTrashQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: ListTrashQuery }>(req);
+    savingsService
+      .listSavingsTxnTrashAll(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
 savingsRouter.get('/accounts/:id', validate({ params: accountIdParams }), (req, res, next) => {
   const { params } = getValidated<{ params: AccountIdParams }>(req);
   savingsService
@@ -111,7 +126,7 @@ savingsRouter.get('/accounts/:id', validate({ params: accountIdParams }), (req, 
     .catch(next);
 });
 
-// Move an empty, unused account to the trash (office only).
+// Delete a savings account, reversing its money (office only).
 savingsRouter.delete(
   '/accounts/:id',
   requireOffice,

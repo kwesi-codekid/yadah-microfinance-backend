@@ -109,6 +109,21 @@ susuRouter.get(
   },
 );
 
+// Every deleted susu deposit across all accounts (office), for the branch-wide
+// trash. Restore stays per account.
+susuRouter.get(
+  '/deposits/trash',
+  requireOffice,
+  validate({ query: listTrashQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: ListTrashQuery }>(req);
+    susuService
+      .listDepositTrashAll(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
 susuRouter.get('/accounts/:id', validate({ params: accountIdParams }), (req, res, next) => {
   const { params } = getValidated<{ params: AccountIdParams }>(req);
   susuService

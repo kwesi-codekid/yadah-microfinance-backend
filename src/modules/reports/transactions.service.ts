@@ -294,7 +294,8 @@ function buildBranches(
       {
         coll: 'repayments',
         stages: [
-          { $match: { createdAt, ...byCustomer, ...by('recordedById') } },
+          // A deleted loan takes its repayments with it.
+          { $match: { createdAt, ...byCustomer, ...by('recordedById'), ...NOT_TRASHED } },
           {
             $project: {
               type: { $literal: 'loan-repayment' },

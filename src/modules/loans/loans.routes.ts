@@ -200,6 +200,21 @@ loansRouter.get('/trash', requireOffice, validate({ query: loanTrashQuery }), (r
     .catch(next);
 });
 
+// Every deleted repayment across all loans (office), for the branch-wide trash.
+// Read-only: a deleted repayment is not restorable.
+loansRouter.get(
+  '/repayments/trash',
+  requireOffice,
+  validate({ query: loanTrashQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: LoanTrashQuery }>(req);
+    loansService
+      .listRepaymentTrashAll(query)
+      .then((list) => res.json(list))
+      .catch(next);
+  },
+);
+
 loansRouter.get('/:id', validate({ params: loanIdParams }), (req, res, next) => {
   const { params } = getValidated<{ params: LoanIdParams }>(req);
   loansService
@@ -359,6 +374,22 @@ loansRouter.patch(
         body.amount,
         req.id as string,
       )
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+// Delete a single repayment, reversing just its money. Office only: like
+// deleting a loan, it moves money off the ledger and back to the customer's
+// accounts.
+loansRouter.delete(
+  '/:id/repayments/:repaymentId',
+  requireOffice,
+  validate({ params: repaymentIdParams, body: trashBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: RepaymentIdParams; body: TrashBody }>(req);
+    loansService
+      .trashRepayment(getAuth(req), params.id, params.repaymentId, body.reason, req.id as string)
       .then((result) => res.json(result))
       .catch(next);
   },

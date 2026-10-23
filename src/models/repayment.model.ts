@@ -1,5 +1,5 @@
 import { Schema, model, type Types } from 'mongoose';
-import { CHANNELS, moneyField, type Channel } from './shared.js';
+import { CHANNELS, moneyField, trashFields, type Channel, type TrashFields } from './shared.js';
 
 /**
  * Where a repayment's money came from — cash, the customer's susu balance,
@@ -15,8 +15,11 @@ export const REPAYMENT_SOURCES = [
 ] as const;
 export type RepaymentSource = (typeof REPAYMENT_SOURCES)[number];
 
-/** A repayment against a loan. */
-export interface Repayment {
+/**
+ * A repayment against a loan. Trashed only together with its loan, when a
+ * disbursed loan is deleted: the books then read as if it was never paid.
+ */
+export interface Repayment extends TrashFields {
   _id: Types.ObjectId;
   loanId: Types.ObjectId;
   customerId: Types.ObjectId;
@@ -44,6 +47,7 @@ const repaymentSchema = new Schema<Repayment>(
     savingsAccountId: { type: Schema.Types.ObjectId, ref: 'SavingsAccount' },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
+    ...trashFields,
   },
   { timestamps: true },
 );
