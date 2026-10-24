@@ -32,7 +32,7 @@ export const authPaths: ZodOpenApiPathsObject = {
       tags: ['Auth'],
       summary: 'Request a login OTP by phone',
       description:
-        'Sends a 6-digit code by SMS (and email when the account has one). ' +
+        'Sends a 4-digit code by SMS (and email when the account has one). ' +
         'Response is identical whether or not the phone is registered. ' +
         'Code expires in 5 minutes; max 5 verify attempts; 60s resend cooldown.',
       requestBody: jsonBody(otpRequestBody),

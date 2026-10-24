@@ -165,7 +165,7 @@ export async function requestOtp(phone: string): Promise<void> {
     throw new AppError('OTP_COOLDOWN', 'Please wait a minute before requesting another code', 429);
   }
 
-  const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+  const code = randomInt(0, 10_000).toString().padStart(4, '0');
   const now = new Date();
   await PortalOtpModel.updateOne(
     { customerId: customer._id },

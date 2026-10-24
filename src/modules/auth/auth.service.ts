@@ -151,7 +151,7 @@ export async function login(
 type OtpPurpose = 'login' | 'password-reset';
 
 /**
- * Sends a 6-digit code by SMS (queued — retried on failure) and, when the
+ * Sends a 4-digit code by SMS (queued — retried on failure) and, when the
  * user has an email, by email too. Response is identical whether or not the
  * phone exists, so account existence is not leaked. One OTP store serves
  * login and password reset — the code proves phone possession either way.
@@ -165,7 +165,7 @@ export async function requestOtp(phone: string, purpose: OtpPurpose = 'login'): 
     throw new AppError('OTP_COOLDOWN', 'Please wait a minute before requesting another code', 429);
   }
 
-  const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+  const code = randomInt(0, 10_000).toString().padStart(4, '0');
   const now = new Date();
   await AuthOtpModel.updateOne(
     { userId: user._id },

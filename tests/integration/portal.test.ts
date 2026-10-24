@@ -20,14 +20,14 @@ async function signIn(phone: string): Promise<string> {
   await portalAuth.requestOtp(phone);
   const otp = await PortalOtpModel.findOne({ phone });
   if (!otp) throw new Error('no OTP issued');
-  // Brute-force the 6-digit space is not viable; instead re-stamp a known hash
+  // Brute-forcing the code space is slow and flaky; instead re-stamp a known hash
   // the same way the service does, which exercises verifyOtp for real.
   const { createHash } = await import('node:crypto');
   await PortalOtpModel.updateOne(
     { _id: otp._id },
-    { $set: { codeHash: createHash('sha256').update('123456').digest('hex') } },
+    { $set: { codeHash: createHash('sha256').update('1234').digest('hex') } },
   );
-  const { customer } = await portalAuth.verifyOtp(phone, '123456');
+  const { customer } = await portalAuth.verifyOtp(phone, '1234');
   return customer.id;
 }
 
@@ -43,7 +43,7 @@ describe('portal login', () => {
     const customerId = await makeCustomer();
     const customer = await CustomerModel.findById(customerId);
     await signIn(customer!.phone);
-    await expect(portalAuth.verifyOtp(customer!.phone, '123456')).rejects.toMatchObject({
+    await expect(portalAuth.verifyOtp(customer!.phone, '1234')).rejects.toMatchObject({
       code: 'INVALID_OTP',
     });
   });
@@ -60,7 +60,7 @@ describe('portal login', () => {
     await portalAuth.requestOtp(customer!.phone);
 
     const wrongCode = portalAuth.verifyOtp(customer!.phone, '000000').catch((e: unknown) => e);
-    const unknownNumber = portalAuth.verifyOtp('0249999998', '123456').catch((e: unknown) => e);
+    const unknownNumber = portalAuth.verifyOtp('0249999998', '1234').catch((e: unknown) => e);
     expect(((await wrongCode) as { code: string }).code).toBe(
       ((await unknownNumber) as { code: string }).code,
     );
@@ -73,9 +73,9 @@ describe('portal login', () => {
     const { createHash } = await import('node:crypto');
     await PortalOtpModel.updateOne(
       { phone: customer!.phone },
-      { $set: { codeHash: createHash('sha256').update('123456').digest('hex') } },
+      { $set: { codeHash: createHash('sha256').update('1234').digest('hex') } },
     );
-    const { tokens } = await portalAuth.verifyOtp(customer!.phone, '123456');
+    const { tokens } = await portalAuth.verifyOtp(customer!.phone, '1234');
 
     const rotated = await portalAuth.refresh(tokens.refreshToken);
     expect(rotated.refreshToken).not.toBe(tokens.refreshToken);

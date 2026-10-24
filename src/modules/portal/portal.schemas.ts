@@ -7,7 +7,7 @@ export type OtpRequestBody = z.infer<typeof otpRequestBody>;
 
 export const otpVerifyBody = z.object({
   phone: ghanaPhone,
-  code: z.string().regex(/^\d{6}$/, 'Expected the 6-digit code from the SMS'),
+  code: z.string().regex(/^\d{4}$/, 'Expected the 4-digit code from the SMS'),
 });
 export type OtpVerifyBody = z.infer<typeof otpVerifyBody>;
 

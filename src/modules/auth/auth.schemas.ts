@@ -22,7 +22,7 @@ export type OtpRequestBody = z.infer<typeof otpRequestBody>;
 
 export const otpVerifyBody = z.object({
   phone: ghanaPhone,
-  code: z.string().regex(/^\d{6}$/, 'Code is 6 digits'),
+  code: z.string().regex(/^\d{4}$/, 'Code is 4 digits'),
 });
 export type OtpVerifyBody = z.infer<typeof otpVerifyBody>;
 
@@ -44,7 +44,7 @@ export type ForgotPasswordBody = z.infer<typeof forgotPasswordBody>;
 
 export const resetPasswordBody = z.object({
   phone: ghanaPhone,
-  code: z.string().regex(/^\d{6}$/, 'Code is 6 digits'),
+  code: z.string().regex(/^\d{4}$/, 'Code is 4 digits'),
   newPassword: passwordField,
 });
 export type ResetPasswordBody = z.infer<typeof resetPasswordBody>;

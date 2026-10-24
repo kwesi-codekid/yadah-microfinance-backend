@@ -107,9 +107,9 @@ describe('children on a parent’s phone number', () => {
 
     await PortalOtpModel.updateOne(
       { _id: otp?._id },
-      { $set: { codeHash: createHash('sha256').update('123456').digest('hex') } },
+      { $set: { codeHash: createHash('sha256').update('1234').digest('hex') } },
     );
-    const { customer } = await portalAuth.verifyOtp(MUM, '123456');
+    const { customer } = await portalAuth.verifyOtp(MUM, '1234');
     expect(customer.id).toBe(mum?._id.toHexString());
   });
 
