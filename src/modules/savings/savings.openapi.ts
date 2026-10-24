@@ -31,7 +31,7 @@ const savingsAccount = z
           "customer identification fields. Fixed: a child's account with a guardian and a " +
           'maturity date; normal charges before maturity, free withdrawals from it. Loan: the ' +
           'loan savings account, one per customer — deposits only; its money leaves only to ' +
-          'repay the loan (POST /loans/{id}/repayments/loan-savings and the month-end ' +
+          'repay the loan (POST /loans/{id}/repayments/loan-savings and the automatic ' +
           'deduction). Withdrawal, transfer out and closure with money in it are refused ' +
           'with LOAN_SAVINGS_LOCKED.',
       ),

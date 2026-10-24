@@ -7,7 +7,7 @@ import { initPush } from './lib/notifications.js';
 import { startLoanEscalationWorker } from './lib/loan-escalation.js';
 import { startHpArrearsWorker } from './lib/hp-arrears.js';
 import { startDebtRecoveryWorker } from './lib/debt-recovery.js';
-import { startLoanSavingsWorker } from './lib/loan-savings.js';
+import { startSusuLoanWorker } from './lib/susu-loan.js';
 import { initRealtime } from './lib/realtime.js';
 import { createApp } from './app.js';
 
@@ -22,7 +22,7 @@ initPush();
 startLoanEscalationWorker();
 startHpArrearsWorker();
 startDebtRecoveryWorker();
-startLoanSavingsWorker();
+startSusuLoanWorker();
 
 const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT, env: env.NODE_ENV }, 'yadah-microfinance-api listening');

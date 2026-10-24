@@ -98,12 +98,6 @@ export interface Loan extends TrashFields {
   /** When the cash collateral was handed back to the customer. */
   collateralReturnedAt?: Date;
   collateralReturnedById?: Types.ObjectId;
-  /**
-   * The last month (`YYYY-MM`) the month-end loan savings deduction has dealt
-   * with this loan, whether or not anything could be taken. Keeps it to once
-   * a month however often the worker runs. See lib/loan-savings.ts.
-   */
-  loanSavingsMonth?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -170,7 +164,6 @@ const loanSchema = new Schema<Loan>(
     collateralAmount: optionalMoneyField,
     collateralReturnedAt: { type: Date },
     collateralReturnedById: { type: Schema.Types.ObjectId, ref: 'User' },
-    loanSavingsMonth: { type: String, match: /^\d{4}-\d{2}$/ },
     ...trashFields,
   },
   { timestamps: true },

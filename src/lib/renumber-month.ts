@@ -28,6 +28,7 @@ const ENTITY: Record<AccountPrefix, { entityType: string; action: string }> = {
   SU: { entityType: 'susu-account', action: 'susu.account.renumber-month' },
   SV: { entityType: 'savings-account', action: 'savings.account.renumber-month' },
   LN: { entityType: 'loan', action: 'loan.renumber-month' },
+  SL: { entityType: 'susu-loan-account', action: 'susu-loan.account.renumber-month' },
   HP: { entityType: 'hp-agreement', action: 'hp.renumber-month' },
 };
 

@@ -5,6 +5,7 @@ import { resolveOfficeDate } from '../../lib/backdating.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { isMinor, minorCreditRefused } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
+import { logger } from '../../lib/logger.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
 import { enqueueSms } from '../../lib/sms.js';
@@ -27,9 +28,14 @@ import {
   type Customer,
   type Loan,
   type Repayment,
-  type SavingsAccount,
 } from '../../models/index.js';
-import { debitLoanSavingsInTxn, refundToSavingsInTxn } from '../savings/savings.service.js';
+import { refundToSavingsInTxn } from '../savings/savings.service.js';
+import {
+  debitSusuLoanInTxn,
+  findSusuLoanAccount,
+  moveSusuLoanLeftover,
+  refundToSusuLoanInTxn,
+} from '../susu-loans/susu-loans.service.js';
 import { accraDay, createdAtFilter } from '../../lib/time.js';
 import {
   DEFAULT_RATES,
@@ -777,6 +783,7 @@ export interface LoanDetail {
     source: string;
     susuAccountId?: string;
     savingsAccountId?: string;
+    susuLoanAccountId?: string;
     recordedById: string;
     createdAt: Date;
   }[];
@@ -817,6 +824,7 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       channel: r.channel,
       ...(r.susuAccountId ? { susuAccountId: r.susuAccountId.toHexString() } : {}),
       ...(r.savingsAccountId ? { savingsAccountId: r.savingsAccountId.toHexString() } : {}),
+      ...(r.susuLoanAccountId ? { susuLoanAccountId: r.susuLoanAccountId.toHexString() } : {}),
       recordedById: r.recordedById.toHexString(),
       createdAt: r.createdAt,
     })),
@@ -841,8 +849,8 @@ export interface RepaymentResult {
   replayed: boolean;
   /** Present when the repayment was taken from the customer's susu balance. */
   susuWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
-  /** Present when the repayment was taken from the customer's loan savings account. */
-  loanSavingsWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
+  /** Present when the repayment was taken from the customer's susu loan account. */
+  susuLoanWithdrawal?: { accountId: string; amount: number; balanceAfter: number };
 }
 
 async function replayIfExists(idempotencyKey: string): Promise<RepaymentResult | null> {
@@ -877,7 +885,7 @@ export async function applyRepaymentInTxn(
   session: mongoose.ClientSession,
   susuAccountId?: Types.ObjectId,
   requestId?: string,
-  extra: { at?: Date; savingsAccountId?: Types.ObjectId } = {},
+  extra: { at?: Date; savingsAccountId?: Types.ObjectId; susuLoanAccountId?: Types.ObjectId } = {},
 ): Promise<Repayment> {
   const remaining = loan.totalDue - loan.totalRepaid;
   if (amount > remaining) {
@@ -948,6 +956,7 @@ export async function applyRepaymentInTxn(
         channel,
         ...(susuAccountId ? { susuAccountId } : {}),
         ...(extra.savingsAccountId ? { savingsAccountId: extra.savingsAccountId } : {}),
+        ...(extra.susuLoanAccountId ? { susuLoanAccountId: extra.susuLoanAccountId } : {}),
         recordedById: new Types.ObjectId(actor.sub),
         idempotencyKey,
         // The day it was paid; `_id` still carries when it was typed in.
@@ -992,6 +1001,25 @@ async function loadOpenLoanForRepayment(
   }
   const customer = await CustomerModel.findById(loan.customerId);
   return { loan, customer };
+}
+
+/**
+ * Run after any repayment commits: a loan it paid off hands what is left in
+ * the customer's susu loan account to their savings account (client decision,
+ * 23 Oct 2026). Never throws — the repayment is already in, and the money
+ * staying where it is harms nothing.
+ */
+export async function afterLoanRepayment(
+  actor: AccessTokenPayload,
+  loanAfter: Loan,
+  requestId?: string,
+): Promise<void> {
+  if (loanAfter.status !== 'repaid') return;
+  try {
+    await moveSusuLoanLeftover(actor, loanAfter.customerId, loanAfter._id, requestId);
+  } catch (err) {
+    logger.warn({ err, loan: loanAfter._id.toHexString() }, 'susu loan leftover not moved');
+  }
 }
 
 async function notifyRepayment(
@@ -1062,6 +1090,7 @@ export async function repayCash(
   const after = await LoanModel.findById(loanId);
   if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   await notifyRepayment(customer, loanId, amount, after);
+  await afterLoanRepayment(actor, after, requestId);
   return {
     repayment: { id: repayment._id.toHexString(), amount, source: 'cash' },
     loan: toPublicLoan(after),
@@ -1325,6 +1354,7 @@ export async function repayFromSusu(
   const after = await LoanModel.findById(loanId);
   if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   await notifyRepayment(customer, loanId, amount, after);
+  await afterLoanRepayment(actor, after, requestId);
   emitAdminEvent('susu.withdrawal', {
     id: susuAccountId.toHexString(),
     customerId: loan.customerId.toHexString(),
@@ -1341,29 +1371,20 @@ export async function repayFromSusu(
   };
 }
 
-// ---------------------------------------------------------------- loan savings
+// ---------------------------------------------------------------- susu loan
 
-/** The customer's loan savings account, if they have one open — there is at most one. */
-export async function findLoanSavingsAccount(
-  customerId: Types.ObjectId,
-): Promise<SavingsAccount | null> {
-  return SavingsAccountModel.findOne({
-    customerId,
-    accountType: 'loan',
-    status: 'active',
-    ...NOT_TRASHED,
-  });
-}
+/** The customer's susu loan account, if they have one open — there is at most one. */
+export { findSusuLoanAccount };
 
 /**
- * Repayment from the customer's loan savings account (client decision, 6 Oct
- * 2026) — the only way money leaves it. One transaction takes it out of the
- * account and puts it on the loan, so neither side can happen alone. No fee,
- * no floor: the withdrawal rules are about cash leaving the branch, and this
- * money does not. The month-end deduction (lib/loan-savings.ts) comes through
- * here as well, as the system actor.
+ * Repayment from the customer's susu loan account (client decision, 23 Oct
+ * 2026) — the only way money leaves it, beside the leftover moving to savings
+ * once a loan is paid off. One transaction takes it out of the account and
+ * puts it on the loan, so neither side can happen alone. The automatic
+ * deduction on the loan's monthly dates (lib/susu-loan.ts) comes through here
+ * as well, as the system actor.
  */
-export async function repayFromLoanSavings(
+export async function repayFromSusuLoan(
   actor: AccessTokenPayload,
   loanId: Types.ObjectId,
   amount: number,
@@ -1374,11 +1395,11 @@ export async function repayFromLoanSavings(
   if (replayed) return replayed;
 
   const { loan, customer } = await loadOpenLoanForRepayment(loanId);
-  const account = await findLoanSavingsAccount(loan.customerId);
+  const account = await findSusuLoanAccount(loan.customerId);
   if (!account) {
     throw new AppError(
-      'NO_LOAN_SAVINGS',
-      `${customer?.fullName ?? 'This customer'} has no loan savings account`,
+      'NO_SUSU_LOAN',
+      `${customer?.fullName ?? 'This customer'} has no susu loan account`,
       404,
     );
   }
@@ -1403,15 +1424,15 @@ export async function repayFromLoanSavings(
         actor,
         loan,
         amount,
-        'loan-savings',
+        'susu-loan',
         'transfer',
         idempotencyKey,
         session,
         undefined,
         requestId,
-        { savingsAccountId: account._id },
+        { susuLoanAccountId: account._id },
       );
-      ({ balanceAfter } = await debitLoanSavingsInTxn(
+      ({ balanceAfter } = await debitSusuLoanInTxn(
         session,
         actor,
         account._id,
@@ -1428,19 +1449,20 @@ export async function repayFromLoanSavings(
   const after = await LoanModel.findById(loanId);
   if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
   await notifyRepayment(customer, loanId, amount, after);
-  emitAdminEvent('savings.txn', {
+  emitAdminEvent('susu-loan.txn', {
     accountId: account._id.toHexString(),
     customerId: loan.customerId.toHexString(),
-    type: 'withdrawal',
+    type: 'repayment',
     amount,
     balance: balanceAfter,
     appliedToLoan: loanId.toHexString(),
   });
+  await afterLoanRepayment(actor, after, requestId);
   return {
-    repayment: { id: repayment._id.toHexString(), amount, source: 'loan-savings' },
+    repayment: { id: repayment._id.toHexString(), amount, source: 'susu-loan' },
     loan: toPublicLoan(after),
     replayed: false,
-    loanSavingsWithdrawal: { accountId: account._id.toHexString(), amount, balanceAfter },
+    susuLoanWithdrawal: { accountId: account._id.toHexString(), amount, balanceAfter },
   };
 }
 
@@ -1534,10 +1556,11 @@ function toTrashedLoan(l: Loan): TrashedLoan {
 interface LoanRefunds {
   susu: Map<string, number>;
   savings: Map<string, number>;
+  susuLoan: Map<string, number>;
 }
 
 async function refundsFor(loanId: Types.ObjectId, repayments: Repayment[]): Promise<LoanRefunds> {
-  const refunds: LoanRefunds = { susu: new Map(), savings: new Map() };
+  const refunds: LoanRefunds = { susu: new Map(), savings: new Map(), susuLoan: new Map() };
   const add = (into: Map<string, number>, id: Types.ObjectId, amount: number): void => {
     into.set(id.toHexString(), (into.get(id.toHexString()) ?? 0) + amount);
   };
@@ -1547,6 +1570,8 @@ async function refundsFor(loanId: Types.ObjectId, repayments: Repayment[]): Prom
       add(refunds.susu, r.susuAccountId, r.amount);
     } else if (r.source === 'loan-savings' && r.savingsAccountId) {
       add(refunds.savings, r.savingsAccountId, r.amount);
+    } else if (r.source === 'susu-loan' && r.susuLoanAccountId) {
+      add(refunds.susuLoan, r.susuLoanAccountId, r.amount);
     } else if (r.source === 'transfer') {
       // A transfer from savings records the account on the transfer, not here.
       const t = r.idempotencyKey
@@ -1661,6 +1686,17 @@ export async function trashLoan(
           },
         );
       }
+      for (const [accountId, amount] of refunds.susuLoan) {
+        await refundToSusuLoanInTxn(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          loanId,
+          `loan-trash:${loanId.toHexString()}:${accountId}`,
+          requestId,
+        );
+      }
       for (const [accountId, amount] of refunds.savings) {
         await refundToSavingsInTxn(
           session,
@@ -1687,6 +1723,9 @@ export async function trashLoan(
             ...(refunds.susu.size > 0 ? { refundedToSusu: Object.fromEntries(refunds.susu) } : {}),
             ...(refunds.savings.size > 0
               ? { refundedToSavings: Object.fromEntries(refunds.savings) }
+              : {}),
+            ...(refunds.susuLoan.size > 0
+              ? { refundedToSusuLoan: Object.fromEntries(refunds.susuLoan) }
               : {}),
           },
           ...(requestId !== undefined ? { requestId } : {}),
@@ -1899,6 +1938,17 @@ export async function trashRepayment(
           },
         );
       }
+      for (const [accountId, amount] of refunds.susuLoan) {
+        await refundToSusuLoanInTxn(
+          session,
+          actor,
+          new Types.ObjectId(accountId),
+          amount,
+          loanId,
+          `repayment-trash:${repaymentId.toHexString()}:${accountId}`,
+          requestId,
+        );
+      }
       for (const [accountId, amount] of refunds.savings) {
         await refundToSavingsInTxn(
           session,
@@ -1924,6 +1974,9 @@ export async function trashRepayment(
             ...(refunds.susu.size > 0 ? { refundedToSusu: Object.fromEntries(refunds.susu) } : {}),
             ...(refunds.savings.size > 0
               ? { refundedToSavings: Object.fromEntries(refunds.savings) }
+              : {}),
+            ...(refunds.susuLoan.size > 0
+              ? { refundedToSusuLoan: Object.fromEntries(refunds.susuLoan) }
               : {}),
           },
           ...(requestId !== undefined ? { requestId } : {}),
@@ -2139,6 +2192,7 @@ export async function repaymentReceipt(
     'susu-closure': 'Susu account closure',
     transfer: 'Internal transfer',
     'loan-savings': 'From loan savings',
+    'susu-loan': 'From susu loan account',
   };
 
   const lines: ReceiptLine[] = [

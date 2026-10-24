@@ -45,6 +45,7 @@ const balanceSheet = z
       customerDeposits: z.object({
         susuBalances: money,
         savingsBalances: money,
+        susuLoanBalances: money.describe('Money in susu loan accounts, for the customers’ loans'),
         collateralHeld: money.describe('Cash collateral on loans, not yet handed back'),
         total: money,
       }),

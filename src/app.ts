@@ -9,6 +9,7 @@ import { usersRouter } from './modules/users/users.routes.js';
 import { customersRouter } from './modules/customers/customers.routes.js';
 import { susuRouter } from './modules/susu/susu.routes.js';
 import { savingsRouter } from './modules/savings/savings.routes.js';
+import { susuLoansRouter } from './modules/susu-loans/susu-loans.routes.js';
 import { uploadsRouter } from './modules/uploads/uploads.routes.js';
 import { loansRouter } from './modules/loans/loans.routes.js';
 import { reportsRouter } from './modules/reports/reports.routes.js';
@@ -58,6 +59,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/customers', customersRouter);
   app.use('/api/v1/susu', susuRouter);
   app.use('/api/v1/savings', savingsRouter);
+  app.use('/api/v1/susu-loans', susuLoansRouter);
   app.use('/api/v1/uploads', uploadsRouter);
   app.use('/api/v1/loans', loansRouter);
   app.use('/api/v1/reports', reportsRouter);

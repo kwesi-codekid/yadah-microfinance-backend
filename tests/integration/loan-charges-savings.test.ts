@@ -2,18 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { accraDay } from '../../src/lib/time.js';
-import { runLoanSavingsPass } from '../../src/lib/loan-savings.js';
-import {
-  LoanModel,
-  LoanScheduleModel,
-  RepaymentModel,
-  SavingsAccountModel,
-  SavingsTxnModel,
-} from '../../src/models/index.js';
+import { LoanModel, RepaymentModel } from '../../src/models/index.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import { recordPaperLoan } from '../../src/modules/loans/paper-loans.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
-import { transfer } from '../../src/modules/transfers/transfers.service.js';
 import { listTransactions } from '../../src/modules/reports/transactions.service.js';
 import { commissionEarned } from '../../src/modules/reports/reports.service.js';
 import { balanceSheet } from '../../src/modules/accounting/balance-sheet.service.js';
@@ -244,137 +236,10 @@ describe('a repayment on the day the customer paid', () => {
 });
 
 describe('the loan savings account', () => {
-  it('is one per customer', async () => {
+  it('is no longer opened — the susu loan account replaced it', async () => {
     const customerId = await makeCustomer(true);
-    await openLoanSavings(customerId);
     await expect(openLoanSavings(customerId)).rejects.toMatchObject({
-      code: 'LOAN_SAVINGS_EXISTS',
+      code: 'LOAN_SAVINGS_RETIRED',
     });
-  });
-
-  it('takes deposits, but nothing comes out of it as a withdrawal or a transfer', async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 50_000);
-    await savings.deposit(officer, accountId, 10_000, randomUUID(), 'cash');
-    const account = await savings.getAccount(officer, accountId);
-    expect(account).toMatchObject({ balance: 60_000, availableToWithdraw: 0 });
-
-    await expect(savings.withdraw(officer, accountId, 1_000, randomUUID())).rejects.toMatchObject({
-      code: 'LOAN_SAVINGS_LOCKED',
-    });
-    await expect(savings.closeAccount(officer, accountId)).rejects.toMatchObject({
-      code: 'LOAN_SAVINGS_LOCKED',
-    });
-    const other = await openSavings(customerId);
-    await expect(
-      transfer(officer, {
-        from: { type: 'savings', accountId },
-        to: { type: 'savings', accountId: other },
-        amount: 1_000,
-        idempotencyKey: randomUUID(),
-      } as never),
-    ).rejects.toMatchObject({ code: 'LOAN_SAVINGS_LOCKED' });
-  });
-
-  it('pays the loan, free of the withdrawal rules', async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 50_000);
-    const loanId = await activeLoan(customerId);
-
-    const result = await loans.repayFromLoanSavings(officer, loanId, 45_000, randomUUID());
-    expect(result.loanSavingsWithdrawal).toMatchObject({ amount: 45_000, balanceAfter: 5_000 });
-    expect(result.loan.totalRepaid).toBe(45_000);
-    // Twice in a day is fine: this is not a withdrawal.
-    await loans.repayFromLoanSavings(officer, loanId, 5_000, randomUUID());
-    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(0);
-
-    const repayment = await RepaymentModel.findById(result.repayment.id);
-    expect(repayment).toMatchObject({ source: 'loan-savings', channel: 'transfer' });
-    expect(repayment?.savingsAccountId?.equals(accountId)).toBe(true);
-    const txns = await SavingsTxnModel.find({ accountId, type: 'withdrawal' }).sort({ _id: 1 });
-    expect(txns.map((t) => [t.amount, t.fee, t.channel])).toEqual([
-      [45_000, 0, 'transfer'],
-      [5_000, 0, 'transfer'],
-    ]);
-
-    // Nothing left in it: more is refused.
-    await expect(
-      loans.repayFromLoanSavings(officer, loanId, 1_000, randomUUID()),
-    ).rejects.toMatchObject({ code: 'EXCEEDS_AVAILABLE' });
-    // Empty, it may close.
-    await savings.closeAccount(officer, accountId);
-  });
-
-  it('is refused for a customer who has none', async () => {
-    const customerId = await makeCustomer(true);
-    const loanId = await activeLoan(customerId);
-    await expect(
-      loans.repayFromLoanSavings(officer, loanId, 1_000, randomUUID()),
-    ).rejects.toMatchObject({ code: 'NO_LOAN_SAVINGS' });
   });
 });
-
-describe('the month-end deduction', () => {
-  /** The last day of the month the loan's first instalment falls in. */
-  async function firstMonthEnd(loanId: Types.ObjectId): Promise<Date> {
-    const first = await LoanScheduleModel.findOne({ loanId, installmentNumber: 1 });
-    const due = first?.dueDate ?? new Date();
-    return new Date(Date.UTC(due.getUTCFullYear(), due.getUTCMonth() + 1, 0, 12));
-  }
-
-  it("takes the month's instalment, once however often it runs", async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 100_000);
-    const loanId = await activeLoan(customerId);
-    const first = await LoanScheduleModel.findOne({ loanId, installmentNumber: 1 });
-    const at = await firstMonthEnd(loanId);
-
-    await runLoanSavingsPass(at);
-    await runLoanSavingsPass(at);
-
-    const loan = await LoanModel.findById(loanId);
-    expect(loan?.totalRepaid).toBe(first?.amountDue);
-    expect(loan?.loanSavingsMonth).toBe(at.toISOString().slice(0, 7));
-    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(
-      100_000 - (first?.amountDue ?? 0),
-    );
-    const repayments = await RepaymentModel.find({ loanId });
-    expect(repayments).toHaveLength(1);
-    expect(repayments[0]?.source).toBe('loan-savings');
-  });
-
-  it('takes what is there when there is less than is due', async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 10_000);
-    const loanId = await activeLoan(customerId);
-    await runLoanSavingsPass(await firstMonthEnd(loanId));
-    expect((await LoanModel.findById(loanId))?.totalRepaid).toBe(10_000);
-    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(0);
-  });
-
-  it('takes nothing when the month was already paid in cash', async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 100_000);
-    const loanId = await activeLoan(customerId);
-    const first = await LoanScheduleModel.findOne({ loanId, installmentNumber: 1 });
-    await loans.repayCash(officer, loanId, first?.amountDue ?? 0, randomUUID(), 'cash');
-    await runLoanSavingsPass(await firstMonthEnd(loanId));
-    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(100_000);
-  });
-
-  it('does nothing in the middle of a month', async () => {
-    const customerId = await makeCustomer(true);
-    const accountId = await openLoanSavings(customerId, 100_000);
-    const loanId = await activeLoan(customerId);
-    const end = await firstMonthEnd(loanId);
-    const midMonth = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 15, 12));
-    const result = await runLoanSavingsPass(midMonth);
-    expect(result.month).toBeNull();
-    expect((await SavingsAccountModel.findById(accountId))?.balance).toBe(100_000);
-  });
-});
-
-async function openSavings(customerId: Types.ObjectId): Promise<Types.ObjectId> {
-  const { account } = await savings.openAccount(officer, customerId, 5_000, randomUUID(), 'cash');
-  return new Types.ObjectId(account.id);
-}

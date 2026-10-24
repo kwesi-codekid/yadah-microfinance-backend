@@ -167,12 +167,12 @@ export const susuRepayBody = z.object({
 });
 export type SusuRepayBody = z.infer<typeof susuRepayBody>;
 
-export const loanSavingsRepayBody = z.object({
-  /** Taken from the loan savings balance — at most that, and at most what the loan still owes. */
+export const susuLoanRepayBody = z.object({
+  /** Taken from the susu loan balance — at most that, and at most what the loan still owes. */
   amount: positiveMoneyPesewas.min(1),
   idempotencyKey,
 });
-export type LoanSavingsRepayBody = z.infer<typeof loanSavingsRepayBody>;
+export type SusuLoanRepayBody = z.infer<typeof susuLoanRepayBody>;
 
 export const returnCollateralBody = z.object({
   /** The Accra day it was handed back; omit for today. */

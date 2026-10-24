@@ -14,7 +14,7 @@ import {
   putConfigBody,
   rejectBody,
   repayBody,
-  loanSavingsRepayBody,
+  susuLoanRepayBody,
   returnCollateralBody,
   susuRepayBody,
   trashBody,
@@ -88,10 +88,10 @@ const repaymentResult = z.object({
     .object({ accountId: z.string(), amount: z.number().int(), balanceAfter: z.number().int() })
     .optional()
     .describe('Present when the repayment was taken from the customer’s susu balance'),
-  loanSavingsWithdrawal: z
+  susuLoanWithdrawal: z
     .object({ accountId: z.string(), amount: z.number().int(), balanceAfter: z.number().int() })
     .optional()
-    .describe('Present when the repayment was taken from the customer’s loan savings account'),
+    .describe('Present when the repayment was taken from the customer’s susu loan account'),
 });
 const security = [{ bearerAuth: [] }];
 const idParam = z.object({ id: z.string().describe('Loan id') });
@@ -468,23 +468,23 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
-  '/loans/{id}/repayments/loan-savings': {
+  '/loans/{id}/repayments/susu-loan': {
     post: {
       tags: ['Loans'],
-      summary: 'Repay from the customer’s loan savings account (atomic)',
+      summary: 'Repay from the customer’s susu loan account (atomic)',
       description:
-        'The only way money leaves a loan savings account (savings accountType `loan`). One ' +
-        'transaction takes it out of the account — no fee, no minimum balance, no daily ' +
-        'limit — and applies it to the loan. At most the account balance and at most the ' +
-        'loan’s remaining balance. The month-end deduction runs through the same path as ' +
-        'the system actor.',
+        'Money leaves a susu loan account only to repay the loan (and, once a loan is paid ' +
+        'off, as the leftover moved to savings). One transaction takes it out of the account ' +
+        'and applies it to the loan — at most the account balance and at most the loan’s ' +
+        'remaining balance. Office only. The automatic deduction on the loan’s monthly dates ' +
+        'runs through the same path as the system actor.',
       security,
       requestParams: { path: idParam },
-      requestBody: jsonBody(loanSavingsRepayBody),
+      requestBody: jsonBody(susuLoanRepayBody),
       responses: {
         '201': jsonResponse('Applied', repaymentResult),
         '200': jsonResponse('Replay of an earlier request', repaymentResult),
-        '404': errorResponse('NO_LOAN_SAVINGS — the customer has no open loan savings account'),
+        '404': errorResponse('NO_SUSU_LOAN — the customer has no open susu loan account'),
         '422': errorResponse(
           'EXCEEDS_BALANCE (details.remaining), EXCEEDS_AVAILABLE (details.available), or ' +
             'LOAN_NOT_OPEN',

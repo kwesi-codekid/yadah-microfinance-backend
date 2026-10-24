@@ -19,12 +19,12 @@ import {
   putConfigBody,
   rejectBody,
   repayBody,
-  loanSavingsRepayBody,
+  susuLoanRepayBody,
   returnCollateralBody,
   susuRepayBody,
   trashBody,
   type ApplyBody,
-  type LoanSavingsRepayBody,
+  type SusuLoanRepayBody,
   type ReturnCollateralBody,
   type CustomerIdParams,
   type ListLoansQuery,
@@ -295,17 +295,17 @@ loansRouter.post(
   },
 );
 
-// Pay from the customer's loan savings account — the only road out of it.
-// Counter work, like paying from susu: the money stays inside the branch.
+// Pay from the customer's susu loan account — the only road out of it but the
+// leftover to savings at payoff. Office only (client decision, 23 Oct 2026).
+
 loansRouter.post(
-  '/:id/repayments/loan-savings',
-  validate({ params: loanIdParams, body: loanSavingsRepayBody }),
+  '/:id/repayments/susu-loan',
+  requireCounter,
+  validate({ params: loanIdParams, body: susuLoanRepayBody }),
   (req, res, next) => {
-    const { params, body } = getValidated<{ params: LoanIdParams; body: LoanSavingsRepayBody }>(
-      req,
-    );
+    const { params, body } = getValidated<{ params: LoanIdParams; body: SusuLoanRepayBody }>(req);
     loansService
-      .repayFromLoanSavings(
+      .repayFromSusuLoan(
         getAuth(req),
         params.id,
         body.amount,

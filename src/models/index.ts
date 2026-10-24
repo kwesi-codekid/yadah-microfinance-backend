@@ -37,6 +37,13 @@ export {
   type SavingsAccountType,
 } from './savings-account.model.js';
 export { SavingsTxnModel, type SavingsTxn } from './savings-txn.model.js';
+export { SusuLoanAccountModel, type SusuLoanAccount } from './susu-loan-account.model.js';
+export {
+  SusuLoanTxnModel,
+  SUSU_LOAN_TXN_TYPES,
+  type SusuLoanTxn,
+  type SusuLoanTxnType,
+} from './susu-loan-txn.model.js';
 export { LoanModel, type Loan } from './loan.model.js';
 export { LoanConfigModel, type LoanConfig } from './loan-config.model.js';
 export { LoanScheduleModel, type LoanSchedule } from './loan-schedule.model.js';

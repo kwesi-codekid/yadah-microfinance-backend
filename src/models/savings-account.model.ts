@@ -10,7 +10,7 @@ import { moneyField, trashFields, type TrashFields } from './shared.js';
 /**
  * `loan` is the loan savings account (client decision, 6 Oct 2026): one per
  * customer, paid into like any savings account, but money leaves it only to
- * repay the customer's loan — by hand, or by the month-end deduction. No
+ * repay the customer's loan — by hand, or by the automatic deduction on the loan's monthly dates. No
  * withdrawal, no fee, no minimum balance.
  */
 export const SAVINGS_ACCOUNT_TYPES = ['standard', 'student', 'fixed', 'loan'] as const;

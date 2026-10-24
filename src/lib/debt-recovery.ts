@@ -130,8 +130,8 @@ async function recoverDebt(debt: Debt, recovered: { total: number }): Promise<vo
   }
 
   // 2. Savings — normal withdrawal rules apply (fee, 1/day, min balance).
-  // Loan savings is left out: it pays the loan through the month-end
-  // deduction (lib/loan-savings.ts), and never anything else.
+  // Loan savings (retired) is left out, as is the susu loan account: it pays
+  // the loan through its own automatic deduction (lib/susu-loan.ts).
   const savings = await SavingsAccountModel.find({
     customerId,
     status: 'active',

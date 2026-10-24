@@ -3,8 +3,9 @@ import { CHANNELS, moneyField, trashFields, type Channel, type TrashFields } fro
 
 /**
  * Where a repayment's money came from — cash, the customer's susu balance,
- * their loan savings account, or an internal transfer. 'susu-closure' is
- * history: repayments made when paying from susu meant closing the book.
+ * their susu loan account, or an internal transfer. 'susu-closure' and
+ * 'loan-savings' (the account susu loan replaced, 23 Oct 2026) are
+ * history.
  */
 export const REPAYMENT_SOURCES = [
   'cash',
@@ -12,6 +13,7 @@ export const REPAYMENT_SOURCES = [
   'susu-closure',
   'transfer',
   'loan-savings',
+  'susu-loan',
 ] as const;
 export type RepaymentSource = (typeof REPAYMENT_SOURCES)[number];
 
@@ -28,8 +30,10 @@ export interface Repayment extends TrashFields {
   channel: Channel;
   /** Set when source is susu (or susu-closure): the account the money came from. */
   susuAccountId?: Types.ObjectId;
-  /** Set when source is loan-savings: the loan savings account it came from. */
+  /** Set when source is loan-savings (history): the loan savings account it came from. */
   savingsAccountId?: Types.ObjectId;
+  /** Set when source is susu-loan: the susu loan account it came from. */
+  susuLoanAccountId?: Types.ObjectId;
   recordedById: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
@@ -45,6 +49,7 @@ const repaymentSchema = new Schema<Repayment>(
     channel: { type: String, enum: CHANNELS, default: 'cash' },
     susuAccountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount' },
     savingsAccountId: { type: Schema.Types.ObjectId, ref: 'SavingsAccount' },
+    susuLoanAccountId: { type: Schema.Types.ObjectId, ref: 'SusuLoanAccount' },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     idempotencyKey: { type: String },
     ...trashFields,

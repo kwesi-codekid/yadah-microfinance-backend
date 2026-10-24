@@ -15,6 +15,14 @@ export const TXN_TYPES = [
   'susu-withdrawal',
   /** A plan stopped mid-cycle: its one payment charged, no cash moving. */
   'susu-commission',
+  /** Paid into a susu loan account at the office — cash in. */
+  'susu-loan-deposit',
+  /** Taken from a susu loan account onto the customer's loan. */
+  'susu-loan-repayment',
+  /** What was left once a loan was paid off, moved to the customer's savings. */
+  'susu-loan-leftover',
+  /** A repayment put back because the loan or the repayment was deleted. */
+  'susu-loan-refund',
   'savings-deposit',
   'savings-withdrawal',
   'savings-closure',
@@ -63,6 +71,10 @@ export function moduleOf(type: TxnType): TxnModule {
     case 'susu-payout':
     case 'susu-withdrawal':
     case 'susu-commission':
+    case 'susu-loan-deposit':
+    case 'susu-loan-repayment':
+    case 'susu-loan-leftover':
+    case 'susu-loan-refund':
       return 'susu';
     case 'savings-deposit':
     case 'savings-withdrawal':
@@ -97,6 +109,7 @@ export function directionOf(
 ): TxnDirection {
   switch (type) {
     case 'susu-deposit':
+    case 'susu-loan-deposit':
     case 'savings-deposit':
     case 'hp-deposit':
     case 'hp-installment':
@@ -118,6 +131,9 @@ export function directionOf(
     case 'loan-collateral-return':
       return 'out';
     case 'susu-commission':
+    case 'susu-loan-repayment':
+    case 'susu-loan-leftover':
+    case 'susu-loan-refund':
     case 'transfer':
       return 'internal';
   }

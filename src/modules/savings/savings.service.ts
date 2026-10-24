@@ -504,23 +504,14 @@ export async function openAccount(
     }
     await assertFixedDepositTerms(customer, fixed);
   }
-  // One loan savings account per customer, kept across loans (client
-  // decision, 6 Oct 2026) — the month-end deduction must know which to use.
+  // Loan savings is retired (client decision, 23 Oct 2026): a customer's
+  // loan money goes into their susu loan account instead.
   if (accountType === 'loan') {
-    const existing = await SavingsAccountModel.findOne({
-      customerId,
-      accountType: 'loan',
-      status: 'active',
-      ...NOT_TRASHED,
-    });
-    if (existing) {
-      throw new AppError(
-        'LOAN_SAVINGS_EXISTS',
-        `${customer.fullName} already has a loan savings account (${existing.accountNumber})`,
-        409,
-        { accountId: existing._id.toHexString() },
-      );
-    }
+    throw new AppError(
+      'LOAN_SAVINGS_RETIRED',
+      'Loan savings accounts are no longer opened — open a susu loan account instead',
+      422,
+    );
   }
 
   // Reserved before the session opens: the counter must not join the money

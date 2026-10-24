@@ -26,7 +26,7 @@ import {
 } from '../../models/index.js';
 import { buildReceiptPdf, receiptNumber, type ReceiptLine } from '../../lib/receipt-pdf.js';
 import { NOT_TRASHED } from '../../models/shared.js';
-import { applyRepaymentInTxn } from '../loans/loans.service.js';
+import { afterLoanRepayment, applyRepaymentInTxn } from '../loans/loans.service.js';
 import { applyHpPaymentInTxn, remainingOn } from '../hire-purchase/hp.service.js';
 import type { AccessTokenPayload } from '../auth/auth.service.js';
 import type { TransferBody } from './transfers.schemas.js';
@@ -386,6 +386,10 @@ export async function transfer(
     to: record.toType,
     amountCredited: record.amountCredited,
   });
+  if (body.to.type === 'loan') {
+    const loanAfter = await LoanModel.findById(body.to.loanId);
+    if (loanAfter) await afterLoanRepayment(actor, loanAfter, requestId);
+  }
   return toResult(record, false);
 }
 

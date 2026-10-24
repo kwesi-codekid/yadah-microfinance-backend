@@ -4,6 +4,7 @@ import {
   HpItemModel,
   LoanModel,
   SavingsAccountModel,
+  SusuLoanAccountModel,
   SusuAccountModel,
 } from '../../models/index.js';
 import { NOT_TRASHED } from '../../models/shared.js';
@@ -64,6 +65,8 @@ export interface BalanceSheet {
     customerDeposits: {
       susuBalances: number;
       savingsBalances: number;
+      /** Money in susu loan accounts, waiting to repay the customers' loans. */
+      susuLoanBalances: number;
       /** Cash collateral taken on loans and not yet handed back. */
       collateralHeld: number;
       total: number;
@@ -100,13 +103,18 @@ export interface BalanceSheet {
 async function customerLiabilities(): Promise<{
   susuBalances: number;
   savingsBalances: number;
+  susuLoanBalances: number;
 }> {
-  const [susu, savings] = await Promise.all([
+  const [susu, savings, susuLoan] = await Promise.all([
     SusuAccountModel.aggregate<{ balance: number }>([
       { $match: { status: 'active', ...NOT_TRASHED } },
       { $group: { _id: null, balance: { $sum: '$balance' } } },
     ]),
     SavingsAccountModel.aggregate<{ balance: number }>([
+      { $match: { status: 'active', ...NOT_TRASHED } },
+      { $group: { _id: null, balance: { $sum: '$balance' } } },
+    ]),
+    SusuLoanAccountModel.aggregate<{ balance: number }>([
       { $match: { status: 'active', ...NOT_TRASHED } },
       { $group: { _id: null, balance: { $sum: '$balance' } } },
     ]),
@@ -117,6 +125,7 @@ async function customerLiabilities(): Promise<{
     // owe nothing.
     susuBalances: susu[0]?.balance ?? 0,
     savingsBalances: savings[0]?.balance ?? 0,
+    susuLoanBalances: susuLoan[0]?.balance ?? 0,
   };
 }
 
@@ -208,7 +217,8 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
   const currentAssets = cash.total + recv.loanPrincipal + recv.hpReceivable + inventory;
   const totalAssets = currentAssets + fixedAssets.netBookValue;
 
-  const depositsTotal = deposits.susuBalances + deposits.savingsBalances + collateral;
+  const depositsTotal =
+    deposits.susuBalances + deposits.savingsBalances + deposits.susuLoanBalances + collateral;
   const totalLiabilities = depositsTotal + accrued.amount;
 
   const totalEquity = capital.net + earnings;
@@ -235,6 +245,7 @@ export async function balanceSheet(asOf: string = accraDay()): Promise<BalanceSh
       customerDeposits: {
         susuBalances: deposits.susuBalances,
         savingsBalances: deposits.savingsBalances,
+        susuLoanBalances: deposits.susuLoanBalances,
         collateralHeld: collateral,
         total: depositsTotal,
       },
