@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
-import { requireCounter } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { listTransactions } from '../reports/transactions.service.js';
 import * as alertsService from './alerts.service.js';
 import * as dashboardService from './dashboard.service.js';
+import * as financialsService from './financials.service.js';
 import * as seriesService from './series.service.js';
 import {
   efficiencyQuery,
@@ -40,6 +41,22 @@ dashboardRouter.get('/summary', (_req, res, next) => {
     .catch(next);
 });
 
+// The money-first block: cash accounts, deposits, loan book and profit. Office
+// only — the counter handles cash but does not see profit or the cash books,
+// the same line /accounting draws. Takes the series range for its trend.
+dashboardRouter.get(
+  '/financials',
+  requireOffice,
+  validate({ query: seriesQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: SeriesQuery }>(req);
+    financialsService
+      .dashboardFinancials(query)
+      .then((financials) => res.json(financials))
+      .catch(next);
+  },
+);
+
 dashboardRouter.get('/series', validate({ query: seriesQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: SeriesQuery }>(req);
   seriesService
@@ -47,6 +64,21 @@ dashboardRouter.get('/series', validate({ query: seriesQuery }), (req, res, next
     .then((series) => res.json(series))
     .catch(next);
 });
+
+// Cash each member of staff took in, bucketed like /series. Office only: it
+// ranks people against each other, which the counter has no business seeing.
+dashboardRouter.get(
+  '/staff-performance',
+  requireOffice,
+  validate({ query: seriesQuery }),
+  (req, res, next) => {
+    const { query } = getValidated<{ query: SeriesQuery }>(req);
+    seriesService
+      .staffPerformance(query)
+      .then((performance) => res.json(performance))
+      .catch(next);
+  },
+);
 
 dashboardRouter.get('/efficiency', validate({ query: efficiencyQuery }), (req, res, next) => {
   const { query } = getValidated<{ query: EfficiencyQuery }>(req);

@@ -152,7 +152,120 @@ const dashboardAlert = z
   })
   .meta({ id: 'DashboardAlert' });
 
+const bookLine = z.object({
+  open: z.number().int(),
+  outstanding: z.number().int(),
+  arrearsCount: z.number().int(),
+  arrearsAmount: z.number().int().describe('Still owed on the agreements in arrears'),
+});
+
+const profitSummary = z.object({
+  from: z.string(),
+  to: z.string(),
+  income: z.object({
+    susuCommission: z.number().int(),
+    savingsFees: z.number().int(),
+    outrightSalesProfit: z.number().int(),
+    loanInterest: z.number().int(),
+    loanProcessingFees: z.number().int(),
+    hirePurchaseInterest: z.number().int(),
+    total: z.number().int(),
+  }),
+  expenses: z.number().int().describe('Recorded expenses plus depreciation'),
+  netProfit: z.number().int(),
+});
+
+const dashboardFinancials = z
+  .object({
+    asOf: z.string(),
+    cash: z.object({
+      total: z.number().int().describe('Every active cash account plus the commission account'),
+      commission: z.number().int(),
+      accounts: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          kind: z.string(),
+          balance: z.number().int(),
+        }),
+      ),
+    }),
+    deposits: z
+      .object({
+        susu: z.number().int(),
+        savings: z.number().int(),
+        susuLoan: z.number().int(),
+        collateral: z.number().int(),
+        total: z.number().int(),
+      })
+      .describe('Customer money held — a liability, repayable on demand'),
+    liquidityPercent: z
+      .number()
+      .nullable()
+      .describe('Cash on hand ÷ deposits, one decimal. NULL when no deposits are held.'),
+    loanBook: z.object({
+      outstanding: z.number().int(),
+      loans: bookLine,
+      hirePurchase: bookLine,
+      parPercent: z
+        .number()
+        .nullable()
+        .describe('Portfolio at risk: arrears ÷ outstanding, one decimal. NULL on an empty book.'),
+      disbursedThisMonth: countAmount,
+      repaidThisMonth: countAmount,
+    }),
+    commissionAllTime: z
+      .number()
+      .int()
+      .describe('Susu commission + savings fees + loan processing fees since the system began'),
+    profit: z.object({
+      thisMonth: profitSummary,
+      lastMonth: profitSummary.describe('The same span of days last month, clamped to its length'),
+    }),
+    trend: z.object({
+      from: z.string(),
+      to: z.string(),
+      bucket: z.enum(['day', 'week', 'month']),
+      points: z.array(
+        z.object({
+          key: z.string(),
+          revenue: z.number().int(),
+          expenses: z.number().int(),
+          netProfit: z.number().int(),
+        }),
+      ),
+    }),
+    generatedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'DashboardFinancials' });
+
 export const dashboardPaths: ZodOpenApiPathsObject = {
+  '/dashboard/financials': {
+    get: {
+      tags,
+      summary: 'Cash, deposits, loan book and profit — the money-first dashboard block',
+      description:
+        'Admin and manager only (403 for the counter). Built from the same services as ' +
+        'the balance sheet and profit and loss statement, so the figures always agree ' +
+        'with the printed statements.\n\n' +
+        '`from`/`to`/`bucket` shape `trend` only (same defaults as `/dashboard/series`); ' +
+        'every other block states the position now or month to date. All amounts are ' +
+        'integer pesewas.',
+      security,
+      requestParams: {
+        query: z.object({
+          from: z.string().optional(),
+          to: z.string().optional(),
+          bucket: z.enum(['day', 'week', 'month']).optional(),
+        }),
+      },
+      responses: {
+        '200': jsonResponse('Dashboard financials', dashboardFinancials),
+        '400': errorResponse('from is after to'),
+        '403': errorResponse('Not office staff'),
+      },
+    },
+  },
   '/dashboard/summary': {
     get: {
       tags,

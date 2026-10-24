@@ -100,7 +100,7 @@ export interface BalanceSheet {
   generatedAt: Date;
 }
 
-async function customerLiabilities(): Promise<{
+export async function customerLiabilities(): Promise<{
   susuBalances: number;
   savingsBalances: number;
   susuLoanBalances: number;
@@ -134,7 +134,7 @@ async function customerLiabilities(): Promise<{
  * loan that had gone out by then, and not yet handed back by then. The
  * customer's money, owed back to them like a deposit.
  */
-async function collateralHeldAt(asOf: string): Promise<number> {
+export async function collateralHeldAt(asOf: string): Promise<number> {
   const { end } = dayWindow(asOf, asOf);
   const [row] = await LoanModel.aggregate<{ amount: number }>([
     {

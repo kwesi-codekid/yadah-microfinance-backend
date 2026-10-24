@@ -1,6 +1,6 @@
-import type { PipelineStage } from 'mongoose';
+import type { PipelineStage, Types } from 'mongoose';
 import { directionOf, type TxnDirection, type TxnType } from '../../domain/transactions.js';
-import { ReconciliationModel, SusuDepositModel } from '../../models/index.js';
+import { ReconciliationModel, SusuDepositModel, UserModel } from '../../models/index.js';
 import { buildFeedUnion } from '../reports/transactions.service.js';
 import type { SeriesQuery } from './dashboard.schemas.js';
 
@@ -267,5 +267,109 @@ export async function collectionEfficiency(
     netVariance: received - expected,
     daysReconciled: row?.days ?? 0,
     daysWithVariance: row?.daysWithVariance ?? 0,
+  };
+}
+
+/**
+ * Cash each member of staff took in from customers, bucketed like the cash
+ * series — the dashboard's staff-performance lines.
+ *
+ * "Took in" is the cash-in direction of the feed: deposits, repayments and
+ * payments the staff member recorded. Payouts and internal moves are left out,
+ * so a busy payout desk does not read as a high performer. Rows the system
+ * wrote and portal payments the customer made themselves have no staff member
+ * behind them and are skipped.
+ */
+export interface StaffPerformance {
+  from: string;
+  to: string;
+  bucket: Bucket;
+  keys: string[];
+  /** The busiest staff in the range, most cash first. */
+  staff: {
+    id: string;
+    name: string;
+    role: string;
+    total: number;
+    count: number;
+    /** Cash in per bucket, aligned with `keys`. */
+    values: number[];
+  }[];
+}
+
+const SYSTEM_ACTOR_HEX = '000000000000000000000000';
+
+interface StaffGroup {
+  _id: {
+    key: string;
+    staff: Types.ObjectId | null;
+    byRole: string | null;
+    type: TxnType;
+    channel: string | null;
+    detail: string | null;
+  };
+  count: number;
+  amount: number;
+}
+
+export async function staffPerformance(query: SeriesQuery, limit = 5): Promise<StaffPerformance> {
+  const { from, to, bucket } = query;
+  const window = {
+    start: new Date(`${from}T00:00:00.000Z`),
+    end: new Date(new Date(`${to}T00:00:00.000Z`).getTime() + DAY_MS),
+  };
+
+  const groups = await SusuDepositModel.aggregate<StaffGroup>([
+    ...buildFeedUnion(window),
+    {
+      $group: {
+        _id: {
+          key: keyExpression(bucket),
+          staff: '$recordedById',
+          byRole: { $ifNull: ['$initiatedByRole', null] },
+          type: '$type',
+          channel: '$channel',
+          detail: '$detail',
+        },
+        count: { $sum: 1 },
+        amount: { $sum: '$amount' },
+      },
+    },
+  ]);
+
+  const keys = bucketKeysBetween(from, to, bucket);
+  const index = new Map(keys.map((key, i) => [key, i]));
+  const byStaff = new Map<string, { total: number; count: number; values: number[] }>();
+  for (const g of groups) {
+    const staff = g._id.staff?.toHexString() ?? null;
+    if (staff === null || staff === SYSTEM_ACTOR_HEX || g._id.byRole === 'customer') continue;
+    if (directionOf(g._id.type, g._id.channel, g._id.detail) !== 'in') continue;
+    const i = index.get(g._id.key);
+    if (i === undefined) continue;
+    let row = byStaff.get(staff);
+    if (!row) {
+      row = { total: 0, count: 0, values: keys.map(() => 0) };
+      byStaff.set(staff, row);
+    }
+    row.values[i] = (row.values[i] ?? 0) + g.amount;
+    row.total += g.amount;
+    row.count += g.count;
+  }
+
+  const top = [...byStaff.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, limit);
+  const users = await UserModel.find({ _id: { $in: top.map(([id]) => id) } }, { name: 1, role: 1 });
+  const people = new Map(users.map((u) => [u._id.toHexString(), u]));
+
+  return {
+    from,
+    to,
+    bucket,
+    keys,
+    staff: top.map(([id, row]) => ({
+      id,
+      name: people.get(id)?.name ?? 'Former staff',
+      role: people.get(id)?.role ?? 'unknown',
+      ...row,
+    })),
   };
 }
