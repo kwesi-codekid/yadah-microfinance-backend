@@ -5,7 +5,6 @@ import { paperDay } from '../../lib/backdating.js';
 import { AppError } from '../../lib/errors.js';
 import { formatGhs } from '../../lib/money.js';
 import { emitAdminEvent } from '../../lib/realtime.js';
-import { sweepSusuLoan } from '../../lib/susu-loan.js';
 import { accraDay } from '../../lib/time.js';
 import {
   addMonthsClamped,
@@ -29,7 +28,6 @@ import type { AccessTokenPayload } from '../auth/auth.service.js';
 import { recordLoanFee, removeLoanFee } from '../commissions/commissions.ledger.js';
 import { OPEN_HP_STATUSES } from '../hire-purchase/hp.service.js';
 import {
-  afterLoanRepayment,
   getLoanConfig,
   isBigTierUnlocked,
   OPEN_LOAN_STATUSES,
@@ -347,13 +345,6 @@ export async function editLoan(
 
   const after = await LoanModel.findById(loanId);
   if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
-  // A loan the edit just settled gives up what is left in the susu loan account;
-  // one left owing may be owed more than it was, which that account can now pay.
-  if (after.status === 'repaid' && loan.status !== 'repaid') {
-    await afterLoanRepayment(actor, after, requestId);
-  } else if (after.status === 'active' || after.status === 'arrears') {
-    await sweepSusuLoan(after.customerId);
-  }
   emitAdminEvent('loan.edited', {
     id: loanId.toHexString(),
     customerId: after.customerId.toHexString(),

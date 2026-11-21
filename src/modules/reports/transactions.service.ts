@@ -18,7 +18,6 @@ import {
   PaystackChargeModel,
   SavingsAccountModel,
   SavingsTxnModel,
-  SusuLoanAccountModel,
   SusuAccountModel,
   SusuDepositModel,
   SusuPlanModel,
@@ -46,13 +45,7 @@ const STATEMENT_MAX_ROWS = 5000;
 const CSV_MAX_ROWS = 10_000;
 
 type RefKind =
-  | 'susu-account'
-  | 'susu-loan-account'
-  | 'savings-account'
-  | 'loan'
-  | 'hp-agreement'
-  | 'hp-sale'
-  | 'transfer';
+  'susu-account' | 'savings-account' | 'loan' | 'hp-agreement' | 'hp-sale' | 'transfer';
 
 /** The shape every $unionWith branch projects to. */
 interface RawRow {
@@ -265,32 +258,6 @@ function buildBranches(
             customerId: 1,
             refId: '$accountId',
             refKind: { $literal: 'savings-account' },
-            channel: 1,
-            detail: { $literal: null },
-            recordedById: 1,
-            idempotencyKey: 1,
-            balanceAfter: 1,
-            createdAt: 1,
-          },
-        },
-      ],
-    });
-  }
-
-  if (wanted.has('susu')) {
-    branches.push({
-      coll: 'susu-loan-txns',
-      stages: [
-        { $match: { createdAt, ...byCustomer, ...byOrEntered('recordedById'), ...NOT_TRASHED } },
-        {
-          $project: {
-            enteredById: 1,
-            type: { $concat: ['susu-loan-', '$type'] },
-            amount: 1,
-            fee: { $literal: 0 },
-            customerId: 1,
-            refId: '$accountId',
-            refKind: { $literal: 'susu-loan-account' },
             channel: 1,
             detail: { $literal: null },
             recordedById: 1,
@@ -636,7 +603,6 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   const references = new Set<string>();
   const susuIds = new Set<string>();
   const savingsIds = new Set<string>();
-  const susuLoanIds = new Set<string>();
   const loanIds = new Set<string>();
   const hpIds = new Set<string>();
   for (const r of raw) {
@@ -654,35 +620,25 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
     }
     if (r.refKind === 'susu-account') susuIds.add(r.refId.toHexString());
     if (r.refKind === 'savings-account') savingsIds.add(r.refId.toHexString());
-    if (r.refKind === 'susu-loan-account') susuLoanIds.add(r.refId.toHexString());
     if (r.refKind === 'loan') loanIds.add(r.refId.toHexString());
     if (r.refKind === 'hp-agreement') hpIds.add(r.refId.toHexString());
   }
 
-  const [
-    customers,
-    users,
-    susuAccounts,
-    savingsAccounts,
-    susuLoanAccounts,
-    loans,
-    agreements,
-    charges,
-  ] = await Promise.all([
-    CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
-    UserModel.find({ _id: { $in: [...userIds] } }, { name: 1 }),
-    SusuAccountModel.find({ _id: { $in: [...susuIds] } }, { accountNumber: 1 }),
-    SavingsAccountModel.find({ _id: { $in: [...savingsIds] } }, { accountNumber: 1 }),
-    SusuLoanAccountModel.find({ _id: { $in: [...susuLoanIds] } }, { accountNumber: 1 }),
-    LoanModel.find({ _id: { $in: [...loanIds] } }, { accountNumber: 1 }),
-    HpAgreementModel.find({ _id: { $in: [...hpIds] } }, { accountNumber: 1 }),
-    references.size === 0
-      ? []
-      : PaystackChargeModel.find(
-          { reference: { $in: [...references] }, initiatedByRole: 'customer' },
-          { reference: 1 },
-        ),
-  ]);
+  const [customers, users, susuAccounts, savingsAccounts, loans, agreements, charges] =
+    await Promise.all([
+      CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
+      UserModel.find({ _id: { $in: [...userIds] } }, { name: 1 }),
+      SusuAccountModel.find({ _id: { $in: [...susuIds] } }, { accountNumber: 1 }),
+      SavingsAccountModel.find({ _id: { $in: [...savingsIds] } }, { accountNumber: 1 }),
+      LoanModel.find({ _id: { $in: [...loanIds] } }, { accountNumber: 1 }),
+      HpAgreementModel.find({ _id: { $in: [...hpIds] } }, { accountNumber: 1 }),
+      references.size === 0
+        ? []
+        : PaystackChargeModel.find(
+            { reference: { $in: [...references] }, initiatedByRole: 'customer' },
+            { reference: 1 },
+          ),
+    ]);
   const customerNames = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   const userNames = new Map(users.map((u) => [u._id.toHexString(), u.name]));
   /** References the customer raised themselves, rather than the counter. */
@@ -690,9 +646,8 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   // Loans and HP agreements predating the numbering scheme have none — those
   // rows simply carry no accountNumber, exactly as before.
   const accountNumbers = new Map(
-    [...susuAccounts, ...savingsAccounts, ...susuLoanAccounts, ...loans, ...agreements].flatMap(
-      (a) =>
-        a.accountNumber === undefined ? [] : [[a._id.toHexString(), a.accountNumber] as const],
+    [...susuAccounts, ...savingsAccounts, ...loans, ...agreements].flatMap((a) =>
+      a.accountNumber === undefined ? [] : [[a._id.toHexString(), a.accountNumber] as const],
     ),
   );
 

@@ -28,7 +28,6 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
-  SusuLoanAccountModel,
 } from '../models/index.js';
 import {
   accountPeriodKey,
@@ -51,7 +50,6 @@ const PRODUCTS: { prefix: AccountPrefix; label: string; collection: mongoose.Col
   { prefix: 'SU', label: 'susu', collection: SusuAccountModel.collection },
   { prefix: 'SV', label: 'savings', collection: SavingsAccountModel.collection },
   { prefix: 'LN', label: 'loans', collection: LoanModel.collection },
-  { prefix: 'SL', label: 'susu loan', collection: SusuLoanAccountModel.collection },
   { prefix: 'HP', label: 'hire purchase', collection: HpAgreementModel.collection },
 ];
 

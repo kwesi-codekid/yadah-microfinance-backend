@@ -27,7 +27,6 @@ export const ACCOUNT_PREFIXES = {
   susu: 'SU',
   savings: 'SV',
   loan: 'LN',
-  'susu-loan': 'SL',
   'hire-purchase': 'HP',
 } as const;
 

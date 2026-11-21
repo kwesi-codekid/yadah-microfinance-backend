@@ -10,8 +10,6 @@ import {
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
-  SusuLoanAccountModel,
-  SusuLoanTxnModel,
   SusuPlanModel,
   UserModel,
 } from '../../models/index.js';
@@ -239,7 +237,7 @@ export async function collectorRound(
 
 export interface CollectorDayEntry {
   id: string;
-  product: 'susu' | 'savings' | 'loan' | 'susu-loan';
+  product: 'susu' | 'savings' | 'loan';
   accountId: string;
   accountNumber: string;
   customerId: string;
@@ -278,7 +276,7 @@ export async function collectorDay(
   const start = new Date(`${day}T00:00:00.000Z`);
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
-  const [susuDeposits, savingsTxns, repayments, susuLoanTxns, reconciliation] = await Promise.all([
+  const [susuDeposits, savingsTxns, repayments, reconciliation] = await Promise.all([
     SusuDepositModel.find({
       collectorId,
       createdAt: { $gte: start, $lt: end },
@@ -299,13 +297,6 @@ export async function collectorDay(
       createdAt: { $gte: start, $lt: end },
       ...NOT_TRASHED,
     }).sort({ createdAt: 1 }),
-    SusuLoanTxnModel.find({
-      recordedById: collectorId,
-      enteredById: { $ne: null },
-      type: 'deposit',
-      accraDay: day,
-      ...NOT_TRASHED,
-    }).sort({ createdAt: 1 }),
     ReconciliationModel.findOne({ collectorId, accraDay: day }),
   ]);
 
@@ -313,9 +304,8 @@ export async function collectorDay(
   for (const d of susuDeposits) customerIds.add(d.customerId.toHexString());
   for (const t of savingsTxns) customerIds.add(t.customerId.toHexString());
   for (const r of repayments) customerIds.add(r.customerId.toHexString());
-  for (const t of susuLoanTxns) customerIds.add(t.customerId.toHexString());
 
-  const [customers, susuAccounts, savingsAccounts, loans, susuLoanAccounts] = await Promise.all([
+  const [customers, susuAccounts, savingsAccounts, loans] = await Promise.all([
     CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
     SusuAccountModel.find(
       { _id: { $in: susuDeposits.map((d) => d.accountId) } },
@@ -326,14 +316,10 @@ export async function collectorDay(
       { accountNumber: 1 },
     ),
     LoanModel.find({ _id: { $in: repayments.map((r) => r.loanId) } }, { accountNumber: 1 }),
-    SusuLoanAccountModel.find(
-      { _id: { $in: susuLoanTxns.map((t) => t.accountId) } },
-      { accountNumber: 1 },
-    ),
   ]);
   const nameById = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   const numberById = new Map(
-    [...susuAccounts, ...savingsAccounts, ...loans, ...susuLoanAccounts].map((a) => [
+    [...susuAccounts, ...savingsAccounts, ...loans].map((a) => [
       a._id.toHexString(),
       a.accountNumber ?? '',
     ]),
@@ -372,17 +358,6 @@ export async function collectorDay(
       amount: r.amount,
       channel: r.channel,
       at: r.createdAt,
-    })),
-    ...susuLoanTxns.map((t) => ({
-      id: t._id.toHexString(),
-      product: 'susu-loan' as const,
-      accountId: t.accountId.toHexString(),
-      accountNumber: numberById.get(t.accountId.toHexString()) ?? '',
-      customerId: t.customerId.toHexString(),
-      customerName: nameById.get(t.customerId.toHexString()) ?? '',
-      amount: t.amount,
-      channel: t.channel,
-      at: t.createdAt,
     })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 

@@ -508,14 +508,9 @@ export async function openAccount(
     }
     await assertFixedDepositTerms(customer, fixed);
   }
-  // Loan savings is retired (client decision, 23 Oct 2026): a customer's
-  // loan money goes into their susu loan account instead.
+  // Loan savings is retired (client decision, 23 Oct 2026).
   if (accountType === 'loan') {
-    throw new AppError(
-      'LOAN_SAVINGS_RETIRED',
-      'Loan savings accounts are no longer opened — open a susu loan account instead',
-      422,
-    );
+    throw new AppError('LOAN_SAVINGS_RETIRED', 'Loan savings accounts are no longer opened', 422);
   }
 
   // Reserved before the session opens: the counter must not join the money

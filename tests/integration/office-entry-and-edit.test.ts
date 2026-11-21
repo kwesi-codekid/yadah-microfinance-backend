@@ -13,10 +13,7 @@ import {
   LoanModel,
   LoanScheduleModel,
   RepaymentModel,
-  SusuLoanAccountModel,
-  SusuLoanTxnModel,
 } from '../../src/models/index.js';
-import { approve, propose } from '../../src/modules/corrections/corrections.service.js';
 import { collectorDay } from '../../src/modules/collectors/collectors.service.js';
 import { editLoan } from '../../src/modules/loans/loan-edit.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
@@ -25,7 +22,6 @@ import { expectedForDay } from '../../src/modules/reconciliation/reconciliation.
 import { listTransactions } from '../../src/modules/reports/transactions.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
-import * as susuLoans from '../../src/modules/susu-loans/susu-loans.service.js';
 import type { AccessTokenPayload } from '../../src/modules/auth/auth.service.js';
 import {
   asOfficer,
@@ -40,7 +36,7 @@ import {
 /**
  * Client decisions of 4 Nov 2026. The office attendant enters what collectors
  * bring back: the money is filed under the collector, the attendant is kept as
- * whoever typed it. And loans and susu loan deposits can be fully edited.
+ * whoever typed it. And loans can be fully edited.
  */
 
 let guarantor: Types.ObjectId;
@@ -50,7 +46,6 @@ const officer = asOfficer();
 
 beforeAll(async () => {
   await setupDb();
-  await Promise.all([SusuLoanAccountModel.syncIndexes(), SusuLoanTxnModel.syncIndexes()]);
   guarantor = await makeGuarantor();
   collector = await makeCollector('Round Collector');
   teller = await makeTeller('Office Attendant');
@@ -69,7 +64,7 @@ async function activeLoan(customerId: Types.ObjectId, principal = 100_000, month
 }
 
 async function openBook(customerId: Types.ObjectId) {
-  const { account } = await susuLoans.openAccount(officer, customerId);
+  const { account } = await savings.openAccount(officer, customerId, 50_000, randomUUID(), 'cash');
   return new Types.ObjectId(account.id);
 }
 
@@ -117,7 +112,7 @@ describe('entering for a collector', () => {
     expect(accraDay(new Date(deposit.createdAt))).toBe(daysAgo(1));
   });
 
-  it('counts loan and susu loan cash in the collector day, only when entered for them', async () => {
+  it('counts loan cash in the collector day, only when entered for them', async () => {
     const customer = await makeCustomer(true);
     const fresh = await makeCollector('Second Collector');
     const freshId = new Types.ObjectId(fresh.sub);
@@ -135,32 +130,21 @@ describe('entering for a collector', () => {
       undefined,
       freshId,
     );
-    const book = await openBook(customer);
-    await susuLoans.deposit(
-      teller,
-      book,
-      2_000,
-      randomUUID(),
-      'cash',
-      undefined,
-      undefined,
-      freshId,
-    );
     // The attendant's own desk money, for nobody: stays out of the count.
     await loans.repayCash(teller, loanId, 4_000, randomUUID(), 'cash');
 
     const expected = await expectedForDay(freshId, accraDay());
-    expect(expected).toMatchObject({ loans: 1_000, susuLoans: 2_000, total: 3_000, entries: 2 });
+    expect(expected).toMatchObject({ loans: 1_000, total: 1_000, entries: 1 });
     const day = await collectorDay(officer, undefined, freshId);
-    expect(day.cashTotal).toBe(3_000);
-    expect(day.entries.map((e) => e.product).sort()).toEqual(['loan', 'susu-loan']);
+    expect(day.cashTotal).toBe(1_000);
+    expect(day.entries.map((e) => e.product)).toEqual(['loan']);
     expect((await expectedForDay(new Types.ObjectId(teller.sub), accraDay())).loans).toBe(0);
   });
 
   it('dates an entry within the week for a teller, without the backdating switch', async () => {
     const customer = await makeCustomer(true);
     const book = await openBook(customer);
-    const { txn } = await susuLoans.deposit(
+    const { txn } = await savings.deposit(
       teller,
       book,
       1_500,
@@ -170,10 +154,10 @@ describe('entering for a collector', () => {
       daysAgo(1),
       collectorOid(),
     );
-    expect(txn.accraDay).toBe(daysAgo(1));
+    expect(accraDay(new Date(txn.createdAt))).toBe(daysAgo(1));
 
     await expect(
-      susuLoans.deposit(
+      savings.deposit(
         teller,
         book,
         1_500,
@@ -190,7 +174,7 @@ describe('entering for a collector', () => {
     const customer = await makeCustomer(true);
     const book = await openBook(customer);
     await expect(
-      susuLoans.deposit(
+      savings.deposit(
         officer,
         book,
         1_000,
@@ -204,7 +188,7 @@ describe('entering for a collector', () => {
 
     const other = await makeCollector('Other Collector');
     await expect(
-      susuLoans.deposit(
+      savings.deposit(
         collector,
         book,
         1_000,
@@ -387,133 +371,6 @@ describe('editing a loan', () => {
   });
 });
 
-describe('editing a susu loan deposit', () => {
-  it('changes amount, channel, day and collector, and keeps who typed it', async () => {
-    const customer = await makeCustomer(true);
-    const book = await openBook(customer);
-    const first = await susuLoans.deposit(teller, book, 5_000, randomUUID(), 'cash');
-    const second = await susuLoans.deposit(teller, book, 3_000, randomUUID(), 'cash');
-    expect(second.txn.balanceAfter).toBe(8_000);
-
-    const { txn, account } = await susuLoans.editDeposit(
-      officer,
-      book,
-      new Types.ObjectId(first.txn.id),
-      {
-        amount: 6_000,
-        channel: 'momo',
-        occurredOn: daysAgo(2),
-        collectorId: new Types.ObjectId(collector.sub),
-        reason: 'Wrong slip',
-      },
-    );
-    expect(txn).toMatchObject({
-      amount: 6_000,
-      channel: 'momo',
-      accraDay: daysAgo(2),
-      recordedById: collector.sub,
-      enteredById: teller.sub,
-    });
-    expect(account.balance).toBe(9_000);
-    const later = await SusuLoanTxnModel.findById(second.txn.id);
-    expect(later?.balanceAfter).toBe(9_000);
-
-    // Taking the collector off files it back under whoever typed it.
-    const back = await susuLoans.editDeposit(officer, book, new Types.ObjectId(first.txn.id), {
-      collectorId: null,
-      reason: 'Came in at the office',
-    });
-    expect(back.txn.recordedById).toBe(teller.sub);
-    expect(back.txn.enteredById).toBeUndefined();
-  });
-
-  it('refuses taking back money the loan already used', async () => {
-    const customer = await makeCustomer(true);
-    const loanId = await activeLoan(customer);
-    const book = await openBook(customer);
-    const { txn } = await susuLoans.deposit(officer, book, 50_000, randomUUID(), 'cash');
-    await loans.repayFromSusuLoan(officer, loanId, 40_000, randomUUID());
-
-    await expect(
-      susuLoans.editDeposit(officer, book, new Types.ObjectId(txn.id), {
-        amount: 30_000,
-        reason: 'Too low',
-      }),
-    ).rejects.toMatchObject({ code: 'ALREADY_SPENT' });
-    expect((await SusuLoanAccountModel.findById(book))?.balance).toBe(10_000);
-    // Down to what is still spare is fine.
-    const ok = await susuLoans.editDeposit(officer, book, new Types.ObjectId(txn.id), {
-      amount: 40_000,
-      reason: 'Was 400',
-    });
-    expect(ok.account.balance).toBe(0);
-  });
-
-  it('refuses a row the loan moved, and a teller goes through the approval queue', async () => {
-    const customer = await makeCustomer(true);
-    const loanId = await activeLoan(customer);
-    const book = await openBook(customer);
-    const { txn } = await susuLoans.deposit(teller, book, 20_000, randomUUID(), 'cash');
-    await loans.repayFromSusuLoan(officer, loanId, 1_000, randomUUID());
-    const moved = await SusuLoanTxnModel.findOne({ accountId: book, type: 'repayment' });
-    await expect(
-      susuLoans.editDeposit(officer, book, moved?._id as Types.ObjectId, {
-        amount: 500,
-        reason: 'Not a deposit',
-      }),
-    ).rejects.toMatchObject({ code: 'CANNOT_CORRECT' });
-
-    const txnId = new Types.ObjectId(txn.id);
-    const asked = await propose(teller, 'susu-loan-deposit', book, txnId, {
-      amount: 25_000,
-      reason: 'Slip says 250',
-    });
-    expect((await SusuLoanAccountModel.findById(book))?.balance).toBe(19_000);
-    await expect(
-      susuLoans.editDeposit(officer, book, txnId, { amount: 30_000, reason: 'Jumping the queue' }),
-    ).rejects.toMatchObject({ code: 'CORRECTION_PENDING' });
-
-    await approve(officer, new Types.ObjectId(asked.id));
-    expect((await SusuLoanAccountModel.findById(book))?.balance).toBe(24_000);
-    expect((await SusuLoanTxnModel.findById(txnId))?.amount).toBe(25_000);
-  });
-});
-
-describe('moving a susu loan account', () => {
-  it('moves one holding only deposits, and takes its rows along', async () => {
-    const [from, to] = await Promise.all([makeCustomer(true), makeCustomer(true)]);
-    const book = await openBook(from);
-    await susuLoans.deposit(officer, book, 2_000, randomUUID(), 'cash');
-    const moved = await susuLoans.editAccount(officer, book, {
-      customerId: to,
-      reason: 'Opened on the wrong customer',
-    });
-    expect(moved.customerId).toBe(to.toHexString());
-    const rows = await SusuLoanTxnModel.find({ accountId: book });
-    expect(rows.every((r) => r.customerId.equals(to))).toBe(true);
-  });
-
-  it('refuses once money has gone to a loan, or when the customer already has one', async () => {
-    const [holder, other, withBook] = await Promise.all([
-      makeCustomer(true),
-      makeCustomer(true),
-      makeCustomer(true),
-    ]);
-    await openBook(withBook);
-    const book = await openBook(holder);
-    await expect(
-      susuLoans.editAccount(officer, book, { customerId: withBook, reason: 'Duplicate' }),
-    ).rejects.toMatchObject({ code: 'SUSU_LOAN_EXISTS' });
-
-    const loanId = await activeLoan(holder);
-    await susuLoans.deposit(officer, book, 2_000, randomUUID(), 'cash');
-    await loans.repayFromSusuLoan(officer, loanId, 1_000, randomUUID());
-    await expect(
-      susuLoans.editAccount(officer, book, { customerId: other, reason: 'Too late' }),
-    ).rejects.toMatchObject({ code: 'CANNOT_MOVE_ACCOUNT' });
-  });
-});
-
 describe('over the API', () => {
   let server: Server;
   let base: string;
@@ -539,19 +396,12 @@ describe('over the API', () => {
   it('keeps every edit from the counter and collectors', async () => {
     const customer = await makeCustomer(true);
     const id = await activeLoan(customer);
-    const book = await openBook(customer);
-    const { txn } = await susuLoans.deposit(officer, book, 1_000, randomUUID(), 'cash');
     for (const actor of [teller, collector]) {
-      for (const [path, body] of [
-        [`/loans/${id.toHexString()}`, { principal: 150_000, reason: 'Not mine to do' }],
-        [`/susu-loans/accounts/${book.toHexString()}`, { customerId: customer, reason: 'Nope' }],
-        [
-          `/susu-loans/accounts/${book.toHexString()}/txns/${txn.id}`,
-          { amount: 500, reason: 'Nope' },
-        ],
-      ] as const) {
-        expect((await call(actor, 'PATCH', path, body)).status).toBe(403);
-      }
+      const res = await call(actor, 'PATCH', `/loans/${id.toHexString()}`, {
+        principal: 150_000,
+        reason: 'Not mine to do',
+      });
+      expect(res.status).toBe(403);
     }
     expect((await LoanModel.findById(id))?.principal).toBe(100_000);
   });
@@ -559,7 +409,6 @@ describe('over the API', () => {
   it('takes a collector from the counter over the API', async () => {
     const customer = await makeCustomer(true);
     const id = await activeLoan(customer);
-    const book = await openBook(customer);
     const res = await call(teller, 'POST', `/loans/${id.toHexString()}/repayments`, {
       amount: 1_000,
       idempotencyKey: randomUUID(),
@@ -567,34 +416,6 @@ describe('over the API', () => {
       collectorId: collector.sub,
     });
     expect(res.status).toBe(201);
-
-    const deposit = await call(
-      teller,
-      'POST',
-      `/susu-loans/accounts/${book.toHexString()}/deposits`,
-      {
-        amount: 1_000,
-        idempotencyKey: randomUUID(),
-        channel: 'cash',
-        collectorId: collector.sub,
-        occurredOn: daysAgo(1),
-      },
-    );
-    expect(deposit.status).toBe(201);
-    const body = (await deposit.json()) as { txn: { id: string; enteredById?: string } };
-    expect(body.txn.enteredById).toBe(teller.sub);
-
-    // An office PATCH may clear the collector with null, and validates a reason.
-    const path = `/susu-loans/accounts/${book.toHexString()}/txns/${body.txn.id}`;
-    expect((await call(officer, 'PATCH', path, { collectorId: null })).status).toBe(400);
-    const cleared = await call(officer, 'PATCH', path, {
-      collectorId: null,
-      reason: 'At the office',
-    });
-    expect(cleared.status).toBe(200);
-    expect(((await cleared.json()) as { txn: { recordedById: string } }).txn.recordedById).toBe(
-      teller.sub,
-    );
 
     const edited = await call(officer, 'PATCH', `/loans/${id.toHexString()}`, {
       principal: 150_000,

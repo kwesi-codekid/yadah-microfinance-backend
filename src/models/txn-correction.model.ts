@@ -38,7 +38,6 @@ export const CORRECTION_KINDS = [
   'savings-txn',
   'loan-repayment',
   'hp-payment',
-  'susu-loan-deposit',
 ] as const;
 export type CorrectionKind = (typeof CORRECTION_KINDS)[number];
 

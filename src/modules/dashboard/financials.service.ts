@@ -46,7 +46,6 @@ export interface DashboardFinancials {
   deposits: {
     susu: number;
     savings: number;
-    susuLoan: number;
     collateral: number;
     total: number;
   };
@@ -188,13 +187,8 @@ export async function dashboardFinancials(range: SeriesQuery): Promise<Dashboard
   const deposits = {
     susu: liabilities.susuBalances,
     savings: liabilities.savingsBalances,
-    susuLoan: liabilities.susuLoanBalances,
     collateral,
-    total:
-      liabilities.susuBalances +
-      liabilities.savingsBalances +
-      liabilities.susuLoanBalances +
-      collateral,
+    total: liabilities.susuBalances + liabilities.savingsBalances + collateral,
   };
 
   const loanByStatus = new Map(loanGroups.map((g) => [g._id, g]));

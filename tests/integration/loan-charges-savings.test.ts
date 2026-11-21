@@ -236,7 +236,7 @@ describe('a repayment on the day the customer paid', () => {
 });
 
 describe('the loan savings account', () => {
-  it('is no longer opened — the susu loan account replaced it', async () => {
+  it('is no longer opened', async () => {
     const customerId = await makeCustomer(true);
     await expect(openLoanSavings(customerId)).rejects.toMatchObject({
       code: 'LOAN_SAVINGS_RETIRED',

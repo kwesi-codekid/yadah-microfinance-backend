@@ -22,12 +22,10 @@ import {
   putConfigBody,
   rejectBody,
   repayBody,
-  susuLoanRepayBody,
   returnCollateralBody,
   susuRepayBody,
   trashBody,
   type ApplyBody,
-  type SusuLoanRepayBody,
   type ReturnCollateralBody,
   type CustomerIdParams,
   type ListLoansQuery,
@@ -306,28 +304,6 @@ loansRouter.post(
         req.id as string,
         body.paidOn,
         body.collectorId,
-      )
-      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
-      .catch(next);
-  },
-);
-
-// Pay from the customer's susu loan account — the only road out of it but the
-// leftover to savings at payoff. Office only (client decision, 23 Oct 2026).
-
-loansRouter.post(
-  '/:id/repayments/susu-loan',
-  requireCounter,
-  validate({ params: loanIdParams, body: susuLoanRepayBody }),
-  (req, res, next) => {
-    const { params, body } = getValidated<{ params: LoanIdParams; body: SusuLoanRepayBody }>(req);
-    loansService
-      .repayFromSusuLoan(
-        getAuth(req),
-        params.id,
-        body.amount,
-        body.idempotencyKey,
-        req.id as string,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);

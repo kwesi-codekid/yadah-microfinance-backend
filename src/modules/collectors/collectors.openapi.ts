@@ -56,7 +56,7 @@ const collectorDay = z
     entries: z.array(
       z.object({
         id: z.string(),
-        product: z.enum(['susu', 'savings', 'loan', 'susu-loan']),
+        product: z.enum(['susu', 'savings', 'loan']),
         accountId: z.string(),
         accountNumber: z.string(),
         customerId: z.string(),

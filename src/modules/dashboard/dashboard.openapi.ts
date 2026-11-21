@@ -194,7 +194,6 @@ const dashboardFinancials = z
       .object({
         susu: z.number().int(),
         savings: z.number().int(),
-        susuLoan: z.number().int(),
         collateral: z.number().int(),
         total: z.number().int(),
       })

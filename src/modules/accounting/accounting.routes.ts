@@ -266,11 +266,6 @@ function balanceSheetRows(sheet: balanceSheet.BalanceSheet): Record<string, unkn
       line: 'Savings balances',
       amount: l.customerDeposits.savingsBalances,
     },
-    {
-      section: 'Liabilities',
-      line: 'Susu loan balances',
-      amount: l.customerDeposits.susuLoanBalances,
-    },
     { section: 'Liabilities', line: 'Accrued expenses', amount: l.accruedExpenses },
     { section: 'Liabilities', line: 'Total liabilities', amount: l.total },
     { section: 'Equity', line: 'Contributed capital', amount: e.contributedCapital },

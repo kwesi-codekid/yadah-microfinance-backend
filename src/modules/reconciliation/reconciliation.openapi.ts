@@ -41,7 +41,6 @@ const reconciliation = z
       susu: z.number().int(),
       savings: z.number().int(),
       loans: z.number().int(),
-      susuLoans: z.number().int(),
     }),
     declaredAmount: z.number().int().describe('What the collector counted in hand'),
     declaredAt: z.iso.datetime(),

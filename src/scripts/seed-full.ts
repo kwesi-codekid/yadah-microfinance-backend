@@ -34,7 +34,6 @@ import { runDebtRecoveryPass } from '../lib/debt-recovery.js';
 import { runHpArrearsPass } from '../lib/hp-arrears.js';
 import { runEscalationPass } from '../lib/loan-escalation.js';
 import { logger } from '../lib/logger.js';
-import { runSusuLoanPass } from '../lib/susu-loan.js';
 import {
   CustomerModel,
   HpAgreementModel,
@@ -194,7 +193,6 @@ const staff: Record<string, Actor> = {};
 const custs: Cust[] = [];
 const susu = new Map<number, SusuAcct>();
 const savings = new Map<number, string>();
-const susuLoan = new Map<number, string>();
 const loans: Record<string, string> = {};
 const items: Record<string, string> = {};
 const agreements: Record<string, string> = {};
@@ -758,36 +756,6 @@ function planCalendar(): void {
     });
   });
 
-  // ---- loan: paid down by the rule-free susu loan account
-  on(92, async () => {
-    const { account } = await api(staff.teller!, 'POST', '/susu-loans/accounts', {
-      customerId: custs[22]!.id,
-      initialDeposit: GHS(50),
-      idempotencyKey: key(),
-    });
-    susuLoan.set(22, account.id);
-    const second = await api(staff.teller!, 'POST', '/susu-loans/accounts', {
-      customerId: custs[25]!.id,
-    });
-    susuLoan.set(25, second.account.id);
-  });
-  on(90, async () => {
-    await applyLoan('susuLoan', 22, 3_000, 3);
-    await approveLoan('susuLoan');
-  });
-  for (let d = 84; d > 0; d -= 7) {
-    on(d, async () => {
-      await api(staff.teller!, 'POST', `/susu-loans/accounts/${susuLoan.get(22)!}/deposits`, {
-        amount: GHS(120),
-        idempotencyKey: key(),
-        channel: 'cash',
-      });
-    });
-  }
-  on(10, async () => {
-    await api(staff.teller!, 'POST', `/susu-loans/accounts/${susuLoan.get(25)!}/close`, {});
-  });
-
   // ---- loans: refused, waiting, and put in the trash
   on(60, async () => {
     await applyLoan('rejected', 19, 4_000, 3);
@@ -1337,7 +1305,6 @@ async function nightlyWorkers(): Promise<void> {
   await runEscalationPass();
   await runHpArrearsPass();
   await runDebtRecoveryPass();
-  await runSusuLoanPass(new Date());
 }
 
 // -------------------------------------------------------------- verification
@@ -1459,7 +1426,7 @@ async function sweep(): Promise<SweepResult> {
   const lists = [
     '/users', '/customers', '/customers/trash', '/susu/accounts', '/susu/accounts/trash',
     '/susu/deposits/trash', '/susu/summary', '/savings/accounts', '/savings/accounts/trash',
-    '/savings/transactions/trash', '/susu-loans/accounts', '/loans', '/loans/config', '/loans/trash',
+    '/savings/transactions/trash', '/loans', '/loans/config', '/loans/trash',
     '/loans/repayments/trash', `/reports/transactions?${range}`, '/reports/workers', '/reports/dashboard',
     `/reports/collections?${range}`, `/reports/loans/outstanding?${range}`, `/reports/loans/aging?${range}`,
     `/reports/commission?${range}`, '/dashboard/summary', '/dashboard/financials', '/dashboard/series',
@@ -1555,11 +1522,6 @@ async function sweep(): Promise<SweepResult> {
   if (itemId) await hit(admin, `/hire-purchase/items/${itemId}/price-changes`);
   const charge = await PaystackChargeModel.findOne({});
   if (charge) await hit(admin, `/payments/charges/${charge.reference}`);
-  const slAccount = await firstId(admin, '/susu-loans/accounts');
-  if (slAccount) {
-    await hit(admin, `/susu-loans/accounts/${slAccount}`);
-    await hit(admin, `/susu-loans/accounts/${slAccount}/txns`);
-  }
 
   // Each junior role sees its own world without an error.
   const manager = staff.manager!;

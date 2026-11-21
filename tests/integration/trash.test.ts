@@ -8,7 +8,6 @@ import {
   RepaymentModel,
   SavingsAccountModel,
   SavingsTxnModel,
-  SusuLoanAccountModel,
   SusuAccountModel,
   SusuDepositModel,
 } from '../../src/models/index.js';
@@ -17,7 +16,6 @@ import * as customers from '../../src/modules/customers/customers.service.js';
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
-import * as susuLoans from '../../src/modules/susu-loans/susu-loans.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
 import {
   asOfficer,
@@ -207,14 +205,6 @@ describe('loan trash', () => {
     await susu.recordDeposit(officer, susuId, 20_000, randomUUID(), 'cash', undefined, undefined, [
       { planId: susuAccount.plans[0]!.id, payments: 10 },
     ]);
-    const { account: loanSavings } = await susuLoans.openAccount(
-      officer,
-      customerId,
-      30_000,
-      randomUUID(),
-    );
-    const loanSavingsId = new Types.ObjectId(loanSavings.id);
-
     const applied = await loans.applyForLoan(
       officer,
       customerId,
@@ -229,7 +219,17 @@ describe('loan trash', () => {
     await loans.approveLoan(officer, loanId);
     await loans.repayCash(officer, loanId, 5_000, randomUUID(), 'cash');
     await loans.repayFromSusu(officer, loanId, susuId, 10_000, randomUUID());
-    await loans.repayFromSusuLoan(officer, loanId, 20_000, randomUUID());
+    // A repayment from the retired susu loan account, as old rows have it.
+    await RepaymentModel.create({
+      loanId,
+      customerId,
+      amount: 20_000,
+      source: 'susu-loan',
+      channel: 'transfer',
+      susuLoanAccountId: new Types.ObjectId(),
+      recordedById: new Types.ObjectId(officer.sub),
+      idempotencyKey: randomUUID(),
+    });
     expect((await SusuAccountModel.findById(susuId))?.balance).toBe(10_000);
     expect(await CommissionModel.countDocuments({ source: 'loan-fee', accountId: loanId })).toBe(1);
 
@@ -240,9 +240,9 @@ describe('loan trash', () => {
     expect(repayments).toHaveLength(3);
     expect(repayments.every((r) => r.deletedAt)).toBe(true);
     expect(await CommissionModel.countDocuments({ source: 'loan-fee', accountId: loanId })).toBe(0);
-    // Susu gets its 10,000 back as five whole rounds; loan savings its 20,000.
+    // Susu gets its 10,000 back as five whole rounds. The susu loan repayment
+    // has no account left to go back to: it leaves the books like cash.
     expect((await SusuAccountModel.findById(susuId))?.balance).toBe(20_000);
-    expect((await SusuLoanAccountModel.findById(loanSavingsId))?.balance).toBe(30_000);
 
     await expect(loans.restoreLoan(officer, loanId)).rejects.toMatchObject({
       code: 'CANNOT_RESTORE',
@@ -276,24 +276,22 @@ describe('loan trash', () => {
 describe('single repayment delete', () => {
   it('removes any repayment, refunds its source, and reopens a settled loan', async () => {
     const customerId = await makeCustomer(true);
-    const { account: loanSavings } = await susuLoans.openAccount(
-      officer,
-      customerId,
-      60_000,
-      randomUUID(),
-    );
-    const loanSavingsId = new Types.ObjectId(loanSavings.id);
+    const { account: susuAccount } = await susu.openAccount(officer, customerId, 2_000);
+    const susuId = new Types.ObjectId(susuAccount.id);
+    await susu.recordDeposit(officer, susuId, 40_000, randomUUID(), 'cash', undefined, undefined, [
+      { planId: susuAccount.plans[0]!.id, payments: 20 },
+    ]);
     const applied = await loans.applyForLoan(officer, customerId, 100_000, 3, guarantor);
     const loanId = new Types.ObjectId(applied.id);
     await loans.approveLoan(officer, loanId); // totalDue 110,000
 
-    const first = await loans.repayFromSusuLoan(officer, loanId, 40_000, randomUUID());
-    await loans.repayCash(officer, loanId, 70_000, randomUUID(), 'cash'); // settles → repaid
+    const first = await loans.repayFromSusu(officer, loanId, susuId, 10_000, randomUUID());
+    await loans.repayCash(officer, loanId, 100_000, randomUUID(), 'cash'); // settles → repaid
     expect((await LoanModel.findById(loanId))?.status).toBe('repaid');
-    expect((await SusuLoanAccountModel.findById(loanSavingsId))?.balance).toBe(20_000);
+    expect((await SusuAccountModel.findById(susuId))?.balance).toBe(30_000);
 
-    // Delete the FIRST (not newest) repayment: its 40,000 goes back to loan
-    // savings, the loan reopens, and only two repayments remain live.
+    // Delete the FIRST (not newest) repayment: its 10,000 goes back to the
+    // susu account, the loan reopens, and only one repayment remains live.
     const { loan } = await loans.trashRepayment(
       officer,
       loanId,
@@ -301,8 +299,8 @@ describe('single repayment delete', () => {
       'wrong account',
     );
     expect(loan.status).toBe('active');
-    expect(loan.totalRepaid).toBe(70_000);
-    expect((await SusuLoanAccountModel.findById(loanSavingsId))?.balance).toBe(60_000);
+    expect(loan.totalRepaid).toBe(100_000);
+    expect((await SusuAccountModel.findById(susuId))?.balance).toBe(40_000);
     const live = await RepaymentModel.find({ loanId, deletedAt: null });
     expect(live).toHaveLength(1);
     expect((await RepaymentModel.findById(first.repayment.id))?.deletedAt).toBeTruthy();
