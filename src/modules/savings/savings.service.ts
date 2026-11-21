@@ -2,7 +2,8 @@ import mongoose, { Types } from 'mongoose';
 import { MongoServerError } from 'mongodb';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
-import { resolveOccurredAt } from '../../lib/backdating.js';
+import { resolveAttribution } from '../../lib/attribution.js';
+import { resolveOccurredAt, resolveRoundEntryDate } from '../../lib/backdating.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -126,6 +127,8 @@ export interface PublicSavingsTxn {
   /** Someone the account holder sent to collect; absent when they came themselves. */
   collectedBy?: CollectedBy;
   recordedById: string;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredById?: string;
   createdAt: Date;
 }
 
@@ -144,6 +147,7 @@ export function toPublicTxn(t: SavingsTxn): PublicSavingsTxn {
       ? { collectedBy: { name: t.collectedBy.name, phone: t.collectedBy.phone } }
       : {}),
     recordedById: t.recordedById.toHexString(),
+    ...(t.enteredById ? { enteredById: t.enteredById.toHexString() } : {}),
     createdAt: t.createdAt,
   };
 }
@@ -714,10 +718,15 @@ export async function deposit(
   channel: Channel,
   requestId?: string,
   occurredOn?: string,
+  /** The collector this was taken by, when the office is entering it for them. */
+  collectorId?: Types.ObjectId,
 ): Promise<TxnResult> {
   // The day the money changed hands. Resolved before anything is read, so a
   // date the server will not accept costs nothing.
-  const at = resolveOccurredAt(actor, occurredOn);
+  const at = collectorId
+    ? resolveRoundEntryDate(actor, occurredOn)
+    : resolveOccurredAt(actor, occurredOn);
+  const attribution = await resolveAttribution(actor, collectorId);
   const existing = await SavingsTxnModel.findOne({ idempotencyKey });
   if (existing) {
     if (existing.deletedAt) {
@@ -777,7 +786,8 @@ export async function deposit(
             balanceAfter: opening + amount,
             channel,
             accraDay: accraDay(at),
-            recordedById: new Types.ObjectId(actor.sub),
+            recordedById: attribution.recordedById,
+            ...(attribution.enteredById ? { enteredById: attribution.enteredById } : {}),
             idempotencyKey,
             // `createdAt` is the day the money moved and is what the ledger,
             // the dashboard and the statement read; `updatedAt` is when the

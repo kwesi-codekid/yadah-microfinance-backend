@@ -8,6 +8,7 @@ import {
   isoDay,
   idempotencyKey,
   moneyPesewas,
+  onBehalfOfCollector,
   objectId,
   pagination,
   positiveMoneyPesewas,
@@ -103,6 +104,27 @@ export const paperLoanBody = z.object({
 });
 export type PaperLoanBody = z.infer<typeof paperLoanBody>;
 
+/**
+ * Any term of a loan, changed after it was written. Only what is sent changes.
+ * The rate and the disbursement date exist only once the loan has gone out. See
+ * `editLoan`.
+ */
+export const editLoanBody = z.object({
+  customerId: objectId.optional(),
+  principal: positiveMoneyPesewas.optional(),
+  durationMonths: z.union([z.literal(3), z.literal(6), z.literal(12)]).optional(),
+  ratePercent: z.union([z.literal(10), z.literal(20), z.literal(30)]).optional(),
+  /** The day the money was handed over. */
+  disbursedOn: isoDay.optional(),
+  /** Everybody standing behind the loan, first one first. Replaces who is there. */
+  guarantors: z.array(guarantorDetails).max(10).optional(),
+  paperRef: z.string().trim().min(1).max(40).optional(),
+  ...loanCharges,
+  /** Why, for the audit log. */
+  reason: z.string().trim().min(3).max(300),
+});
+export type EditLoanBody = z.infer<typeof editLoanBody>;
+
 export const listLoansQuery = pagination
   .extend({
     customerId: objectId.optional(),
@@ -156,6 +178,7 @@ export const repayBody = z.object({
   idempotencyKey,
   channel,
   paidOn,
+  collectorId: onBehalfOfCollector,
 });
 export type RepayBody = z.infer<typeof repayBody>;
 

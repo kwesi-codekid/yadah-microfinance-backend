@@ -3,11 +3,15 @@ import { AppError } from '../../lib/errors.js';
 import { accraDay } from '../../lib/time.js';
 import {
   CustomerModel,
+  LoanModel,
   ReconciliationModel,
+  RepaymentModel,
   SavingsAccountModel,
   SavingsTxnModel,
   SusuAccountModel,
   SusuDepositModel,
+  SusuLoanAccountModel,
+  SusuLoanTxnModel,
   SusuPlanModel,
   UserModel,
 } from '../../models/index.js';
@@ -235,7 +239,7 @@ export async function collectorRound(
 
 export interface CollectorDayEntry {
   id: string;
-  product: 'susu' | 'savings';
+  product: 'susu' | 'savings' | 'loan' | 'susu-loan';
   accountId: string;
   accountNumber: string;
   customerId: string;
@@ -250,7 +254,7 @@ export interface CollectorDay {
   collectorId: string;
   susu: { count: number; amount: number };
   savings: { count: number; amount: number };
-  /** Cash the collector is holding for handover: susu + savings, cash only. */
+  /** Cash the collector is holding for handover, what reconciliation expects. */
   cashTotal: number;
   entries: CollectorDayEntry[];
   /** Set once the collector has declared this day; null while still open. */
@@ -274,7 +278,7 @@ export async function collectorDay(
   const start = new Date(`${day}T00:00:00.000Z`);
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
-  const [susuDeposits, savingsTxns, reconciliation] = await Promise.all([
+  const [susuDeposits, savingsTxns, repayments, susuLoanTxns, reconciliation] = await Promise.all([
     SusuDepositModel.find({
       collectorId,
       createdAt: { $gte: start, $lt: end },
@@ -286,14 +290,32 @@ export async function collectorDay(
       accraDay: day,
       ...NOT_TRASHED,
     }).sort({ createdAt: 1 }),
+    // Collected at the office, so on this sheet only when the office entered
+    // them for this person — the same rule the cash count uses.
+    RepaymentModel.find({
+      recordedById: collectorId,
+      enteredById: { $ne: null },
+      source: 'cash',
+      createdAt: { $gte: start, $lt: end },
+      ...NOT_TRASHED,
+    }).sort({ createdAt: 1 }),
+    SusuLoanTxnModel.find({
+      recordedById: collectorId,
+      enteredById: { $ne: null },
+      type: 'deposit',
+      accraDay: day,
+      ...NOT_TRASHED,
+    }).sort({ createdAt: 1 }),
     ReconciliationModel.findOne({ collectorId, accraDay: day }),
   ]);
 
   const customerIds = new Set<string>();
   for (const d of susuDeposits) customerIds.add(d.customerId.toHexString());
   for (const t of savingsTxns) customerIds.add(t.customerId.toHexString());
+  for (const r of repayments) customerIds.add(r.customerId.toHexString());
+  for (const t of susuLoanTxns) customerIds.add(t.customerId.toHexString());
 
-  const [customers, susuAccounts, savingsAccounts] = await Promise.all([
+  const [customers, susuAccounts, savingsAccounts, loans, susuLoanAccounts] = await Promise.all([
     CustomerModel.find({ _id: { $in: [...customerIds] } }, { fullName: 1 }),
     SusuAccountModel.find(
       { _id: { $in: susuDeposits.map((d) => d.accountId) } },
@@ -303,10 +325,18 @@ export async function collectorDay(
       { _id: { $in: savingsTxns.map((t) => t.accountId) } },
       { accountNumber: 1 },
     ),
+    LoanModel.find({ _id: { $in: repayments.map((r) => r.loanId) } }, { accountNumber: 1 }),
+    SusuLoanAccountModel.find(
+      { _id: { $in: susuLoanTxns.map((t) => t.accountId) } },
+      { accountNumber: 1 },
+    ),
   ]);
   const nameById = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   const numberById = new Map(
-    [...susuAccounts, ...savingsAccounts].map((a) => [a._id.toHexString(), a.accountNumber]),
+    [...susuAccounts, ...savingsAccounts, ...loans, ...susuLoanAccounts].map((a) => [
+      a._id.toHexString(),
+      a.accountNumber ?? '',
+    ]),
   );
 
   const entries: CollectorDayEntry[] = [
@@ -324,6 +354,28 @@ export async function collectorDay(
     ...savingsTxns.map((t) => ({
       id: t._id.toHexString(),
       product: 'savings' as const,
+      accountId: t.accountId.toHexString(),
+      accountNumber: numberById.get(t.accountId.toHexString()) ?? '',
+      customerId: t.customerId.toHexString(),
+      customerName: nameById.get(t.customerId.toHexString()) ?? '',
+      amount: t.amount,
+      channel: t.channel,
+      at: t.createdAt,
+    })),
+    ...repayments.map((r) => ({
+      id: r._id.toHexString(),
+      product: 'loan' as const,
+      accountId: r.loanId.toHexString(),
+      accountNumber: numberById.get(r.loanId.toHexString()) ?? '',
+      customerId: r.customerId.toHexString(),
+      customerName: nameById.get(r.customerId.toHexString()) ?? '',
+      amount: r.amount,
+      channel: r.channel,
+      at: r.createdAt,
+    })),
+    ...susuLoanTxns.map((t) => ({
+      id: t._id.toHexString(),
+      product: 'susu-loan' as const,
       accountId: t.accountId.toHexString(),
       accountNumber: numberById.get(t.accountId.toHexString()) ?? '',
       customerId: t.customerId.toHexString(),

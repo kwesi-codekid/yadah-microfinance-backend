@@ -1,7 +1,8 @@
 import mongoose, { Types } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
-import { resolveOfficeDate } from '../../lib/backdating.js';
+import { resolveAttribution, type Attribution } from '../../lib/attribution.js';
+import { resolveOfficeDate, resolveRoundEntryDate } from '../../lib/backdating.js';
 import type { CorrectionPlan, CorrectionPreparer } from '../../lib/corrections.js';
 import { isMinor, minorCreditRefused } from '../../lib/age.js';
 import { AppError } from '../../lib/errors.js';
@@ -266,7 +267,7 @@ export interface EligibilitySummary {
   bigTierUnlocked: boolean;
 }
 
-async function isBigTierUnlocked(customerId: Types.ObjectId): Promise<boolean> {
+export async function isBigTierUnlocked(customerId: Types.ObjectId): Promise<boolean> {
   const graduated = await LoanModel.findOne({
     customerId,
     tier: 'small',
@@ -523,6 +524,18 @@ export async function applyForLoan(
     },
     ...(requestId !== undefined ? { requestId } : {}),
   });
+  // A loan texts the customer twice over: here, and on every repayment
+  // (client decision, 7 Nov 2026). Approval is silent. The total due is left
+  // out on purpose: approval re-reads the rate, so it may not be final yet.
+  await enqueueSms({
+    to: customer.phone,
+    template: 'loan-applied',
+    message:
+      `Yadah: your loan application ${loan.accountNumber ?? ''} for ${formatGhs(principal)} ` +
+      `over ${String(durationMonths)} months has been received.`,
+    relatedEntityType: 'loan',
+    relatedEntityId: loan._id,
+  });
   emitAdminEvent('loan.applied', {
     id: loan._id.toHexString(),
     customerId: customerId.toHexString(),
@@ -618,19 +631,8 @@ export async function approveLoan(
   const loan = await LoanModel.findById(loanId);
   if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
 
-  if (customer) {
-    const monthly = schedule[0]?.amountDue ?? 0;
-    await enqueueSms({
-      to: customer.phone,
-      template: 'loan-approved',
-      message:
-        `Yadah: your loan of ${formatGhs(loan.principal)} is approved. ` +
-        `Total due: ${formatGhs(totalDue)} by ${dueDate.toISOString().slice(0, 10)}. ` +
-        `Monthly instalment: ${formatGhs(monthly)}.`,
-      relatedEntityType: 'loan',
-      relatedEntityId: loanId,
-    });
-  }
+  // No SMS on approval — the customer hears at application and on each
+  // repayment only (client decision, 7 Nov 2026).
   emitAdminEvent('loan.approved', {
     id: loanId.toHexString(),
     customerId: pre.customerId.toHexString(),
@@ -785,6 +787,10 @@ export interface LoanDetail {
     savingsAccountId?: string;
     susuLoanAccountId?: string;
     recordedById: string;
+    /** Who typed it in, when that was not the person it is filed under. */
+    enteredById?: string;
+    recordedByName?: string;
+    enteredByName?: string;
     createdAt: Date;
   }[];
   /** Repayments deleted on their own (not restorable — the money was reversed). */
@@ -808,6 +814,23 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
     RepaymentModel.find({ loanId, ...NOT_TRASHED }).sort({ createdAt: -1 }),
     RepaymentModel.find({ loanId, deletedAt: { $ne: null } }).sort({ deletedAt: -1 }),
   ]);
+  const staff = await UserModel.find(
+    {
+      _id: {
+        $in: repayments.flatMap((r) => [r.recordedById, ...(r.enteredById ? [r.enteredById] : [])]),
+      },
+    },
+    { name: 1 },
+  );
+  const staffNames = new Map(staff.map((u) => [u._id.toHexString(), u.name]));
+  const nameFields = (r: Repayment) => {
+    const recordedByName = staffNames.get(r.recordedById.toHexString());
+    const enteredByName = r.enteredById ? staffNames.get(r.enteredById.toHexString()) : undefined;
+    return {
+      ...(recordedByName ? { recordedByName } : {}),
+      ...(enteredByName ? { enteredByName } : {}),
+    };
+  };
   return {
     loan: toPublicLoan(loan),
     schedule: schedule.map((s) => ({
@@ -826,6 +849,8 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       ...(r.savingsAccountId ? { savingsAccountId: r.savingsAccountId.toHexString() } : {}),
       ...(r.susuLoanAccountId ? { susuLoanAccountId: r.susuLoanAccountId.toHexString() } : {}),
       recordedById: r.recordedById.toHexString(),
+      ...(r.enteredById ? { enteredById: r.enteredById.toHexString() } : {}),
+      ...nameFields(r),
       createdAt: r.createdAt,
     })),
     trashedRepayments: trashedRepayments.map((r) => ({
@@ -885,7 +910,12 @@ export async function applyRepaymentInTxn(
   session: mongoose.ClientSession,
   susuAccountId?: Types.ObjectId,
   requestId?: string,
-  extra: { at?: Date; savingsAccountId?: Types.ObjectId; susuLoanAccountId?: Types.ObjectId } = {},
+  extra: {
+    at?: Date;
+    savingsAccountId?: Types.ObjectId;
+    susuLoanAccountId?: Types.ObjectId;
+    attribution?: Attribution;
+  } = {},
 ): Promise<Repayment> {
   const remaining = loan.totalDue - loan.totalRepaid;
   if (amount > remaining) {
@@ -957,7 +987,8 @@ export async function applyRepaymentInTxn(
         ...(susuAccountId ? { susuAccountId } : {}),
         ...(extra.savingsAccountId ? { savingsAccountId: extra.savingsAccountId } : {}),
         ...(extra.susuLoanAccountId ? { susuLoanAccountId: extra.susuLoanAccountId } : {}),
-        recordedById: new Types.ObjectId(actor.sub),
+        recordedById: extra.attribution?.recordedById ?? new Types.ObjectId(actor.sub),
+        ...(extra.attribution?.enteredById ? { enteredById: extra.attribution.enteredById } : {}),
         idempotencyKey,
         // The day it was paid; `_id` still carries when it was typed in.
         createdAt: now,
@@ -1057,11 +1088,19 @@ export async function repayCash(
   idempotencyKey: string,
   channel: Channel,
   requestId?: string,
-  /** The Accra day the customer paid, when not today. Office only. */
+  /** The Accra day the customer paid, when not today. Office only, unless entering for a collector. */
   paidOn?: string,
+  /** The collector this was taken by, when the office is entering it for them. */
+  collectorId?: Types.ObjectId,
 ): Promise<RepaymentResult> {
   // Resolved first, so a date the caller may not use costs nothing.
-  const at = paidOn !== undefined ? resolveOfficeDate(actor, paidOn) : undefined;
+  const at =
+    paidOn === undefined
+      ? undefined
+      : collectorId
+        ? resolveRoundEntryDate(actor, paidOn)
+        : resolveOfficeDate(actor, paidOn);
+  const attribution = await resolveAttribution(actor, collectorId);
   const replayed = await replayIfExists(idempotencyKey);
   if (replayed) return replayed;
 
@@ -1080,7 +1119,7 @@ export async function repayCash(
         session,
         undefined,
         requestId,
-        at ? { at } : {},
+        { ...(at ? { at } : {}), attribution },
       );
     });
   } finally {

@@ -66,6 +66,7 @@ interface RawRow {
   channel?: string | null;
   detail?: string | null;
   recordedById?: Types.ObjectId | null;
+  enteredById?: Types.ObjectId | null;
   /**
    * Ledger rows applied from a Paystack charge carry `paystack:<reference>`.
    * It is the only surviving link from the row back to who asked for it.
@@ -112,6 +113,8 @@ export interface UnifiedTxnRow {
    * id, a Customer id, the automation actor, or nothing at all.
    */
   recordedByKind: RecordedByKind;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredByName: string | null;
   createdAt: Date;
 }
 
@@ -156,6 +159,10 @@ function buildBranches(
   // Each collection names the member of staff under its own field — the one
   // every branch below projects to `recordedById`.
   const by = (field: string) => (recordedById ? { [field]: recordedById } : {});
+  // Money the office can enter for a collector belongs to both people: the one
+  // it is filed under, and the one who typed it, who must still see their work.
+  const byOrEntered = (field: string) =>
+    recordedById ? { $or: [{ [field]: recordedById }, { enteredById: recordedById }] } : {};
   const wanted = new Set<TxnModule>(modules ?? [...TXN_MODULES]);
   const branches: Branch[] = [];
 
@@ -164,7 +171,7 @@ function buildBranches(
       {
         coll: 'susu-deposits',
         stages: [
-          { $match: { createdAt, ...byCustomer, ...by('collectorId'), ...NOT_TRASHED } },
+          { $match: { createdAt, ...byCustomer, ...byOrEntered('collectorId'), ...NOT_TRASHED } },
           {
             $project: {
               type: { $literal: 'susu-deposit' },
@@ -178,6 +185,7 @@ function buildBranches(
               channel: 1,
               detail: { $literal: null },
               recordedById: '$collectorId',
+              enteredById: 1,
               idempotencyKey: 1,
               createdAt: 1,
             },
@@ -247,9 +255,10 @@ function buildBranches(
     branches.push({
       coll: 'savings-txns',
       stages: [
-        { $match: { createdAt, ...byCustomer, ...by('recordedById'), ...NOT_TRASHED } },
+        { $match: { createdAt, ...byCustomer, ...byOrEntered('recordedById'), ...NOT_TRASHED } },
         {
           $project: {
+            enteredById: 1,
             type: { $concat: ['savings-', '$type'] },
             amount: 1,
             fee: { $ifNull: ['$fee', 0] },
@@ -272,9 +281,10 @@ function buildBranches(
     branches.push({
       coll: 'susu-loan-txns',
       stages: [
-        { $match: { createdAt, ...byCustomer, ...by('recordedById'), ...NOT_TRASHED } },
+        { $match: { createdAt, ...byCustomer, ...byOrEntered('recordedById'), ...NOT_TRASHED } },
         {
           $project: {
+            enteredById: 1,
             type: { $concat: ['susu-loan-', '$type'] },
             amount: 1,
             fee: { $literal: 0 },
@@ -327,9 +337,10 @@ function buildBranches(
         coll: 'repayments',
         stages: [
           // A deleted loan takes its repayments with it.
-          { $match: { createdAt, ...byCustomer, ...by('recordedById'), ...NOT_TRASHED } },
+          { $match: { createdAt, ...byCustomer, ...byOrEntered('recordedById'), ...NOT_TRASHED } },
           {
             $project: {
+              enteredById: 1,
               type: { $literal: 'loan-repayment' },
               amount: 1,
               fee: { $literal: 0 },
@@ -630,6 +641,7 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
   const hpIds = new Set<string>();
   for (const r of raw) {
     customerIds.add(r.customerId.toHexString());
+    if (r.enteredById) userIds.add(r.enteredById.toHexString());
     const actor = r.recordedById?.toHexString() ?? null;
     // A Customer id must never be looked up in the staff directory: it misses,
     // and the row then reads as if nobody recorded it.
@@ -748,6 +760,7 @@ async function resolveRows(raw: RawRow[]): Promise<UnifiedTxnRow[]> {
       recordedById,
       recordedByName,
       recordedByKind,
+      enteredByName: r.enteredById ? (userNames.get(r.enteredById.toHexString()) ?? null) : null,
       createdAt: r.createdAt,
     };
   });
@@ -959,6 +972,7 @@ function toCsvRow(r: UnifiedTxnRow): Record<string, unknown> {
     // in first-seen order, so a new column in the middle would shift every
     // spreadsheet the office already reads by position.
     recordedByType: r.recordedByKind,
+    enteredBy: r.enteredByName ?? '',
   };
 }
 

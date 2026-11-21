@@ -7,8 +7,10 @@ import { formatGhs } from '../../lib/money.js';
 import { accraDay as todayInAccra, dayWindow } from '../../lib/time.js';
 import {
   ReconciliationModel,
+  RepaymentModel,
   SavingsTxnModel,
   SusuDepositModel,
+  SusuLoanTxnModel,
   UserModel,
   type Reconciliation,
 } from '../../models/index.js';
@@ -30,6 +32,10 @@ export interface ExpectedCash {
   susu: number;
   /** Cash-channel savings deposits recorded by this collector that day. */
   savings: number;
+  /** Cash loan repayments the office entered for this person that day. */
+  loans: number;
+  /** Cash susu loan deposits the office entered for this person that day. */
+  susuLoans: number;
   total: number;
   /** How many deposits make up the total — a sanity check for the collector. */
   entries: number;
@@ -50,7 +56,7 @@ export interface PublicReconciliation {
   collectorRole?: Role;
   accraDay: string;
   expectedAmount: number;
-  expectedBreakdown: { susu: number; savings: number };
+  expectedBreakdown: { susu: number; savings: number; loans: number; susuLoans: number };
   declaredAmount: number;
   declaredAt: Date;
   declaredNote?: string;
@@ -72,6 +78,8 @@ export function toPublicReconciliation(r: Reconciliation): PublicReconciliation 
     expectedBreakdown: {
       susu: r.expectedBreakdown.susu,
       savings: r.expectedBreakdown.savings,
+      loans: r.expectedBreakdown.loans ?? 0,
+      susuLoans: r.expectedBreakdown.susuLoans ?? 0,
     },
     declaredAmount: r.declaredAmount,
     declaredAt: r.declaredAt,
@@ -111,8 +119,10 @@ export function toReconciliationExportRow(item: PublicReconciliation): Record<st
  * What the system says a collector took in cash on a given Accra day.
  *
  * Cash channel only: a Paystack or momo deposit never passed through the
- * collector's hands, and a transfer leg is not cash at all. Loans and hire
- * purchase are excluded entirely — those are collected at the office.
+ * collector's hands, and a transfer leg is not cash at all. Loan repayments
+ * and susu loan deposits are collected at the office, so they count only when
+ * the office entered them for this person (`enteredById`): then they did carry
+ * the cash (client decision, 4 Nov 2026). Hire purchase stays out entirely.
  */
 export async function expectedForDay(
   collectorId: Types.ObjectId,
@@ -121,7 +131,7 @@ export async function expectedForDay(
   const { start, end } = dayWindow(accraDay, accraDay);
   const createdAt = { $gte: start, $lt: end };
 
-  const [susuRows, savingsRows] = await Promise.all([
+  const [susuRows, savingsRows, loanRows, susuLoanRows] = await Promise.all([
     SusuDepositModel.aggregate<{ _id: null; total: number; count: number }>([
       { $match: { collectorId, channel: 'cash', createdAt, ...NOT_TRASHED } },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -138,17 +148,51 @@ export async function expectedForDay(
       },
       { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]),
+    RepaymentModel.aggregate<{ _id: null; total: number; count: number }>([
+      {
+        $match: {
+          recordedById: collectorId,
+          enteredById: { $ne: null },
+          source: 'cash',
+          channel: 'cash',
+          createdAt,
+          ...NOT_TRASHED,
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+    SusuLoanTxnModel.aggregate<{ _id: null; total: number; count: number }>([
+      {
+        $match: {
+          recordedById: collectorId,
+          enteredById: { $ne: null },
+          type: 'deposit',
+          channel: 'cash',
+          accraDay,
+          ...NOT_TRASHED,
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
   ]);
 
   const susu = susuRows[0]?.total ?? 0;
   const savings = savingsRows[0]?.total ?? 0;
+  const loans = loanRows[0]?.total ?? 0;
+  const susuLoans = susuLoanRows[0]?.total ?? 0;
   return {
     collectorId: collectorId.toHexString(),
     accraDay,
     susu,
     savings,
-    total: susu + savings,
-    entries: (susuRows[0]?.count ?? 0) + (savingsRows[0]?.count ?? 0),
+    loans,
+    susuLoans,
+    total: susu + savings + loans + susuLoans,
+    entries:
+      (susuRows[0]?.count ?? 0) +
+      (savingsRows[0]?.count ?? 0) +
+      (loanRows[0]?.count ?? 0) +
+      (susuLoanRows[0]?.count ?? 0),
   };
 }
 
@@ -216,7 +260,12 @@ export async function declareDay(
     collectorId,
     accraDay: day,
     expectedAmount: expected.total,
-    expectedBreakdown: { susu: expected.susu, savings: expected.savings },
+    expectedBreakdown: {
+      susu: expected.susu,
+      savings: expected.savings,
+      loans: expected.loans,
+      susuLoans: expected.susuLoans,
+    },
     declaredAmount: body.declaredAmount,
     declaredAt: new Date(),
     ...(body.declaredNote !== undefined ? { declaredNote: body.declaredNote } : {}),
@@ -234,7 +283,12 @@ export async function declareDay(
       accraDay: day,
       expected: expected.total,
       declared: body.declaredAmount,
-      breakdown: { susu: expected.susu, savings: expected.savings },
+      breakdown: {
+        susu: expected.susu,
+        savings: expected.savings,
+        loans: expected.loans,
+        susuLoans: expected.susuLoans,
+      },
     },
     ...(requestId !== undefined ? { requestId } : {}),
   });
@@ -305,7 +359,12 @@ export async function confirmDay(
   const variance = body.receivedAmount - expected.total;
 
   record.expectedAmount = expected.total;
-  record.expectedBreakdown = { susu: expected.susu, savings: expected.savings };
+  record.expectedBreakdown = {
+    susu: expected.susu,
+    savings: expected.savings,
+    loans: expected.loans,
+    susuLoans: expected.susuLoans,
+  };
   record.receivedAmount = body.receivedAmount;
   record.receivedById = new Types.ObjectId(actor.sub);
   record.receivedAt = new Date();

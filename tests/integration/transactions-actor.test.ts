@@ -180,6 +180,7 @@ describe('who recorded a transaction', () => {
       'balanceAfter',
       'recordedBy',
       'recordedByType',
+      'enteredBy',
     ]);
   });
 });

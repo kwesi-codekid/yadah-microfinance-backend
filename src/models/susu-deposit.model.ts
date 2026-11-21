@@ -33,6 +33,8 @@ export interface SusuDeposit extends TrashFields {
   accountId: Types.ObjectId;
   customerId: Types.ObjectId;
   collectorId: Types.ObjectId;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredById?: Types.ObjectId;
   amount: number; // pesewas, the cash handed over
   lines: SusuDepositLine[];
   leftover: number;
@@ -63,6 +65,7 @@ const susuDepositSchema = new Schema<SusuDeposit>(
     accountId: { type: Schema.Types.ObjectId, ref: 'SusuAccount', required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
     collectorId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    enteredById: { type: Schema.Types.ObjectId, ref: 'User' },
     amount: moneyField,
     lines: { type: [lineSchema], required: true },
     leftover: { ...moneyField, default: 0 },

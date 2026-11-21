@@ -2,7 +2,9 @@ import { z } from 'zod';
 import {
   channel,
   idempotencyKey,
+  isoDay,
   objectId,
+  onBehalfOfCollector,
   pagination,
   positiveMoneyPesewas,
 } from '../../schemas/common.js';
@@ -42,5 +44,30 @@ export const listTxnsQuery = pagination.extend({
 });
 export type ListTxnsQuery = z.infer<typeof listTxnsQuery>;
 
-export const depositBody = z.object({ amount, idempotencyKey, channel });
+export const depositBody = z.object({
+  amount,
+  idempotencyKey,
+  channel,
+  /** The Accra day it was taken, when not today. */
+  occurredOn: isoDay.optional(),
+  collectorId: onBehalfOfCollector,
+});
 export type DepositBody = z.infer<typeof depositBody>;
+
+/** Moves an account opened against the wrong customer. See `editAccount`. */
+export const editAccountBody = z.object({
+  customerId: objectId,
+  reason: z.string().trim().min(3).max(300),
+});
+export type EditAccountBody = z.infer<typeof editAccountBody>;
+
+/** Any part of a deposit. Only what is sent changes. See `editDeposit`. */
+export const editDepositBody = z.object({
+  amount: amount.optional(),
+  channel: z.enum(['cash', 'momo']).optional(),
+  occurredOn: isoDay.optional(),
+  /** The collector who took it; null when nobody did — it came in at the office. */
+  collectorId: objectId.nullable().optional(),
+  reason: z.string().trim().min(3).max(300),
+});
+export type EditDepositBody = z.infer<typeof editDepositBody>;

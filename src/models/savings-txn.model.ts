@@ -30,6 +30,8 @@ export interface SavingsTxn extends TrashFields {
   /** Set when someone other than the account holder collected the cash. */
   collectedBy?: CollectedBy;
   recordedById: Types.ObjectId;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredById?: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -48,6 +50,7 @@ const savingsTxnSchema = new Schema<SavingsTxn>(
     countsTowardDailyLimit: { type: Boolean },
     collectedBy: collectedByField,
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    enteredById: { type: Schema.Types.ObjectId, ref: 'User' },
     idempotencyKey: { type: String },
     ...trashFields,
   },

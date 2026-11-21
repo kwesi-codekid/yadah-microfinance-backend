@@ -29,6 +29,8 @@ export interface SusuLoanTxn extends TrashFields {
   /** Accra calendar day (YYYY-MM-DD). */
   accraDay: string;
   recordedById: Types.ObjectId;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredById?: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -46,6 +48,7 @@ const susuLoanTxnSchema = new Schema<SusuLoanTxn>(
     savingsAccountId: { type: Schema.Types.ObjectId, ref: 'SavingsAccount' },
     accraDay: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    enteredById: { type: Schema.Types.ObjectId, ref: 'User' },
     idempotencyKey: { type: String },
     ...trashFields,
   },

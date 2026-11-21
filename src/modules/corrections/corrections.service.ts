@@ -12,6 +12,7 @@ import {
   LoanModel,
   SavingsAccountModel,
   SusuAccountModel,
+  SusuLoanAccountModel,
   TxnCorrectionModel,
   UserModel,
   type CorrectionKind,
@@ -23,6 +24,7 @@ import { preparePaymentCorrection } from '../hire-purchase/hp.service.js';
 import { prepareRepaymentCorrection } from '../loans/loans.service.js';
 import { prepareTxnCorrection } from '../savings/savings.service.js';
 import { prepareDepositCorrection } from '../susu/susu.service.js';
+import { prepareSusuLoanDepositCorrection } from '../susu-loans/susu-loans.service.js';
 import type { ListCorrectionsQuery, ProposeCorrectionBody } from './corrections.schemas.js';
 
 /**
@@ -41,6 +43,7 @@ const PREPARERS: Record<CorrectionKind, CorrectionPreparer> = {
   'savings-txn': prepareTxnCorrection,
   'loan-repayment': prepareRepaymentCorrection,
   'hp-payment': preparePaymentCorrection,
+  'susu-loan-deposit': prepareSusuLoanDepositCorrection,
 };
 
 /** What the branch calls each kind, for a notification's one line. */
@@ -49,6 +52,7 @@ const KIND_LABELS: Record<CorrectionKind, string> = {
   'savings-txn': 'savings transaction',
   'loan-repayment': 'loan repayment',
   'hp-payment': 'hire-purchase payment',
+  'susu-loan-deposit': 'susu loan deposit',
 };
 
 // ---------------------------------------------------------------- shapes
@@ -136,7 +140,7 @@ async function targetNames(rows: TxnCorrection[]): Promise<Map<string, TargetNam
     else byKind.set(r.kind, [r.targetId]);
   }
   const out = new Map<string, TargetName>();
-  const [susu, savings, loans, agreements] = await Promise.all([
+  const [susu, savings, loans, agreements, susuLoans] = await Promise.all([
     SusuAccountModel.find({ _id: { $in: byKind.get('susu-deposit') ?? [] } }, { accountNumber: 1 }),
     SavingsAccountModel.find(
       { _id: { $in: byKind.get('savings-txn') ?? [] } },
@@ -147,9 +151,14 @@ async function targetNames(rows: TxnCorrection[]): Promise<Map<string, TargetNam
       { _id: { $in: byKind.get('hp-payment') ?? [] } },
       { accountNumber: 1, itemSnapshot: 1 },
     ),
+    SusuLoanAccountModel.find(
+      { _id: { $in: byKind.get('susu-loan-deposit') ?? [] } },
+      { accountNumber: 1 },
+    ),
   ]);
   for (const a of susu) out.set(a._id.toHexString(), { number: a.accountNumber });
   for (const a of savings) out.set(a._id.toHexString(), { number: a.accountNumber });
+  for (const a of susuLoans) out.set(a._id.toHexString(), { number: a.accountNumber });
   for (const l of loans) {
     out.set(l._id.toHexString(), {
       ...(l.accountNumber !== undefined ? { number: l.accountNumber } : {}),

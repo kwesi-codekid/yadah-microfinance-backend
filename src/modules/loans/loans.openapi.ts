@@ -8,6 +8,7 @@ import {
 } from '../corrections/corrections.openapi.js';
 import {
   applyBody,
+  editLoanBody,
   paperLoanBody,
   listLoansQuery,
   loanTrashQuery,
@@ -305,6 +306,27 @@ export const loanPaths: ZodOpenApiPathsObject = {
     },
   },
   '/loans/{id}': {
+    patch: {
+      tags: ['Loans'],
+      summary: 'Change any term of a loan (office)',
+      description:
+        'Only the fields sent change. On a disbursed loan the totals, schedule, processing fee ' +
+        'and status are worked out afresh in one transaction; repayments stay and are laid over ' +
+        'the new schedule, oldest instalment first. Refused below what has been repaid ' +
+        '(BELOW_REPAID), on a rejected application (LOAN_NOT_EDITABLE), for a customer change ' +
+        'once anything has been repaid (LOAN_HAS_REPAYMENTS), and for a collateral change once ' +
+        'it has been handed back (COLLATERAL_RETURNED).',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(editLoanBody),
+      responses: {
+        '200': jsonResponse('Changed', z.object({ loan: publicLoan })),
+        '403': errorResponse('FORBIDDEN'),
+        '404': errorResponse('NOT_FOUND'),
+        '409': errorResponse('CONFLICT, LOAN_EXISTS, HP_EXISTS or PAPER_DUPLICATE'),
+        '422': errorResponse('The new terms are refused; the code and message say why'),
+      },
+    },
     get: {
       tags: ['Loans'],
       summary: 'Loan detail with schedule and repayment history',

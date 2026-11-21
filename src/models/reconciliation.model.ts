@@ -24,7 +24,7 @@ export interface Reconciliation {
    */
   expectedAmount: number;
   /** Cash-channel breakdown behind expectedAmount. */
-  expectedBreakdown: { susu: number; savings: number };
+  expectedBreakdown: { susu: number; savings: number; loans?: number; susuLoans?: number };
   declaredAmount: number;
   declaredAt: Date;
   declaredNote?: string;
@@ -49,6 +49,8 @@ const reconciliationSchema = new Schema<Reconciliation>(
     expectedBreakdown: {
       susu: { ...moneyField, default: 0 },
       savings: { ...moneyField, default: 0 },
+      loans: { ...moneyField, default: 0 },
+      susuLoans: { ...moneyField, default: 0 },
     },
     declaredAmount: moneyField,
     declaredAt: { type: Date, required: true },

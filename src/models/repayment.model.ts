@@ -35,6 +35,8 @@ export interface Repayment extends TrashFields {
   /** Set when source is susu-loan: the susu loan account it came from. */
   susuLoanAccountId?: Types.ObjectId;
   recordedById: Types.ObjectId;
+  /** Who typed it in, when that was not the person it is filed under. */
+  enteredById?: Types.ObjectId;
   idempotencyKey?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -51,6 +53,7 @@ const repaymentSchema = new Schema<Repayment>(
     savingsAccountId: { type: Schema.Types.ObjectId, ref: 'SavingsAccount' },
     susuLoanAccountId: { type: Schema.Types.ObjectId, ref: 'SusuLoanAccount' },
     recordedById: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    enteredById: { type: Schema.Types.ObjectId, ref: 'User' },
     idempotencyKey: { type: String },
     ...trashFields,
   },

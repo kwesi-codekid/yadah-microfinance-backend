@@ -1,7 +1,8 @@
 import mongoose, { Types, type ClientSession } from 'mongoose';
 import { nextAccountNumber } from '../../lib/account-number.js';
 import { audit } from '../../lib/audit.js';
-import { resolveOccurredAt } from '../../lib/backdating.js';
+import { resolveAttribution, type Attribution } from '../../lib/attribution.js';
+import { resolveOccurredAt, resolveRoundEntryDate } from '../../lib/backdating.js';
 import type { CorrectionOrigin, CorrectionPreparer } from '../../lib/corrections.js';
 import { fuzzyCustomerIds } from '../../lib/fuzzy.js';
 import { AppError } from '../../lib/errors.js';
@@ -232,6 +233,8 @@ export interface PublicDeposit {
   accountId: string;
   customerId: string;
   collectorId: string;
+  /** Who typed it in, when that was not the collector. */
+  enteredById?: string;
   amount: number;
   /** Σ lines.payments. */
   payments: number;
@@ -262,6 +265,7 @@ export function toPublicDeposit(d: SusuDeposit): PublicDeposit {
     accountId: d.accountId.toHexString(),
     customerId: d.customerId.toHexString(),
     collectorId: d.collectorId.toHexString(),
+    ...(d.enteredById ? { enteredById: d.enteredById.toHexString() } : {}),
     amount: d.amount,
     payments: d.lines.reduce((sum, l) => sum + l.payments, 0),
     lines: d.lines.map(toPublicLine),
@@ -1216,6 +1220,8 @@ export interface MoneyIn {
   /** The day the money moved; defaults to now. */
   at?: Date;
   requestId?: string;
+  /** Whose collection it is, when the office enters it for a collector. */
+  attribution?: Attribution;
 }
 
 /**
@@ -1265,7 +1271,8 @@ export async function depositWithin(
         _id: depositId,
         accountId: account._id,
         customerId: account.customerId,
-        collectorId: new Types.ObjectId(actor.sub),
+        collectorId: input.attribution?.recordedById ?? new Types.ObjectId(actor.sub),
+        ...(input.attribution?.enteredById ? { enteredById: input.attribution.enteredById } : {}),
         amount,
         lines,
         leftover: allocation.leftover,
@@ -1363,10 +1370,15 @@ export async function recordDeposit(
   requestId?: string,
   occurredOn?: string,
   split?: readonly PlanSplit[],
+  /** The collector this was taken by, when the office is entering it for them. */
+  collectorId?: Types.ObjectId,
 ): Promise<DepositResult> {
   // The day the cash actually changed hands. Resolved before anything is
   // read, so a date the server will not accept costs nothing.
-  const at = resolveOccurredAt(actor, occurredOn);
+  const at = collectorId
+    ? resolveRoundEntryDate(actor, occurredOn)
+    : resolveOccurredAt(actor, occurredOn);
+  const attribution = await resolveAttribution(actor, collectorId);
   // Replay of a retried mobile request → return the original, write nothing.
   const prior = await SusuDepositModel.findOne({ idempotencyKey });
   if (prior) {
@@ -1402,6 +1414,7 @@ export async function recordDeposit(
         channel,
         idempotencyKey,
         at,
+        attribution,
         ...(requestId !== undefined ? { requestId } : {}),
       });
     });

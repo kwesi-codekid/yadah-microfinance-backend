@@ -1,22 +1,31 @@
 import { Router } from 'express';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
-import { requireCounter } from '../../middleware/rbac.js';
+import { requireCounter, requireOffice } from '../../middleware/rbac.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import {
   accountIdParams,
   depositBody,
+  editAccountBody,
+  editDepositBody,
   listAccountsQuery,
   listTxnsQuery,
   openAccountBody,
   txnIdParams,
   type AccountIdParams,
   type DepositBody,
+  type EditAccountBody,
+  type EditDepositBody,
   type ListAccountsQuery,
   type ListTxnsQuery,
   type OpenAccountBody,
   type TxnIdParams,
 } from './susu-loans.schemas.js';
 import * as service from './susu-loans.service.js';
+import {
+  proposeCorrectionBody,
+  type ProposeCorrectionBody,
+} from '../corrections/corrections.schemas.js';
+import * as corrections from '../corrections/corrections.service.js';
 
 /**
  * The susu loan account. Everything that moves money is done at the office
@@ -101,8 +110,51 @@ susuLoansRouter.post(
         body.idempotencyKey,
         body.channel,
         req.id as string,
+        body.occurredOn,
+        body.collectorId,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Editing is the office's; the counter asks for an amount to be corrected below.
+susuLoansRouter.patch(
+  '/accounts/:id',
+  requireOffice,
+  validate({ params: accountIdParams, body: editAccountBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: AccountIdParams; body: EditAccountBody }>(req);
+    service
+      .editAccount(getAuth(req), params.id, body, req.id as string)
+      .then((account) => res.json({ account }))
+      .catch(next);
+  },
+);
+
+susuLoansRouter.patch(
+  '/accounts/:id/txns/:txnId',
+  requireOffice,
+  validate({ params: txnIdParams, body: editDepositBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: TxnIdParams; body: EditDepositBody }>(req);
+    service
+      .editDeposit(getAuth(req), params.id, params.txnId, body, req.id as string)
+      .then((result) => res.json(result))
+      .catch(next);
+  },
+);
+
+susuLoansRouter.post(
+  '/accounts/:id/txns/:txnId/corrections',
+  validate({ params: txnIdParams, body: proposeCorrectionBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: TxnIdParams; body: ProposeCorrectionBody }>(
+      req,
+    );
+    corrections
+      .propose(getAuth(req), 'susu-loan-deposit', params.id, params.txnId, body, req.id as string)
+      .then((correction) => res.status(201).json({ correction }))
       .catch(next);
   },
 );

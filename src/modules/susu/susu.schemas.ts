@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   channel,
   collectedBy,
+  onBehalfOfCollector,
   dateRangeFields,
   exportFormat,
   fromToIssue,
@@ -99,6 +100,7 @@ export const depositBody = z.object({
   idempotencyKey,
   channel,
   occurredOn,
+  collectorId: onBehalfOfCollector,
 });
 export type DepositBody = z.infer<typeof depositBody>;
 

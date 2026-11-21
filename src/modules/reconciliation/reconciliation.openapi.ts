@@ -37,7 +37,12 @@ const reconciliation = z
       ),
     accraDay: z.string(),
     expectedAmount: z.number().int().describe('What the system says was collected in cash'),
-    expectedBreakdown: z.object({ susu: z.number().int(), savings: z.number().int() }),
+    expectedBreakdown: z.object({
+      susu: z.number().int(),
+      savings: z.number().int(),
+      loans: z.number().int(),
+      susuLoans: z.number().int(),
+    }),
     declaredAmount: z.number().int().describe('What the collector counted in hand'),
     declaredAt: z.iso.datetime(),
     declaredNote: z.string().optional(),

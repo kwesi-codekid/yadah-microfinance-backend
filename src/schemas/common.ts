@@ -126,6 +126,15 @@ export type TrashBody = z.infer<typeof trashBody>;
 /** Future-proofing only — Phase 1 records cash; no online-payment flows. */
 export const channel = z.enum(['cash', 'paystack', 'momo']).default('cash');
 
+/**
+ * The collector whose round this money came from, when the office types it in
+ * for them. Omitted, it is filed under whoever is signed in. Refused for a
+ * collector naming anyone else.
+ */
+export const onBehalfOfCollector = objectId
+  .optional()
+  .describe('The collector who took this money, when the office is entering it for them');
+
 /** Idempotency key for money-mutating endpoints (rule 7). */
 export const idempotencyKey = z.string().min(8).max(128);
 

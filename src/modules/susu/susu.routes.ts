@@ -335,6 +335,7 @@ susuRouter.post(
         req.id as string,
         body.occurredOn,
         body.split?.map((s) => ({ planId: s.planId.toHexString(), payments: s.payments })),
+        body.collectorId,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);

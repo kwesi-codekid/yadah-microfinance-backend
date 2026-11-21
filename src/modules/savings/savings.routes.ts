@@ -316,6 +316,7 @@ savingsRouter.post(
         body.channel,
         req.id as string,
         body.occurredOn,
+        body.collectorId,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);

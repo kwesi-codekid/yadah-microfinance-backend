@@ -7,9 +7,12 @@ import { acceptSheet } from '../../middleware/sheet-upload.js';
 import { getValidated, validate } from '../../middleware/validate.js';
 import { z } from 'zod';
 import { exportFormat } from '../../schemas/common.js';
+import { editLoan } from './loan-edit.service.js';
 import { importRowsBody, type ImportRowsBody } from '../customers/customers.schemas.js';
 import {
   applyBody,
+  editLoanBody,
+  type EditLoanBody,
   customerIdParams,
   listLoansQuery,
   loanIdParams,
@@ -223,6 +226,19 @@ loansRouter.get('/:id', validate({ params: loanIdParams }), (req, res, next) => 
     .catch(next);
 });
 
+// Changing any term of a loan moves money on the books, so it is the office's.
+loansRouter.patch(
+  '/:id',
+  requireOffice,
+  validate({ params: loanIdParams, body: editLoanBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: LoanIdParams; body: EditLoanBody }>(req);
+    editLoan(getAuth(req), params.id, body, req.id as string)
+      .then((loan) => res.json({ loan }))
+      .catch(next);
+  },
+);
+
 loansRouter.delete(
   '/:id',
   requireOffice,
@@ -289,6 +305,7 @@ loansRouter.post(
         body.channel,
         req.id as string,
         body.paidOn,
+        body.collectorId,
       )
       .then((result) => res.status(result.replayed ? 200 : 201).json(result))
       .catch(next);

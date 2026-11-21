@@ -91,6 +91,38 @@ function dayAt(day: string, now: Date): Date {
   return at;
 }
 
+/** How far back the counter may date a collector's money it is entering. */
+const ROUND_ENTRY_DAYS = 7;
+
+/**
+ * The day a collector's money was taken, when the office types it in for them
+ * — often the morning after the round. Not behind `ALLOW_BACKDATED_ENTRY`: this
+ * is the everyday flow, not the data-population stopgap. A teller gets the last
+ * week; the office may reach as far back as it can elsewhere. A collector never
+ * dates their own day, as everywhere else in this file.
+ */
+export function resolveRoundEntryDate(actor: AccessTokenPayload, day: string | undefined): Date {
+  if (actor.role === 'admin' || actor.role === 'manager') return resolveOfficeDate(actor, day);
+  const now = new Date();
+  if (day === undefined) return now;
+  if (actor.role === 'collector') {
+    throw new AppError(
+      'FORBIDDEN',
+      'A collection is recorded on the day it is taken. Ask the office to date it differently.',
+      403,
+    );
+  }
+  const at = dayAt(day, now);
+  if (now.getTime() - at.getTime() > ROUND_ENTRY_DAYS * DAY_MS) {
+    throw new AppError(
+      'DATE_TOO_OLD',
+      `The counter can date this up to ${String(ROUND_ENTRY_DAYS)} days back — ask the office`,
+      422,
+    );
+  }
+  return at;
+}
+
 /**
  * Copying in a loan the branch made on paper before the system existed.
  *

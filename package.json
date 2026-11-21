@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "seed": "tsx src/scripts/seed.ts",
+    "seed:full": "tsx src/scripts/seed-full.ts",
     "prepare": "husky || true",
     "test": "vitest run",
     "test:integration": "vitest run -c vitest.integration.config.ts"
