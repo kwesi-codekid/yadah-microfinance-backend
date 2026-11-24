@@ -175,6 +175,15 @@ export async function editLoan(
       422,
     );
   }
+  // Part of it may already have paid the loan; that much was really taken.
+  if (collateralChanged && collateralAmount < (loan.collateralUsed ?? 0)) {
+    throw new AppError(
+      'COLLATERAL_USED',
+      `${formatGhs(loan.collateralUsed ?? 0)} of the collateral has already gone to the loan, ` +
+        'so it cannot be set lower than that',
+      422,
+    );
+  }
 
   // ------------------------------------------------------------- the rest
   const guarantors = input.guarantors;

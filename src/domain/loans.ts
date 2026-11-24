@@ -132,6 +132,43 @@ export function escalationActionFor(
   return { type: 'escalate', newRatePercent: rates[next] };
 }
 
+/**
+ * The rate the ladder says a loan should carry by `now`, when that is higher
+ * than the rate it carries — or null when no increase is due.
+ *
+ * The office raises the rate itself (client decision, 22 Nov 2026): nothing
+ * climbs the ladder on its own any more, the loan is only flagged as due. An
+ * office that is late to act may find the loan two steps behind (a 3-month
+ * loan at 10% unraised past six months), so this walks the whole ladder and
+ * names the rate it would have reached, not merely the next one.
+ */
+export function rateIncreaseDue(
+  ratePercent: number,
+  startDate: Date,
+  now: Date,
+  rates: LoanRates = DEFAULT_RATES,
+): number | null {
+  let rate = ratePercent;
+  for (;;) {
+    const action = escalationActionFor(rate, startDate, now, rates);
+    if (action?.type !== 'escalate') break;
+    rate = action.newRatePercent;
+  }
+  return rate === ratePercent ? null : rate;
+}
+
+/**
+ * Whether a loan has run past the end of the ladder and belongs in arrears:
+ * strictly after its longest duration (12 months) from the start, whatever
+ * rate it carries. Still automatic (client decision, 22 Nov 2026). Under the
+ * old automatic ladder every loan reached the top rate on exactly this day, so
+ * moving the increases to the office does not move the day a loan freezes.
+ */
+export function arrearsDue(startDate: Date, now: Date): boolean {
+  const longest = LOAN_DURATIONS[LOAN_DURATIONS.length - 1] ?? 12;
+  return now.getTime() > addMonthsClamped(startDate, longest).getTime();
+}
+
 export interface InstalmentLike {
   amountDue: number;
   amountPaid: number;

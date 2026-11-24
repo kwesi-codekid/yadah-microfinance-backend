@@ -96,6 +96,7 @@ portalRouter.get('/transactions', validate({ query: pagination }), (req, res, ne
     ...query,
     customerId: new Types.ObjectId(getPortalAuth(req).sub),
     includePending: true,
+    includeEntered: false,
     format: 'json',
   })
     .then((feed) => res.json(feed))

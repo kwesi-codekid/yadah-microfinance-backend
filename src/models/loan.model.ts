@@ -95,9 +95,21 @@ export interface Loan extends TrashFields {
    * loan goes out until it is handed back (`collateralReturnedAt`).
    */
   collateralAmount?: number;
+  /**
+   * How much of the collateral has been put toward the loan itself, in
+   * pesewas (client decision, 22 Nov 2026) — the sum of the loan's live
+   * repayments with source `collateral`. What is still held is
+   * `collateralAmount − collateralUsed` until it is handed back.
+   */
+  collateralUsed?: number;
   /** When the cash collateral was handed back to the customer. */
   collateralReturnedAt?: Date;
   collateralReturnedById?: Types.ObjectId;
+  /**
+   * What was handed back: the collateral less what went to the loan. Absent on
+   * hand-backs from before collateral could repay a loan, which returned it all.
+   */
+  collateralReturnedAmount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -162,8 +174,10 @@ const loanSchema = new Schema<Loan>(
     escalationFrom: { type: Date },
     processingFee: optionalMoneyField,
     collateralAmount: optionalMoneyField,
+    collateralUsed: optionalMoneyField,
     collateralReturnedAt: { type: Date },
     collateralReturnedById: { type: Schema.Types.ObjectId, ref: 'User' },
+    collateralReturnedAmount: optionalMoneyField,
     ...trashFields,
   },
   { timestamps: true },

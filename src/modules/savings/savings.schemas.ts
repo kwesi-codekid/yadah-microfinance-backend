@@ -37,6 +37,8 @@ export const openAccountBody = z
     initialDeposit: positiveMoneyPesewas.min(MIN_DEPOSIT, 'Minimum deposit is GHS 5').optional(),
     idempotencyKey: idempotencyKey.optional(),
     channel,
+    /** The collector who took the opening deposit, when the office enters it for them. */
+    collectorId: onBehalfOfCollector,
   })
   .refine((v) => v.initialDeposit === undefined || v.idempotencyKey !== undefined, {
     message: 'idempotencyKey is required when initialDeposit is provided',

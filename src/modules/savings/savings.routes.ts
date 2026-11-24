@@ -59,6 +59,7 @@ savingsRouter.post(
         body.guardianId !== undefined && body.termMonths !== undefined
           ? { guardianId: body.guardianId, termMonths: body.termMonths }
           : undefined,
+        body.collectorId,
       )
       .then((result) => res.status(201).json(result))
       .catch(next);

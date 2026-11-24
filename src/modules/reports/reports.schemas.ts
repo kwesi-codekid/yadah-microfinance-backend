@@ -36,6 +36,13 @@ export const transactionsQuery = pagination
      */
     recordedById: objectId.optional(),
     /**
+     * With `recordedById`: also list the entries this person typed in for a
+     * collector. Off by default — that money is the collector's, and counting
+     * it under the typist too is what made an attendant's totals look like
+     * their own collections (client complaint, 22 Nov 2026).
+     */
+    includeEntered: booleanFlag,
+    /**
      * Include Paystack charges that have not been applied yet. Off by default:
      * these rows are money that has not moved, and they are excluded from
      * `totals` even when shown.

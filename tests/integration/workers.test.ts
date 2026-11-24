@@ -46,32 +46,26 @@ async function overdueLoan(months: number): Promise<Types.ObjectId> {
 }
 
 describe('loan escalation worker (assures loans go overdue in due time)', () => {
-  it('escalates a loan past its rate window to the next rate on the ORIGINAL principal', async () => {
+  it('no longer raises the rate itself — the office does (22 Nov 2026)', async () => {
     const loanId = await overdueLoan(4); // 3-month/10% loan, 4 months old
 
     await runEscalationPass();
 
     const after = await LoanModel.findById(loanId);
-    expect(after?.ratePercent).toBe(20);
-    expect(after?.interestAmount).toBe(20_000); // 20% of the original 100,000
-    expect(after?.totalDue).toBe(120_000);
+    expect(after?.ratePercent).toBe(10);
+    expect(after?.totalDue).toBe(110_000);
     expect(after?.status).toBe('active');
-    expect(after?.escalatedAt).toBeInstanceOf(Date);
     expect(await AuditLogModel.countDocuments({ action: 'loan.escalate', entityId: loanId })).toBe(
-      1,
+      0,
     );
   });
 
   it('a second pass is a no-op (state-based, safe to run hourly)', async () => {
-    const loanId = await overdueLoan(4);
+    const loanId = await overdueLoan(13);
     await runEscalationPass();
     await runEscalationPass();
 
-    const after = await LoanModel.findById(loanId);
-    expect(after?.ratePercent).toBe(20); // still one step, not two
-    expect(await AuditLogModel.countDocuments({ action: 'loan.escalate', entityId: loanId })).toBe(
-      1,
-    );
+    expect(await AuditLogModel.countDocuments({ action: 'loan.freeze', entityId: loanId })).toBe(1);
   });
 
   it('freezes a loan in arrears once escalation is exhausted past 30%', async () => {

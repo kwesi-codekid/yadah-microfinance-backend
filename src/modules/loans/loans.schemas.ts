@@ -131,6 +131,16 @@ export const listLoansQuery = pagination
     status: z.enum(['pending', 'active', 'repaid', 'rejected', 'arrears']).optional(),
     /** Fuzzy: typo-tolerant customer name or phone. */
     search: z.string().min(1).max(100).optional(),
+    /** Only loans the office should raise the rate on today. */
+    rateDue: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
+    /** Only loans whose cash collateral the branch still holds. */
+    collateralHeld: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
     format: exportFormat,
     ...dateRangeFields,
   })
@@ -189,6 +199,13 @@ export const susuRepayBody = z.object({
   idempotencyKey,
 });
 export type SusuRepayBody = z.infer<typeof susuRepayBody>;
+
+export const collateralRepayBody = z.object({
+  /** Taken from the collateral held — at most what is left of it, and at most what the loan still owes. */
+  amount: positiveMoneyPesewas.min(1),
+  idempotencyKey,
+});
+export type CollateralRepayBody = z.infer<typeof collateralRepayBody>;
 
 export const returnCollateralBody = z.object({
   /** The Accra day it was handed back; omit for today. */

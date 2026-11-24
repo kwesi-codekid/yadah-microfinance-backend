@@ -492,7 +492,14 @@ export async function openAccount(
   requestId?: string,
   /** Required for, and only for, a fixed deposit. */
   fixed?: { guardianId: Types.ObjectId; termMonths: number },
+  /**
+   * The collector the first deposit was taken by, when the office is opening
+   * the account with money a collector brought back. Filed under them, the
+   * attendant kept as who typed it — as on any deposit.
+   */
+  collectorId?: Types.ObjectId,
 ): Promise<{ account: PublicSavingsAccount; initialTxn?: PublicSavingsTxn }> {
+  const attribution = await resolveAttribution(actor, collectorId);
   const customer = await CustomerModel.findOne({ _id: customerId, ...NOT_TRASHED });
   if (!customer) throw new AppError('NOT_FOUND', 'Customer not found', 404);
   if (customer.status !== 'active') {
@@ -582,7 +589,8 @@ export async function openAccount(
               balanceAfter: initialDeposit,
               channel,
               accraDay: accraDay(),
-              recordedById: new Types.ObjectId(actor.sub),
+              recordedById: attribution.recordedById,
+              ...(attribution.enteredById ? { enteredById: attribution.enteredById } : {}),
               ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
             },
           ],

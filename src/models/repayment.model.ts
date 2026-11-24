@@ -3,7 +3,8 @@ import { CHANNELS, moneyField, trashFields, type Channel, type TrashFields } fro
 
 /**
  * Where a repayment's money came from — cash, the customer's susu balance,
- * or an internal transfer. 'susu-closure', 'loan-savings' and 'susu-loan'
+ * an internal transfer, or the cash collateral held on the loan itself
+ * (client decision, 22 Nov 2026). 'susu-closure', 'loan-savings' and 'susu-loan'
  * (the susu loan account, taken down 21 Nov 2026) are history: nothing new is
  * recorded with them, and the values stay so old rows still read.
  */
@@ -14,6 +15,7 @@ export const REPAYMENT_SOURCES = [
   'transfer',
   'loan-savings',
   'susu-loan',
+  'collateral',
 ] as const;
 export type RepaymentSource = (typeof REPAYMENT_SOURCES)[number];
 

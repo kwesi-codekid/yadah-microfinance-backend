@@ -7,6 +7,7 @@ import {
   TxnCorrectionModel,
 } from '../../models/index.js';
 import { remainingOn } from '../hire-purchase/hp.service.js';
+import { countLoansDueForIncrease } from '../loans/loans.service.js';
 
 /**
  * The dashboard's alert panel: business conditions that need someone to act,
@@ -95,6 +96,9 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
     // and the ledger still shows.
     TxnCorrectionModel.countDocuments({ status: 'pending' }),
   ]);
+  // The office raises rates itself now (client decision, 22 Nov 2026), so a
+  // loan past its rate window waits here until somebody does.
+  const loansDueForIncrease = await countLoansDueForIncrease();
 
   const alerts: DashboardAlert[] = [];
 
@@ -131,6 +135,19 @@ export async function dashboardAlerts(): Promise<{ alerts: DashboardAlert[]; gen
       count: hpInArrears.length,
       amount: outstanding,
       target: { module: 'hire-purchase', filter: { status: 'in-arrears' } },
+    });
+  }
+
+  if (loansDueForIncrease > 0) {
+    alerts.push({
+      key: 'loans-rate-increase-due',
+      severity: 'warning',
+      title: 'Loans due for a higher rate',
+      body: `${String(loansDueForIncrease)} ${loansDueForIncrease === 1 ? 'loan has' : 'loans have'} run past the months ${loansDueForIncrease === 1 ? 'its' : 'their'} rate covers — the rate goes up only when the office raises it.`,
+      count: loansDueForIncrease,
+      amount: null,
+      // The loans screen's own name for this view.
+      target: { module: 'loans', filter: { view: 'rateDue' } },
     });
   }
 

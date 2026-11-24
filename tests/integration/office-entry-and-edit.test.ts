@@ -201,7 +201,33 @@ describe('entering for a collector', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('shows the row to both people on the transactions feed', async () => {
+  it('files a savings opening deposit under the collector named', async () => {
+    const customer = await makeCustomer(true);
+    const { initialTxn } = await savings.openAccount(
+      teller,
+      customer,
+      5_000,
+      randomUUID(),
+      'cash',
+      'standard',
+      undefined,
+      undefined,
+      new Types.ObjectId(collector.sub),
+    );
+    expect(initialTxn).toMatchObject({ recordedById: collector.sub });
+    const query = { page: 1, limit: 20, customerId: customer } as Parameters<
+      typeof listTransactions
+    >[0];
+    const feed = await listTransactions({
+      ...query,
+      recordedById: new Types.ObjectId(collector.sub),
+    });
+    expect(feed.items.find((r) => r.type === 'savings-deposit')?.enteredByName).toBe(
+      'Office Attendant',
+    );
+  });
+
+  it('files the row under the collector on the feed; the typist sees it only when asked', async () => {
     const customer = await makeCustomer(true);
     const fresh = await makeCollector('Feed Collector');
     const typist = await makeTeller('Feed Attendant');
@@ -219,12 +245,31 @@ describe('entering for a collector', () => {
     const query = { page: 1, limit: 20, customerId: customer } as Parameters<
       typeof listTransactions
     >[0];
-    for (const staff of [fresh.sub, typist.sub]) {
-      const feed = await listTransactions({ ...query, recordedById: new Types.ObjectId(staff) });
-      const row = feed.items.find((r) => r.type === 'loan-repayment');
-      expect(row?.recordedByName).toBe('Feed Collector');
-      expect(row?.enteredByName).toBe('Feed Attendant');
-    }
+    const collectorFeed = await listTransactions({
+      ...query,
+      recordedById: new Types.ObjectId(fresh.sub),
+    });
+    const row = collectorFeed.items.find((r) => r.type === 'loan-repayment');
+    expect(row?.recordedByName).toBe('Feed Collector');
+    expect(row?.enteredByName).toBe('Feed Attendant');
+    expect(collectorFeed.totals.in.amount).toBe(1_000);
+
+    // Not the attendant's money: out of their feed and their totals...
+    const typistFeed = await listTransactions({
+      ...query,
+      recordedById: new Types.ObjectId(typist.sub),
+    });
+    expect(typistFeed.items.find((r) => r.type === 'loan-repayment')).toBeUndefined();
+    expect(typistFeed.totals.in.amount).toBe(0);
+    // ...unless they ask to see what they typed in for collectors.
+    const typed = await listTransactions({
+      ...query,
+      recordedById: new Types.ObjectId(typist.sub),
+      includeEntered: true,
+    });
+    expect(typed.items.find((r) => r.type === 'loan-repayment')?.recordedByName).toBe(
+      'Feed Collector',
+    );
   });
 });
 

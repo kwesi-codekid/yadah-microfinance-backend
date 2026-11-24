@@ -103,6 +103,7 @@ dashboardRouter.get('/recent-transactions', validate({ query: recentQuery }), (r
     page: 1,
     limit: query.limit,
     includePending: query.includePending,
+    includeEntered: false,
     format: 'json',
   })
     .then((feed) => res.json({ items: feed.items, totals: feed.totals }))

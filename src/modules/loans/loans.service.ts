@@ -38,6 +38,7 @@ import {
   addMonthsClamped,
   buildSchedule,
   computeInterest,
+  rateIncreaseDue,
   tierFor,
   type LoanDuration,
   type LoanRates,
@@ -146,7 +147,58 @@ export interface PublicLoan {
   processingFee?: number;
   /** Cash left as security, held until handed back. */
   collateralAmount?: number;
+  /** How much of the collateral has gone toward the loan. */
+  collateralUsed?: number;
+  /** What the branch still holds: the collateral less what went to the loan, 0 once handed back. */
+  collateralHeld?: number;
   collateralReturnedAt?: Date;
+  /** What was handed back, when it was. */
+  collateralReturnedAmount?: number;
+  /**
+   * Set when the loan has run past its rate's window and the office should
+   * raise it (client decision, 22 Nov 2026): the rate it should now carry and
+   * what it would then owe in total. Only on screens that read the loan's rate
+   * config — the detail and the listing.
+   */
+  rateIncreaseDue?: { toRatePercent: number; totalDue: number };
+}
+
+/** What the branch still holds of a loan's collateral. */
+export function collateralHeldOn(
+  l: Pick<Loan, 'collateralAmount' | 'collateralUsed' | 'collateralReturnedAt'>,
+): number {
+  if (!l.collateralAmount || l.collateralReturnedAt) return 0;
+  return l.collateralAmount - (l.collateralUsed ?? 0);
+}
+
+/** Where a loan's rate clock starts: a paper loan may carry its own. */
+function rateClockStart(l: Loan): Date | undefined {
+  return l.escalationFrom ?? l.disbursedAt ?? l.approvedAt;
+}
+
+/** The increase the office should make on this loan today, if any. */
+export function rateIncreaseFor(
+  l: Loan,
+  rates: LoanRates,
+  now: Date = new Date(),
+): { toRatePercent: number; totalDue: number } | null {
+  if (l.status !== 'active' || l.frozen) return null;
+  const start = rateClockStart(l);
+  if (!start) return null;
+  let toRatePercent: number | null;
+  try {
+    toRatePercent = rateIncreaseDue(l.ratePercent, start, now, rates);
+  } catch {
+    // A rate the current config no longer lists has no ladder to climb.
+    return null;
+  }
+  if (toRatePercent === null) return null;
+  return { toRatePercent, totalDue: l.principal + computeInterest(l.principal, toRatePercent) };
+}
+
+function withRateDue(p: PublicLoan, l: Loan, rates: LoanRates, now: Date): PublicLoan {
+  const due = rateIncreaseFor(l, rates, now);
+  return due ? { ...p, rateIncreaseDue: due } : p;
 }
 
 export function toPublicLoan(l: Loan): PublicLoan {
@@ -180,9 +232,19 @@ export function toPublicLoan(l: Loan): PublicLoan {
     ...(l.paperRef !== undefined ? { paperRef: l.paperRef } : {}),
     ...(l.paperPhotoUrl !== undefined ? { paperPhotoUrl: l.paperPhotoUrl } : {}),
     ...(l.processingFee !== undefined ? { processingFee: l.processingFee } : {}),
-    ...(l.collateralAmount !== undefined ? { collateralAmount: l.collateralAmount } : {}),
+    ...(l.collateralAmount !== undefined
+      ? {
+          collateralAmount: l.collateralAmount,
+          collateralUsed: l.collateralUsed ?? 0,
+          collateralHeld: collateralHeldOn(l),
+        }
+      : {}),
     ...(l.collateralReturnedAt !== undefined
-      ? { collateralReturnedAt: l.collateralReturnedAt }
+      ? {
+          collateralReturnedAt: l.collateralReturnedAt,
+          collateralReturnedAmount:
+            l.collateralReturnedAmount ?? (l.collateralAmount ?? 0) - (l.collateralUsed ?? 0),
+        }
       : {}),
   };
 }
@@ -206,6 +268,7 @@ export function toLoanExportRow(item: PublicLoan): Record<string, unknown> {
     remaining: item.remaining,
     processingFee: item.processingFee ?? 0,
     collateralAmount: item.collateralAmount ?? 0,
+    collateralHeld: item.collateralHeld ?? 0,
     status: item.status,
     frozen: item.frozen,
     appliedAt: item.appliedAt,
@@ -683,6 +746,23 @@ export interface LoanTotals {
   /** Still owed on loans in arrears alone. */
   arrears: number;
   arrearsCount: number;
+  /** Cash collateral the branch holds on these loans, and on how many. */
+  collateralHeld: number;
+  collateralHeldCount: number;
+  /** Open loans the office should raise the rate on. Across the filter. */
+  rateIncreaseDueCount: number;
+}
+
+/** How many open loans the office should raise the rate on today. */
+export async function countLoansDueForIncrease(): Promise<number> {
+  const { rates } = await getLoanConfig();
+  return (await loansDueForIncrease(rates, new Date())).length;
+}
+
+/** Ids of the open loans due for a rate increase today. */
+async function loansDueForIncrease(rates: LoanRates, now: Date): Promise<Types.ObjectId[]> {
+  const open = await LoanModel.find({ status: 'active', frozen: false, ...NOT_TRASHED });
+  return open.filter((l) => rateIncreaseFor(l, rates, now) !== null).map((l) => l._id);
 }
 
 export async function listLoans(query: ListLoansQuery): Promise<{
@@ -700,8 +780,19 @@ export async function listLoans(query: ListLoansQuery): Promise<{
   }
   const dateFilter = createdAtFilter(query.from, query.to);
   if (dateFilter) filter.createdAt = dateFilter;
+  const { rates } = await getLoanConfig();
+  const now = new Date();
+  const dueIds = await loansDueForIncrease(rates, now);
+  // "Due for a rate increase" is worked out from the clock, not stored.
+  if (query.rateDue) filter._id = { $in: dueIds };
+  if (query.collateralHeld) {
+    filter.collateralAmount = { $gt: 0 };
+    filter.collateralReturnedAt = { $exists: false };
+    filter.status = query.status ?? { $in: ['active', 'arrears', 'repaid'] };
+    filter.$expr = { $gt: ['$collateralAmount', { $ifNull: ['$collateralUsed', 0] }] };
+  }
 
-  const [loans, total, byStatus] = await Promise.all([
+  const [loans, total, byStatus, collateral, dueInFilter] = await Promise.all([
     LoanModel.find(filter)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
@@ -726,6 +817,26 @@ export async function listLoans(query: ListLoansQuery): Promise<{
         },
       },
     ]),
+    // Held from the day the loan goes out until it is handed back, less what
+    // went to the loan.
+    LoanModel.aggregate<{ count: number; held: number }>([
+      { $match: filter },
+      {
+        $match: {
+          status: { $in: ['active', 'arrears', 'repaid'] },
+          collateralAmount: { $gt: 0 },
+          collateralReturnedAt: { $exists: false },
+        },
+      },
+      {
+        $project: {
+          held: { $subtract: ['$collateralAmount', { $ifNull: ['$collateralUsed', 0] }] },
+        },
+      },
+      { $match: { held: { $gt: 0 } } },
+      { $group: { _id: null, count: { $sum: 1 }, held: { $sum: '$held' } } },
+    ]),
+    LoanModel.countDocuments({ ...filter, _id: { $in: dueIds } }),
   ]);
   const totals: LoanTotals = {
     disbursed: 0,
@@ -735,6 +846,9 @@ export async function listLoans(query: ListLoansQuery): Promise<{
     outstandingCount: 0,
     arrears: 0,
     arrearsCount: 0,
+    collateralHeld: collateral[0]?.held ?? 0,
+    collateralHeldCount: collateral[0]?.count ?? 0,
+    rateIncreaseDueCount: dueInFilter,
   };
   for (const g of byStatus) {
     totals.disbursed += g.principal;
@@ -753,7 +867,7 @@ export async function listLoans(query: ListLoansQuery): Promise<{
   const names = new Map(customers.map((c) => [c._id.toHexString(), c.fullName]));
   return {
     items: loans.map((l) => ({
-      ...toPublicLoan(l),
+      ...withRateDue(toPublicLoan(l), l, rates, now),
       customerName: names.get(l.customerId.toHexString()) ?? '',
     })),
     page: query.page,
@@ -824,8 +938,9 @@ export async function getLoan(loanId: Types.ObjectId): Promise<LoanDetail> {
       ...(enteredByName ? { enteredByName } : {}),
     };
   };
+  const { rates } = await getLoanConfig();
   return {
-    loan: toPublicLoan(loan),
+    loan: withRateDue(toPublicLoan(loan), loan, rates, new Date()),
     schedule: schedule.map((s) => ({
       installmentNumber: s.installmentNumber,
       dueDate: s.dueDate,
@@ -1140,7 +1255,13 @@ export const prepareRepaymentCorrection: CorrectionPreparer = async (loanId, rep
     if (repayment.source !== 'cash') {
       throw new AppError(
         'CANNOT_CORRECT',
-        `A repayment paid ${repayment.source === 'transfer' ? 'by transfer' : 'from a susu account'} cannot be changed on its own`,
+        `A repayment paid ${
+          repayment.source === 'transfer'
+            ? 'by transfer'
+            : repayment.source === 'collateral'
+              ? 'from the collateral'
+              : 'from a susu account'
+        } cannot be changed on its own — delete it and enter it again`,
         422,
       );
     }
@@ -1381,10 +1502,175 @@ export async function repayFromSusu(
 // ---------------------------------------------------------------- collateral
 
 /**
- * Hands the cash collateral back to the customer. Only once the loan is
- * repaid: until then it is the branch's security. The day may be named — an
- * old paper loan's collateral went back long before it was typed in — and the
- * cash book reads the hand-back on that day.
+ * Repayment out of the cash collateral held on the loan itself (client
+ * decision, 22 Nov 2026). Any amount up to what is still held and up to what
+ * the loan still owes; whatever is not used stays held, to be handed back once
+ * the loan is repaid. No cash moves — the collateral came in as cash the day
+ * the loan went out — so the feed reads it as an internal move, and the
+ * balance sheet holds that much less collateral and is owed that much less.
+ */
+export async function repayFromCollateral(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  amount: number,
+  idempotencyKey: string,
+  requestId?: string,
+): Promise<RepaymentResult> {
+  const replayed = await replayIfExists(idempotencyKey);
+  if (replayed) return replayed;
+
+  const { loan, customer } = await loadOpenLoanForRepayment(loanId);
+  if (!loan.collateralAmount) {
+    throw new AppError('NO_COLLATERAL', 'No cash collateral was taken on this loan', 422);
+  }
+  if (loan.collateralReturnedAt) {
+    throw new AppError(
+      'COLLATERAL_RETURNED',
+      `The collateral was already handed back on ${accraDay(loan.collateralReturnedAt)}`,
+      409,
+    );
+  }
+  const held = collateralHeldOn(loan);
+  if (amount > held) {
+    throw new AppError(
+      'COLLATERAL_SHORT',
+      held === 0
+        ? 'All the collateral has already gone to the loan'
+        : `Only ${formatGhs(held)} of the collateral is left`,
+      422,
+      { held, amount },
+    );
+  }
+
+  const session = await mongoose.startSession();
+  let repayment!: Repayment;
+  try {
+    await session.withTransaction(async () => {
+      repayment = await applyRepaymentInTxn(
+        actor,
+        loan,
+        amount,
+        'collateral',
+        'transfer',
+        idempotencyKey,
+        session,
+        undefined,
+        requestId,
+      );
+      // Guarded on what is held, so two at once cannot spend it twice.
+      const upd = await LoanModel.updateOne(
+        {
+          _id: loanId,
+          collateralReturnedAt: { $exists: false },
+          $expr: {
+            $lte: [{ $add: [{ $ifNull: ['$collateralUsed', 0] }, amount] }, '$collateralAmount'],
+          },
+        },
+        { $inc: { collateralUsed: amount } },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'The collateral changed at the same time — retry', 409);
+      }
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await LoanModel.findById(loanId);
+  if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  await notifyRepayment(customer, loanId, amount, after);
+  return {
+    repayment: { id: repayment._id.toHexString(), amount, source: 'collateral' },
+    loan: toPublicLoan(after),
+    replayed: false,
+  };
+}
+
+/**
+ * Raises a loan to the rate the ladder says it should now carry, on the
+ * ORIGINAL principal (client decision, 22 Nov 2026: the office does this, not
+ * a worker). Only when an increase is due — the loan is flagged first — and
+ * only up to the rate it is due for. The schedule is left as it was, exactly
+ * as the automatic escalation always left it: the extra interest is owed on
+ * top of the instalments.
+ */
+export async function raiseLoanRate(
+  actor: AccessTokenPayload,
+  loanId: Types.ObjectId,
+  requestId?: string,
+): Promise<PublicLoan> {
+  const loan = await LoanModel.findOne({ _id: loanId, ...NOT_TRASHED });
+  if (!loan) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  const { rates } = await getLoanConfig();
+  const now = new Date();
+  const due = rateIncreaseFor(loan, rates, now);
+  if (!due) {
+    throw new AppError(
+      'NO_RATE_INCREASE_DUE',
+      loan.status === 'active' && !loan.frozen
+        ? `This loan is not yet due for a higher rate — it stays at ${String(loan.ratePercent)}%`
+        : `Loan is ${loan.status} — its rate is not raised`,
+      422,
+    );
+  }
+  const interestAmount = computeInterest(loan.principal, due.toRatePercent);
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const upd = await LoanModel.updateOne(
+        { _id: loanId, status: 'active', frozen: false, ratePercent: loan.ratePercent },
+        {
+          $set: {
+            ratePercent: due.toRatePercent,
+            interestAmount,
+            totalDue: due.totalDue,
+            escalatedAt: now,
+          },
+        },
+        { session },
+      );
+      if (upd.modifiedCount !== 1) {
+        throw new AppError('CONFLICT', 'Loan was updated concurrently — retry', 409);
+      }
+      await audit(
+        {
+          actorId: actor.sub,
+          action: 'loan.escalate',
+          entityType: 'loan',
+          entityId: loanId,
+          amountBefore: loan.totalDue,
+          amountAfter: due.totalDue,
+          before: { ratePercent: loan.ratePercent },
+          after: { fromRate: loan.ratePercent, toRate: due.toRatePercent, by: 'office' },
+          ...(requestId !== undefined ? { requestId } : {}),
+        },
+        session,
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const after = await LoanModel.findById(loanId);
+  if (!after) throw new AppError('NOT_FOUND', 'Loan not found', 404);
+  emitAdminEvent('loan.escalated', {
+    id: loanId.toHexString(),
+    customerId: loan.customerId.toHexString(),
+    fromRate: loan.ratePercent,
+    toRate: due.toRatePercent,
+    totalDue: due.totalDue,
+  });
+  return toPublicLoan(after);
+}
+
+/**
+ * Hands the cash collateral back to the customer — what is left of it once
+ * any of it went to the loan. Only once the loan is repaid: until then it is
+ * the branch's security. The day may be named — an old paper loan's
+ * collateral went back long before it was typed in — and the cash book reads
+ * the hand-back on that day.
  */
 export async function returnCollateral(
   actor: AccessTokenPayload,
@@ -1405,6 +1691,14 @@ export async function returnCollateral(
       409,
     );
   }
+  const handBack = collateralHeldOn(pre);
+  if (handBack === 0) {
+    throw new AppError(
+      'NO_COLLATERAL',
+      'All the collateral went to the loan — there is nothing to hand back',
+      422,
+    );
+  }
   if (pre.status !== 'repaid') {
     throw new AppError(
       'LOAN_NOT_REPAID',
@@ -1421,9 +1715,19 @@ export async function returnCollateral(
   }
 
   const loan = await LoanModel.findOneAndUpdate(
-    { _id: loanId, collateralReturnedAt: { $exists: false }, ...NOT_TRASHED },
     {
-      $set: { collateralReturnedAt: at, collateralReturnedById: new Types.ObjectId(actor.sub) },
+      _id: loanId,
+      collateralReturnedAt: { $exists: false },
+      // What was used is what this hand-back was worked out from.
+      ...(pre.collateralUsed ? { collateralUsed: pre.collateralUsed } : {}),
+      ...NOT_TRASHED,
+    },
+    {
+      $set: {
+        collateralReturnedAt: at,
+        collateralReturnedById: new Types.ObjectId(actor.sub),
+        collateralReturnedAmount: handBack,
+      },
     },
     { returnDocument: 'after' },
   );
@@ -1434,7 +1738,7 @@ export async function returnCollateral(
     action: 'loan.collateral.return',
     entityType: 'loan',
     entityId: loanId,
-    amountBefore: pre.collateralAmount,
+    amountBefore: handBack,
     amountAfter: 0,
     after: { returnedOn: accraDay(at) },
     ...(requestId !== undefined ? { requestId } : {}),
@@ -1478,6 +1782,9 @@ async function refundsFor(loanId: Types.ObjectId, repayments: Repayment[]): Prom
   };
   for (const r of repayments) {
     if (r.source === 'cash' || r.source === 'susu-loan') continue;
+    // Goes back to the loan's own collateral: trashRepayment puts it there,
+    // and a deleted loan takes its collateral with it.
+    if (r.source === 'collateral') continue;
     if ((r.source === 'susu' || r.source === 'susu-closure') && r.susuAccountId) {
       add(refunds.susu, r.susuAccountId, r.amount);
     } else if (r.source === 'loan-savings' && r.savingsAccountId) {
@@ -1739,6 +2046,17 @@ export async function trashRepayment(
       422,
     );
   }
+  // Paid out of the collateral: it goes back into the collateral, which must
+  // still be held to take it.
+  const fromCollateral = repayment.source === 'collateral';
+  if (fromCollateral && loan.collateralReturnedAt) {
+    throw new AppError(
+      'CANNOT_TRASH',
+      'This was paid from the collateral, and the rest of the collateral has already been ' +
+        'handed back — there is nothing for it to go back into',
+      422,
+    );
+  }
 
   // Where the money goes back, worked out (and refused) before the transaction.
   const refunds = await refundsFor(loanId, [repayment]);
@@ -1772,7 +2090,10 @@ export async function trashRepayment(
       const upd = await LoanModel.updateOne(
         { _id: loanId, status: loan.status, totalRepaid: loan.totalRepaid, ...NOT_TRASHED },
         {
-          $inc: { totalRepaid: -repayment.amount },
+          $inc: {
+            totalRepaid: -repayment.amount,
+            ...(fromCollateral ? { collateralUsed: -repayment.amount } : {}),
+          },
           // A loan this repayment had settled is open again; otherwise the
           // escalation worker is left to judge arrears from the due date.
           ...(wasRepaid
@@ -2075,6 +2396,7 @@ export async function repaymentReceipt(
     transfer: 'Internal transfer',
     'loan-savings': 'From loan savings',
     'susu-loan': 'From susu loan account (retired)',
+    collateral: 'From the cash collateral',
   };
 
   const lines: ReceiptLine[] = [

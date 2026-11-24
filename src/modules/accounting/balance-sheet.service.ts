@@ -122,8 +122,10 @@ export async function customerLiabilities(): Promise<{
 
 /**
  * Cash collateral the branch was holding at the end of `asOf`: taken on a
- * loan that had gone out by then, and not yet handed back by then. The
- * customer's money, owed back to them like a deposit.
+ * loan that had gone out by then, and not yet handed back by then, less what
+ * of it had gone toward the loan by then (a repayment with source
+ * `collateral`, client decision 22 Nov 2026). The customer's money, owed back
+ * to them like a deposit.
  */
 export async function collateralHeldAt(asOf: string): Promise<number> {
   const { end } = dayWindow(asOf, asOf);
@@ -139,7 +141,30 @@ export async function collateralHeldAt(asOf: string): Promise<number> {
         ...NOT_TRASHED,
       },
     },
-    { $group: { _id: null, amount: { $sum: '$collateralAmount' } } },
+    {
+      $lookup: {
+        from: 'repayments',
+        let: { loanId: '$_id' },
+        pipeline: [
+          {
+            $match: {
+              $expr: { $eq: ['$loanId', '$$loanId'] },
+              source: 'collateral',
+              createdAt: { $lt: end },
+              ...NOT_TRASHED,
+            },
+          },
+          { $group: { _id: null, amount: { $sum: '$amount' } } },
+        ],
+        as: 'used',
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        amount: { $sum: { $subtract: ['$collateralAmount', { $sum: '$used.amount' }] } },
+      },
+    },
   ]);
   return row?.amount ?? 0;
 }

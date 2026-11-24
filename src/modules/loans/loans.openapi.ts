@@ -8,6 +8,7 @@ import {
 } from '../corrections/corrections.openapi.js';
 import {
   applyBody,
+  collateralRepayBody,
   editLoanBody,
   paperLoanBody,
   listLoansQuery,
@@ -28,7 +29,10 @@ const publicLoan = z
     tier: z.enum(['small', 'big']),
     principal: z.number().int().describe('Pesewas, immutable'),
     durationMonths: z.number().int(),
-    ratePercent: z.number().int().describe('Current rate — moves up the ladder on escalation'),
+    ratePercent: z
+      .number()
+      .int()
+      .describe('Current rate — raised by the office when the loan is due (rateIncreaseDue)'),
     interestAmount: z.number().int(),
     totalDue: z.number().int().describe('principal + interest at the CURRENT rate'),
     totalRepaid: z.number().int(),
@@ -72,10 +76,32 @@ const publicLoan = z
       .int()
       .optional()
       .describe('Pesewas. Cash left as security; held (a liability) until handed back'),
+    collateralUsed: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pesewas of the collateral put toward the loan (with collateralAmount)'),
+    collateralHeld: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pesewas the branch still holds: collateral less what was used; 0 once returned'),
     collateralReturnedAt: z.iso
       .datetime()
       .optional()
       .describe('When the cash collateral was handed back'),
+    collateralReturnedAmount: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pesewas handed back (with collateralReturnedAt)'),
+    rateIncreaseDue: z
+      .object({ toRatePercent: z.number().int(), totalDue: z.number().int() })
+      .optional()
+      .describe(
+        'On the detail and list only: the loan has run past its rate window and the office ' +
+          'should raise it (POST /loans/{id}/raise-rate) to this rate, owing this in total',
+      ),
   })
   .meta({ id: 'Loan' });
 
@@ -255,7 +281,9 @@ export const loanPaths: ZodOpenApiPathsObject = {
         'Pass format=csv or format=xlsx to download the filtered list as a ' +
         'spreadsheet (pagination is ignored; capped at 10,000 rows). `totals` covers the ' +
         'whole filter rather than the page, and counts only disbursed loans ' +
-        '(active, arrears, repaid) — pending and rejected applications moved no cash.',
+        '(active, arrears, repaid) — pending and rejected applications moved no cash. ' +
+        '`rateDue=true` lists only loans the office should raise the rate on today; ' +
+        '`collateralHeld=true` only loans whose cash collateral is still held.',
       security,
       requestParams: { query: listLoansQuery },
       responses: {
@@ -274,6 +302,15 @@ export const loanPaths: ZodOpenApiPathsObject = {
               outstandingCount: z.number().int(),
               arrears: z.number().int().describe('Owed on arrears loans alone, pesewas'),
               arrearsCount: z.number().int(),
+              collateralHeld: z
+                .number()
+                .int()
+                .describe('Cash collateral still held on these loans, pesewas'),
+              collateralHeldCount: z.number().int(),
+              rateIncreaseDueCount: z
+                .number()
+                .int()
+                .describe('Open loans the office should raise the rate on today'),
             }),
           }),
         ),
@@ -485,12 +522,58 @@ export const loanPaths: ZodOpenApiPathsObject = {
       },
     },
   },
+  '/loans/{id}/repayments/collateral': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Repay from the loan’s own cash collateral (office)',
+      description:
+        'Any amount up to what is still held of the collateral and up to what the loan still ' +
+        'owes. No cash moves: the feed shows an internal loan-repayment (source `collateral`), ' +
+        'and the balance sheet holds that much less collateral. Whatever is not used stays ' +
+        'held and is handed back once the loan is repaid. Deleting such a repayment puts it ' +
+        'back into the collateral (refused once the rest has been handed back).',
+      security,
+      requestParams: { path: idParam },
+      requestBody: jsonBody(collateralRepayBody),
+      responses: {
+        '201': jsonResponse('Applied', repaymentResult),
+        '200': jsonResponse('Replay of an earlier request', repaymentResult),
+        '403': errorResponse('FORBIDDEN'),
+        '409': errorResponse('COLLATERAL_RETURNED or CONFLICT'),
+        '422': errorResponse(
+          'NO_COLLATERAL, COLLATERAL_SHORT (details.held), EXCEEDS_BALANCE (details.remaining) ' +
+            'or LOAN_NOT_OPEN',
+        ),
+      },
+    },
+  },
+  '/loans/{id}/raise-rate': {
+    post: {
+      tags: ['Loans'],
+      summary: 'Raise the rate on a loan that is due for it (office)',
+      description:
+        'Rates are no longer raised automatically (client decision, 22 Nov 2026): a loan past ' +
+        'its rate window shows `rateIncreaseDue`, and this applies it — the rate the ladder ' +
+        'would have reached by now, on the ORIGINAL principal. The schedule is left as it ' +
+        'was. Arrears stay automatic: an open loan past 12 months from its start is frozen ' +
+        'whatever its rate.',
+      security,
+      requestParams: { path: idParam },
+      responses: {
+        '200': jsonResponse('Raised', loanResult),
+        '403': errorResponse('FORBIDDEN'),
+        '409': errorResponse('CONFLICT'),
+        '422': errorResponse('NO_RATE_INCREASE_DUE'),
+      },
+    },
+  },
   '/loans/{id}/collateral/return': {
     post: {
       tags: ['Loans'],
       summary: 'Hand the cash collateral back (office)',
       description:
-        'Only once the loan is repaid, and only once. `returnedOn` dates it (default today) — ' +
+        'Only once the loan is repaid, and only once; hands back what is left after any of it ' +
+        'went to the loan (NO_COLLATERAL when none is). `returnedOn` dates it (default today) — ' +
         'not in the future, not before the loan went out. The cash book shows a ' +
         '`loan-collateral-return` row on that day and the balance sheet stops holding it.',
       security,

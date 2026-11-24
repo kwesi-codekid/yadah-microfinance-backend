@@ -11,6 +11,8 @@ import { editLoan } from './loan-edit.service.js';
 import { importRowsBody, type ImportRowsBody } from '../customers/customers.schemas.js';
 import {
   applyBody,
+  collateralRepayBody,
+  type CollateralRepayBody,
   editLoanBody,
   type EditLoanBody,
   customerIdParams,
@@ -322,6 +324,43 @@ loansRouter.post(
     );
     loansService
       .returnCollateral(getAuth(req), params.id, body.returnedOn, req.id as string)
+      .then((loan) => res.json({ loan }))
+      .catch(next);
+  },
+);
+
+// Pay the loan out of its own cash collateral (client decision, 22 Nov 2026).
+// Office only, like handing the collateral back: no cash changes hands, so it
+// is a decision about the customer's security rather than money at the till.
+loansRouter.post(
+  '/:id/repayments/collateral',
+  requireOffice,
+  validate({ params: loanIdParams, body: collateralRepayBody }),
+  (req, res, next) => {
+    const { params, body } = getValidated<{ params: LoanIdParams; body: CollateralRepayBody }>(req);
+    loansService
+      .repayFromCollateral(
+        getAuth(req),
+        params.id,
+        body.amount,
+        body.idempotencyKey,
+        req.id as string,
+      )
+      .then((result) => res.status(result.replayed ? 200 : 201).json(result))
+      .catch(next);
+  },
+);
+
+// Raise the rate on a loan flagged as due for it (client decision, 22 Nov
+// 2026: the office does this, the worker no longer does). Office only.
+loansRouter.post(
+  '/:id/raise-rate',
+  requireOffice,
+  validate({ params: loanIdParams }),
+  (req, res, next) => {
+    const { params } = getValidated<{ params: LoanIdParams }>(req);
+    loansService
+      .raiseLoanRate(getAuth(req), params.id, req.id as string)
       .then((loan) => res.json({ loan }))
       .catch(next);
   },

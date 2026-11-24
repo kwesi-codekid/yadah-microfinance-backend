@@ -146,16 +146,22 @@ function buildBranches(
   modules?: TxnModule[],
   includePending = false,
   recordedById?: Types.ObjectId,
+  includeEntered = false,
 ): Branch[] {
   const createdAt = { $gte: window.start, $lt: window.end };
   const byCustomer = customerId ? { customerId } : {};
   // Each collection names the member of staff under its own field — the one
   // every branch below projects to `recordedById`.
   const by = (field: string) => (recordedById ? { [field]: recordedById } : {});
-  // Money the office can enter for a collector belongs to both people: the one
-  // it is filed under, and the one who typed it, who must still see their work.
+  // Money the office enters for a collector is the collector's: narrowed to a
+  // person, the feed shows what is filed under them. The typist sees it too
+  // only when asked (`includeEntered`), so it never swells their own totals.
   const byOrEntered = (field: string) =>
-    recordedById ? { $or: [{ [field]: recordedById }, { enteredById: recordedById }] } : {};
+    !recordedById
+      ? {}
+      : includeEntered
+        ? { $or: [{ [field]: recordedById }, { enteredById: recordedById }] }
+        : { [field]: recordedById };
   const wanted = new Set<TxnModule>(modules ?? [...TXN_MODULES]);
   const branches: Branch[] = [];
 
@@ -401,7 +407,9 @@ function buildBranches(
           {
             $project: {
               type: { $literal: 'loan-collateral-return' },
-              amount: '$collateralAmount',
+              // What was handed back: less any of it that went to the loan.
+              // Older hand-backs returned it all and carry no amount.
+              amount: { $ifNull: ['$collateralReturnedAmount', '$collateralAmount'] },
               fee: { $literal: 0 },
               customerId: 1,
               refId: '$_id',
@@ -825,6 +833,7 @@ export async function listTransactions(query: TransactionsQuery): Promise<Transa
     query.module ? [query.module] : undefined,
     query.includePending,
     query.recordedById,
+    query.includeEntered,
   );
   return runFeed(window, branches, query.page, query.limit);
 }
@@ -899,6 +908,7 @@ export async function transactionsCsvRows(
     query.module ? [query.module] : undefined,
     query.includePending,
     query.recordedById,
+    query.includeEntered,
   );
   const raw = await SusuDepositModel.aggregate<RawRow>([
     ...unionStages(branches),

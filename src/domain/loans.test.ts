@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   addMonthsClamped,
+  arrearsDue,
   allocateRepayment,
   buildSchedule,
   computeInterest,
   escalationActionFor,
   paperEscalationStart,
+  rateIncreaseDue,
   tierFor,
 } from './loans.js';
 
@@ -163,5 +165,33 @@ describe('paperEscalationStart — the paper rate stands on the day of entry', (
     expect(escalationActionFor(30, start, new Date('2027-03-30T10:00:00Z'))).toEqual({
       type: 'freeze',
     });
+  });
+});
+
+describe('rateIncreaseDue — the office raises, the app only flags (22 Nov 2026)', () => {
+  const start = new Date('2026-01-15T10:00:00Z');
+  it('nothing due inside the rate window, nor on its last day', () => {
+    expect(rateIncreaseDue(10, start, new Date('2026-03-01T00:00:00Z'))).toBeNull();
+    expect(rateIncreaseDue(10, start, new Date('2026-04-15T10:00:00Z'))).toBeNull();
+  });
+  it('one step once past the window', () => {
+    expect(rateIncreaseDue(10, start, new Date('2026-04-16T00:00:00Z'))).toBe(20);
+    expect(rateIncreaseDue(20, start, new Date('2026-07-16T00:00:00Z'))).toBe(30);
+  });
+  it('names the rate the ladder would have reached when the office is late', () => {
+    expect(rateIncreaseDue(10, start, new Date('2026-08-01T00:00:00Z'))).toBe(30);
+  });
+  it('nothing above the top rate', () => {
+    expect(rateIncreaseDue(30, start, new Date('2027-06-01T00:00:00Z'))).toBeNull();
+  });
+});
+
+describe('arrearsDue — still automatic, 12 months from the start whatever the rate', () => {
+  const start = new Date('2026-01-15T10:00:00Z');
+  it('not on the twelve-month day itself', () => {
+    expect(arrearsDue(start, new Date('2027-01-15T10:00:00Z'))).toBe(false);
+  });
+  it('the moment after, even on a rate nobody raised', () => {
+    expect(arrearsDue(start, new Date('2027-01-15T10:00:01Z'))).toBe(true);
   });
 });
