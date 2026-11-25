@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Types } from 'mongoose';
 import { sendExport } from '../../lib/exports.js';
 import { workerStatuses } from '../../lib/worker-status.js';
 import { getAuth, requireAuth } from '../../middleware/auth.js';
@@ -12,6 +13,7 @@ import {
 } from './reports.schemas.js';
 import * as dashboardService from '../dashboard/dashboard.service.js';
 import * as reportsService from './reports.service.js';
+import { enteredForCollectors } from './entered-for.service.js';
 import { OVERVIEW_PERIODS, reportsOverview, type OverviewPeriod } from './overview.service.js';
 import * as transactionsService from './transactions.service.js';
 
@@ -46,6 +48,25 @@ reportsRouter.get('/transactions', validate({ query: transactionsQuery }), (req,
     .then((feed) => res.json(feed))
     .catch(next);
 });
+
+// What a member of staff typed in for collectors, collector by collector — the
+// other half of the attendant's end of day, beside their own ledger above.
+// Open like the ledger and scoped the same way: the office may name anyone
+// (`recordedById`), everybody else is answered for themselves.
+reportsRouter.get(
+  '/transactions/entered-for',
+  validate({ query: transactionsQuery }),
+  (req, res, next) => {
+    const { query: asked } = getValidated<{ query: TransactionsQuery }>(req);
+    const actor = getAuth(req);
+    const office = actor.role === 'admin' || actor.role === 'manager';
+    const staffId =
+      office && asked.recordedById ? asked.recordedById : new Types.ObjectId(actor.sub);
+    enteredForCollectors(staffId, asked.from, asked.to)
+      .then((report) => res.json(report))
+      .catch(next);
+  },
+);
 
 // Everything from here down is office only.
 reportsRouter.use(requireOffice);

@@ -19,6 +19,7 @@ import { editLoan } from '../../src/modules/loans/loan-edit.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
 import { recordPaperLoan } from '../../src/modules/loans/paper-loans.service.js';
 import { expectedForDay } from '../../src/modules/reconciliation/reconciliation.service.js';
+import { enteredForCollectors } from '../../src/modules/reports/entered-for.service.js';
 import { listTransactions } from '../../src/modules/reports/transactions.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';
@@ -199,6 +200,66 @@ describe('entering for a collector', () => {
         new Types.ObjectId(other.sub),
       ),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('totals what an attendant entered for each collector, apart from their own cash', async () => {
+    const customer = await makeCustomer(true);
+    const first = await makeCollector('Day Collector One');
+    const second = await makeCollector('Day Collector Two');
+    const typist = await makeTeller('Day Attendant');
+    const loanId = await activeLoan(customer);
+    const book = await openBook(customer);
+
+    // For the first collector: a loan repayment and a savings deposit.
+    await loans.repayCash(
+      typist,
+      loanId,
+      1_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      new Types.ObjectId(first.sub),
+    );
+    await savings.deposit(
+      typist,
+      book,
+      2_500,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      new Types.ObjectId(first.sub),
+    );
+    // For the second: one savings deposit.
+    await savings.deposit(
+      typist,
+      book,
+      4_000,
+      randomUUID(),
+      'cash',
+      undefined,
+      undefined,
+      new Types.ObjectId(second.sub),
+    );
+    // And the attendant's own, at the office: not anybody's round.
+    await savings.deposit(typist, book, 700, randomUUID(), 'cash');
+
+    const report = await enteredForCollectors(new Types.ObjectId(typist.sub));
+    expect(report.collectors.map((c) => [c.collectorName, c.count, c.amount, c.cash])).toEqual([
+      ['Day Collector Two', 1, 4_000, 4_000],
+      ['Day Collector One', 2, 3_500, 3_500],
+    ]);
+    expect(report.collectors[1]).toMatchObject({ loans: 1_000, savings: 2_500, susu: 0 });
+    expect(report.total).toEqual({ count: 3, amount: 7_500, cash: 7_500 });
+
+    // The attendant's own ledger holds only their own cash.
+    const own = await listTransactions({
+      page: 1,
+      limit: 20,
+      recordedById: new Types.ObjectId(typist.sub),
+    } as Parameters<typeof listTransactions>[0]);
+    expect(own.totals.in.amount).toBe(700);
   });
 
   it('files a savings opening deposit under the collector named', async () => {

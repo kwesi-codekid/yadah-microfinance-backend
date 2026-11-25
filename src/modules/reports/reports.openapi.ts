@@ -254,6 +254,27 @@ export const reportPaths: ZodOpenApiPathsObject = {
       responses: { '200': jsonResponse('Report', z.unknown()) },
     },
   },
+  '/reports/transactions/entered-for': {
+    get: {
+      tags: ['Reports'],
+      summary: 'What a member of staff typed in for collectors, collector by collector',
+      description:
+        'The other half of an attendant\x27s end of day, beside their own ledger: susu deposits, ' +
+        'savings deposits and cash loan repayments they entered for each collector over the ' +
+        'range (from/to, default the last 30 days). Filed under the collectors, so none of it ' +
+        'is in the attendant\x27s own ledger totals. Open to every role; the office may name ' +
+        'the person with recordedById, everybody else is answered for themselves.',
+      security: [{ bearerAuth: [] }],
+      requestParams: {
+        query: z.object({
+          from: z.string().optional(),
+          to: z.string().optional(),
+          recordedById: z.string().optional(),
+        }),
+      },
+      responses: { '200': jsonResponse('Per-collector totals', z.object({}).loose()) },
+    },
+  },
   '/reports/overview': {
     get: {
       tags: ['Reports'],
