@@ -12,6 +12,7 @@ import {
 } from './reports.schemas.js';
 import * as dashboardService from '../dashboard/dashboard.service.js';
 import * as reportsService from './reports.service.js';
+import { OVERVIEW_PERIODS, reportsOverview, type OverviewPeriod } from './overview.service.js';
 import * as transactionsService from './transactions.service.js';
 
 export const reportsRouter = Router();
@@ -61,6 +62,15 @@ reportsRouter.get('/dashboard', (_req, res, next) => {
   dashboardService
     .dashboardMetrics()
     .then((metrics) => res.json(metrics))
+    .catch(next);
+});
+
+// The Reports page: every book over a period, read from the books themselves.
+reportsRouter.get('/overview', (req, res, next) => {
+  const raw = typeof req.query.period === 'string' ? req.query.period : 'quarter';
+  const period: OverviewPeriod = raw in OVERVIEW_PERIODS ? (raw as OverviewPeriod) : 'quarter';
+  reportsOverview(period)
+    .then((report) => res.json(report))
     .catch(next);
 });
 

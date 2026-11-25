@@ -12,6 +12,7 @@ import { commissionBalance } from '../../src/modules/commissions/commissions.ser
 import { dashboardFinancials } from '../../src/modules/dashboard/financials.service.js';
 import * as hp from '../../src/modules/hire-purchase/hp.service.js';
 import * as loans from '../../src/modules/loans/loans.service.js';
+import { reportsOverview } from '../../src/modules/reports/overview.service.js';
 import { collectionsByStaff, commissionEarned } from '../../src/modules/reports/reports.service.js';
 import { listTransactions } from '../../src/modules/reports/transactions.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
@@ -453,5 +454,95 @@ describe('the same figure reads the same everywhere', () => {
       .reduce((sum, r) => sum + r.amount, 0);
     same('collections report vs cash deposits on the ledger', staff.totalAmount, cashDeposits);
     expect(mismatches).toEqual([]);
+  });
+});
+
+describe('the Reports page reads the same books', () => {
+  it('agrees with the balance sheet, the loans page, the ledger and the profit and loss', async () => {
+    const report = await reportsOverview('quarter');
+    const [sheet, loanList, pl, feed] = await Promise.all([
+      balanceSheet(today),
+      loans.listLoans({
+        page: 1,
+        limit: 1,
+        rateDue: false,
+        collateralHeld: false,
+        format: 'json',
+      } as never),
+      profitAndLoss(report.from, report.to),
+      listTransactions({
+        from: report.from,
+        to: report.to,
+        page: 1,
+        limit: 500,
+        includePending: false,
+        includeEntered: false,
+        format: 'json',
+      } as never),
+    ]);
+    const mismatches: string[] = [];
+    const same = (name: string, a: number, b: number): void => {
+      if (a !== b) mismatches.push(`${name}: ${String(a)} vs ${String(b)}`);
+    };
+    const cash = (types: string[], direction: string): number =>
+      feed.items
+        .filter((r) => types.includes(r.type) && r.direction === direction)
+        .reduce((sum, r) => sum + r.amount, 0);
+
+    same('susu held', report.susu.valueHeld, sheet.liabilities.customerDeposits.susuBalances);
+    same(
+      'savings held',
+      report.savings.balance,
+      sheet.liabilities.customerDeposits.savingsBalances,
+    );
+    same(
+      'savings month-end balance, running month',
+      report.savings.balances.at(-1) ?? -1,
+      report.savings.balance,
+    );
+    same('loans outstanding', report.loans.outstanding, loanList.totals.outstanding);
+    same(
+      'hire purchase outstanding',
+      report.hp.outstanding,
+      sheet.assets.current.hirePurchaseReceivable + sheet.disclosures.unearnedHpInterest,
+    );
+    same(
+      'deposits mobilised vs the ledger',
+      report.kpis.depositsMobilised,
+      cash(['susu-deposit', 'savings-deposit'], 'in'),
+    );
+    same(
+      'withdrawals paid vs the ledger',
+      report.kpis.withdrawalsPaid,
+      cash(['susu-payout', 'susu-withdrawal', 'savings-withdrawal', 'savings-closure'], 'out'),
+    );
+    same(
+      'loans disbursed vs the ledger',
+      report.kpis.loansDisbursed,
+      cash(['loan-disbursement'], 'out'),
+    );
+    same('revenue vs the profit and loss', report.kpis.revenue, pl.income.total);
+    same(
+      'money moved by book vs the ledger cash in',
+      report.flow.reduce((sum, m) => sum + m.susu + m.savings + m.loans + m.hp + m.sales, 0),
+      cash(
+        [
+          'susu-deposit',
+          'savings-deposit',
+          'loan-repayment',
+          'hp-deposit',
+          'hp-installment',
+          'hp-redemption',
+          'hp-sale',
+        ],
+        'in',
+      ),
+    );
+    expect(mismatches).toEqual([]);
+    // The savings balance a month ago is today's less what moved since.
+    expect(report.savings.balances.length).toBe(report.savings.months.length);
+    expect(report.loans.aging.reduce((n, b) => n + b.count, 0)).toBeLessThanOrEqual(
+      report.loans.open,
+    );
   });
 });

@@ -254,6 +254,24 @@ export const reportPaths: ZodOpenApiPathsObject = {
       responses: { '200': jsonResponse('Report', z.unknown()) },
     },
   },
+  '/reports/overview': {
+    get: {
+      tags: ['Reports'],
+      summary: 'The Reports page: every book over a period (office)',
+      description:
+        'One block per tab of the Reports page, read from the books: cash moved by book and ' +
+        'month (the ledger feed, transfers left out), balances held, the loan book with its ' +
+        'arrears ages and portfolio at risk, hire purchase standing, counter sales by category, ' +
+        'collections and handover by staff, customers, and revenue by month (commission ' +
+        'account plus interest as repaid). `period` is month, quarter (default) or year; ' +
+        'at least three months are always drawn. All amounts are pesewas.',
+      security: [{ bearerAuth: [] }],
+      requestParams: {
+        query: z.object({ period: z.enum(['month', 'quarter', 'year']).optional() }),
+      },
+      responses: { '200': jsonResponse('The overview', z.object({}).loose()) },
+    },
+  },
   '/reports/commission': {
     get: {
       tags: ['Reports'],
