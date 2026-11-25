@@ -12,7 +12,7 @@ import { commissionEarned } from '../reports/reports.service.js';
 import { cashPosition } from './cash.service.js';
 import { accruedExpenses, expensesByCategory } from '../expenses/expenses.service.js';
 import { assetPositionAt, capitalAt, depreciationExpense } from './fixed-assets.service.js';
-import { interestEarned } from './income.service.js';
+import { interestEarned, interestPortion } from './income.service.js';
 
 /**
  * The balance sheet: what the business owns, what it owes, and what is left.
@@ -184,10 +184,12 @@ async function receivables(): Promise<{
   let unearnedLoanInterest = 0;
   for (const loan of loans) {
     const outstanding = loan.totalDue - loan.totalRepaid;
-    // Repayments are applied to the loan as a whole, so the outstanding amount
-    // is split in the same proportion as the original principal to interest.
+    // Repayments are applied to the loan as a whole, in the proportion of
+    // principal to interest. What is unearned is the interest less what the
+    // profit and loss has already taken from the repayments — the same
+    // rounding, so the two always add up to the loan's interest.
     const interestShare =
-      loan.totalDue === 0 ? 0 : Math.round((outstanding * loan.interestAmount) / loan.totalDue);
+      loan.interestAmount - interestPortion(loan.totalRepaid, loan.interestAmount, loan.totalDue);
     unearnedLoanInterest += interestShare;
     loanPrincipal += outstanding - interestShare;
   }
@@ -199,7 +201,9 @@ async function receivables(): Promise<{
     const totalPayable = agreement.totalPayable ?? 0;
     const interest = agreement.interestAmount ?? 0;
     const interestShare =
-      totalPayable === 0 ? 0 : Math.round((outstanding * interest) / totalPayable);
+      totalPayable === 0
+        ? 0
+        : interest - interestPortion(totalPayable - outstanding, interest, totalPayable);
     unearnedHpInterest += interestShare;
     hpReceivable += outstanding - interestShare;
   }

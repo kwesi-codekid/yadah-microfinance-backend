@@ -41,12 +41,17 @@ const dashboardSummary = z
         susuDeposits: countAmount,
         savingsDeposits: countAmount,
         loanRepayments: countAmount,
+        loanCharges: countAmount.describe(
+          'Processing fees and cash collateral taken as loans went out',
+        ),
         hpPayments: countAmount,
+        counterSales: countAmount.describe('Outright counter sales'),
       }),
       out: z.object({
         susuPayouts: countAmount,
         savingsWithdrawals: countAmount,
         loanDisbursements: countAmount,
+        collateralReturned: countAmount.describe('Cash collateral handed back'),
       }),
     }),
     yesterday: z.object({ day: z.string(), cashIn: countAmount }),

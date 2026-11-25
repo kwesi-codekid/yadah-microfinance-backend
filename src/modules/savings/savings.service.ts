@@ -618,7 +618,13 @@ export async function openAccount(
 export async function listAccounts(
   actor: AccessTokenPayload,
   query: ListAccountsQuery,
-): Promise<{ items: PublicSavingsAccount[]; page: number; limit: number; total: number }> {
+): Promise<{
+  items: PublicSavingsAccount[];
+  page: number;
+  limit: number;
+  total: number;
+  totals: SavingsTotals;
+}> {
   const filter: Record<string, unknown> = { ...NOT_TRASHED };
   if (query.customerId) filter.customerId = query.customerId;
   if (query.guardianId) filter.guardianId = query.guardianId;
@@ -642,12 +648,13 @@ export async function listAccounts(
   // account-number search cannot reach outside the collector's round.
   const scoped = await withCustomerScope(actor, filter);
 
-  const [accounts, total] = await Promise.all([
+  const [accounts, total, totals] = await Promise.all([
     SavingsAccountModel.find(scoped)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
     SavingsAccountModel.countDocuments(scoped),
+    savingsTotals(scoped),
   ]);
 
   const unique = [...new Set(accounts.map((a) => a.customerId.toHexString()))];
@@ -663,6 +670,51 @@ export async function listAccounts(
     page: query.page,
     limit: query.limit,
     total,
+    totals,
+  };
+}
+
+/**
+ * The book in money, across the whole filter rather than the page: what the
+ * open accounts hold, how many are open, and what went in and out of every
+ * account in the filter, with the fees kept.
+ */
+export interface SavingsTotals {
+  /** Held on the open accounts in the filter. */
+  balance: number;
+  activeCount: number;
+  /** Paid in, ever, to the accounts in the filter. */
+  deposited: number;
+  /** Handed out (withdrawals and closures), fees not included. */
+  withdrawn: number;
+  /** The GHS 10 withdrawal fees kept. */
+  fees: number;
+}
+
+async function savingsTotals(filter: Record<string, unknown>): Promise<SavingsTotals> {
+  const [held] = await SavingsAccountModel.aggregate<{ balance: number; count: number }>([
+    // ANDed, not spread: a filter already on `status: 'closed'` must hold nothing.
+    { $match: { $and: [filter, { status: 'active' }] } },
+    { $group: { _id: null, balance: { $sum: '$balance' }, count: { $sum: 1 } } },
+  ]);
+  const ids = await SavingsAccountModel.distinct('_id', filter);
+  const moved = await SavingsTxnModel.aggregate<{ _id: string; amount: number; fee: number }>([
+    { $match: { accountId: { $in: ids }, ...NOT_TRASHED } },
+    {
+      $group: {
+        _id: '$type',
+        amount: { $sum: '$amount' },
+        fee: { $sum: { $ifNull: ['$fee', 0] } },
+      },
+    },
+  ]);
+  const by = (type: string) => moved.find((m) => m._id === type);
+  return {
+    balance: held?.balance ?? 0,
+    activeCount: held?.count ?? 0,
+    deposited: by('deposit')?.amount ?? 0,
+    withdrawn: (by('withdrawal')?.amount ?? 0) + (by('closure')?.amount ?? 0),
+    fees: moved.reduce((sum, m) => sum + m.fee, 0),
   };
 }
 

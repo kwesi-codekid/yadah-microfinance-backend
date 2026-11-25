@@ -264,7 +264,33 @@ export const susuPaths: ZodOpenApiPathsObject = {
         'to download a spreadsheet (pagination is ignored; capped at 10,000 rows).',
       security,
       requestParams: { query: listAccountsQuery },
-      responses: { '200': jsonResponse('Paginated accounts', paginated(susuAccount)) },
+      responses: {
+        '200': jsonResponse(
+          'Paginated accounts',
+          paginated(susuAccount).extend({
+            totals: z
+              .object({
+                balance: z
+                  .number()
+                  .int()
+                  .describe('Held on the open accounts in the filter, pesewas'),
+                activeCount: z.number().int(),
+                deposited: z
+                  .number()
+                  .int()
+                  .describe('Paid in to the accounts in the filter, pesewas'),
+                withdrawn: z
+                  .number()
+                  .int()
+                  .describe(
+                    'Paid out of them — cash and transfers — commission not included, pesewas',
+                  ),
+                commission: z.number().int().describe('Susu commission kept on them, pesewas'),
+              })
+              .describe('Across the whole filter, not the page'),
+          }),
+        ),
+      },
     },
   },
   '/susu/accounts/trash': {

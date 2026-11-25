@@ -5,7 +5,7 @@ import { accraDay } from '../../src/lib/time.js';
 import { CashAccountModel } from '../../src/models/index.js';
 import { balanceSheet, profitAndLoss } from '../../src/modules/accounting/balance-sheet.service.js';
 import * as cash from '../../src/modules/accounting/cash.service.js';
-import * as expenses from '../../src/modules/accounting/expenses.service.js';
+import * as expenses from '../../src/modules/expenses/expenses.service.js';
 import * as assets from '../../src/modules/accounting/fixed-assets.service.js';
 import * as savings from '../../src/modules/savings/savings.service.js';
 import * as susu from '../../src/modules/susu/susu.service.js';

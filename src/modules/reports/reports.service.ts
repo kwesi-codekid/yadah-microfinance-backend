@@ -41,11 +41,13 @@ export async function collectionsByStaff(
 
   const [susu, savings] = await Promise.all([
     SusuDepositModel.aggregate<{ _id: Types.ObjectId; count: number; amount: number }>([
-      { $match: { createdAt, ...NOT_TRASHED } },
+      // Money taken in, not money moved: a transfer between a customer's own
+      // accounts (or a refund put back) is nobody's collection.
+      { $match: { createdAt, channel: { $ne: 'transfer' }, ...NOT_TRASHED } },
       { $group: { _id: '$collectorId', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
     SavingsTxnModel.aggregate<{ _id: Types.ObjectId; count: number; amount: number }>([
-      { $match: { createdAt, type: 'deposit', ...NOT_TRASHED } },
+      { $match: { createdAt, type: 'deposit', channel: { $ne: 'transfer' }, ...NOT_TRASHED } },
       { $group: { _id: '$recordedById', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]),
   ]);

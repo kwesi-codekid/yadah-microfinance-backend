@@ -61,12 +61,18 @@ export interface DashboardMetrics {
       susuDeposits: CountAmount;
       savingsDeposits: CountAmount;
       loanRepayments: CountAmount;
+      /** Processing fees and cash collateral taken as loans went out. */
+      loanCharges: CountAmount;
       hpPayments: CountAmount;
+      /** Outright counter sales. */
+      counterSales: CountAmount;
     };
     out: {
       susuPayouts: CountAmount;
       savingsWithdrawals: CountAmount;
       loanDisbursements: CountAmount;
+      /** Cash collateral handed back. */
+      collateralReturned: CountAmount;
     };
   };
   /** Yesterday's cash in, for the day-on-day comparison on the collected tile. */
@@ -123,6 +129,9 @@ const IN_BUCKET: Partial<Record<TxnType, keyof DashboardMetrics['today']['in']>>
   'susu-deposit': 'susuDeposits',
   'savings-deposit': 'savingsDeposits',
   'loan-repayment': 'loanRepayments',
+  'loan-fee': 'loanCharges',
+  'loan-collateral': 'loanCharges',
+  'hp-sale': 'counterSales',
   'hp-deposit': 'hpPayments',
   'hp-installment': 'hpPayments',
   'hp-redemption': 'hpPayments',
@@ -133,6 +142,7 @@ const OUT_BUCKET: Partial<Record<TxnType, keyof DashboardMetrics['today']['out']
   'savings-withdrawal': 'savingsWithdrawals',
   'savings-closure': 'savingsWithdrawals',
   'loan-disbursement': 'loanDisbursements',
+  'loan-collateral-return': 'collateralReturned',
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -170,7 +180,11 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       { $match: { status: 'active', ...NOT_TRASHED } },
       { $group: { _id: null, count: { $sum: 1 }, balance: { $sum: '$balance' } } },
     ]),
-    SusuPlanModel.countDocuments({ status: 'active' }),
+    // Plans running on open books only: a closed or deleted account's plans
+    // are not running, whatever their own status says.
+    SusuAccountModel.distinct('_id', { status: 'active', ...NOT_TRASHED }).then((ids) =>
+      SusuPlanModel.countDocuments({ status: 'active', accountId: { $in: ids } }),
+    ),
     SavingsAccountModel.aggregate<{ _id: string; count: number; balance: number }>([
       { $match: { status: 'active', ...NOT_TRASHED } },
       { $group: { _id: '$accountType', count: { $sum: 1 }, balance: { $sum: '$balance' } } },
@@ -198,9 +212,16 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       susuDeposits: zero(),
       savingsDeposits: zero(),
       loanRepayments: zero(),
+      loanCharges: zero(),
       hpPayments: zero(),
+      counterSales: zero(),
     },
-    out: { susuPayouts: zero(), savingsWithdrawals: zero(), loanDisbursements: zero() },
+    out: {
+      susuPayouts: zero(),
+      savingsWithdrawals: zero(),
+      loanDisbursements: zero(),
+      collateralReturned: zero(),
+    },
   };
   for (const g of todayGroups.groups) {
     if (g.direction === 'in') {
@@ -235,8 +256,10 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
       valueHeld: susuOpen[0]?.balance ?? 0,
     },
     savings: {
-      activeAccounts: (standard?.count ?? 0) + (student?.count ?? 0) + (fixed?.count ?? 0),
-      totalBalance: (standard?.balance ?? 0) + (student?.balance ?? 0) + (fixed?.balance ?? 0),
+      // Every open savings account, whatever its type — a retired loan savings
+      // account still open is still money held, and the balance sheet counts it.
+      activeAccounts: savingsGroups.reduce((sum, g) => sum + g.count, 0),
+      totalBalance: savingsGroups.reduce((sum, g) => sum + g.balance, 0),
       byType: {
         standard: { count: standard?.count ?? 0, amount: standard?.balance ?? 0 },
         student: { count: student?.count ?? 0, amount: student?.balance ?? 0 },
@@ -267,7 +290,9 @@ export async function dashboardMetrics(): Promise<DashboardMetrics> {
         portfolio.susu.activeAccounts +
         portfolio.savings.activeAccounts +
         portfolio.loans.active +
-        portfolio.hirePurchase.active,
+        portfolio.loans.arrears +
+        portfolio.hirePurchase.active +
+        portfolio.hirePurchase.inArrears,
       activeSusuPlans: portfolio.susu.activePlans,
       amountCollectedToday: today.cashIn.amount,
       amountCollectedChangePercent: changePercent(today.cashIn.amount, yesterday.cashIn.amount),

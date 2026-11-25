@@ -129,6 +129,21 @@ export const savingsPaths: ZodOpenApiPathsObject = {
             page: z.number(),
             limit: z.number(),
             total: z.number(),
+            totals: z
+              .object({
+                balance: z
+                  .number()
+                  .int()
+                  .describe('Held on the open accounts in the filter, pesewas'),
+                activeCount: z.number().int(),
+                deposited: z
+                  .number()
+                  .int()
+                  .describe('Paid in to the accounts in the filter, pesewas'),
+                withdrawn: z.number().int().describe('Handed out, fees not included, pesewas'),
+                fees: z.number().int().describe('Withdrawal fees kept, pesewas'),
+              })
+              .describe('Across the whole filter, not the page'),
           }),
         ),
       },

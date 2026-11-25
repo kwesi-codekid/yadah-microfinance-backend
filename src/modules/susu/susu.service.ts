@@ -679,6 +679,51 @@ export interface AccountList {
   page: number;
   limit: number;
   total: number;
+  totals: SusuTotals;
+}
+
+/**
+ * The book in money, across the whole filter rather than the page — the same
+ * cards the savings book shows.
+ */
+export interface SusuTotals {
+  /** Held on the open accounts in the filter. */
+  balance: number;
+  activeCount: number;
+  /** Paid in, ever, to the accounts in the filter (trashed deposits left out). */
+  deposited: number;
+  /** Paid out of them — cash and transfers alike — commission not included. */
+  withdrawn: number;
+  /** Susu commission Yadah kept on them. */
+  commission: number;
+}
+
+async function susuTotals(filter: Record<string, unknown>): Promise<SusuTotals> {
+  const [held] = await SusuAccountModel.aggregate<{ balance: number; count: number }>([
+    // ANDed, not spread: a filter already on `status: 'closed'` must hold nothing.
+    { $match: { $and: [filter, { status: 'active' }] } },
+    { $group: { _id: null, balance: { $sum: '$balance' }, count: { $sum: 1 } } },
+  ]);
+  const ids = await SusuAccountModel.distinct('_id', filter);
+  const sum = { $group: { _id: null, amount: { $sum: '$amount' } } };
+  const [[deposited], [withdrawn], [commission]] = await Promise.all([
+    SusuDepositModel.aggregate<{ amount: number }>([
+      { $match: { accountId: { $in: ids }, ...NOT_TRASHED } },
+      sum,
+    ]),
+    SusuPayoutModel.aggregate<{ amount: number }>([{ $match: { accountId: { $in: ids } } }, sum]),
+    CommissionModel.aggregate<{ amount: number }>([
+      { $match: { source: 'susu', accountId: { $in: ids } } },
+      sum,
+    ]),
+  ]);
+  return {
+    balance: held?.balance ?? 0,
+    activeCount: held?.count ?? 0,
+    deposited: deposited?.amount ?? 0,
+    withdrawn: withdrawn?.amount ?? 0,
+    commission: commission?.amount ?? 0,
+  };
 }
 
 /** One page-sized join for display names. */
@@ -741,14 +786,21 @@ export async function listAccounts(
   // search $or, so an account-number search cannot reach outside the round.
   const scoped = await withCustomerScope(actor, filter);
 
-  const [accounts, total] = await Promise.all([
+  const [accounts, total, totals] = await Promise.all([
     SusuAccountModel.find(scoped)
       .sort({ createdAt: -1 })
       .skip((query.page - 1) * query.limit)
       .limit(query.limit),
     SusuAccountModel.countDocuments(scoped),
+    susuTotals(scoped),
   ]);
-  return { items: await withNamesAndPlans(accounts), page: query.page, limit: query.limit, total };
+  return {
+    items: await withNamesAndPlans(accounts),
+    page: query.page,
+    limit: query.limit,
+    total,
+    totals,
+  };
 }
 
 export async function getAccount(
